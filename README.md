@@ -138,13 +138,19 @@ python3 tools/export_round_slice.py --data-dir server/data --round "第一轮" -
 
 ## 三、发布 github.io 公开结果页
 
-仓库已包含静态站点 [site](site) 和工作流 [.github/workflows/pages.yml](.github/workflows/pages.yml)。当前目录还没有 GitHub remote，因此首次需要：
+公开仓库：[PYXXXX/MangoTV_Danmaku](https://github.com/PYXXXX/MangoTV_Danmaku)
 
-1. 在 GitHub 新建一个仓库并把本项目推送到 `main`。
-2. 仓库进入 **Settings → Pages → Build and deployment → Source**，选择 **GitHub Actions**。
-3. 首次推送后，工作流会把 `site` 目录发布到：
-   - 普通项目仓库：`https://<用户名>.github.io/<仓库名>/`
-   - `<用户名>.github.io` 仓库：`https://<用户名>.github.io/`
+客户端结果页：[https://pyxxxx.github.io/MangoTV_Danmaku/](https://pyxxxx.github.io/MangoTV_Danmaku/)
+
+仓库已启用 GitHub Pages，并由 [.github/workflows/pages.yml](.github/workflows/pages.yml) 自动部署 `site` 目录。运营端只发布聚合后的 `site/data/results.json`；推送完成后，Actions 自动更新公开页，不上传原始弹幕、昵称、服务端配置或去重数据库。
+
+推荐的场次公开流程：
+
+1. 在管理 WebUI 输入活动名与场次名后开始采集。
+2. 点击“结束场次”，系统锁定 JSONL 切片，并把北京时间范围追加到场次名。
+3. 运营人员检查票数与待审数量；需要语义清洗时先导出该场次切片。
+4. 确认结果后点击“发布”，仅把活动、场次、聚合票数、样本量和发布时间写入公开 JSON。
+5. GitHub Actions 部署成功后，公开客户端会在下一次轮询时显示新结果。
 
 ### 配置运营端自动同步
 
