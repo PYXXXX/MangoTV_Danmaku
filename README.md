@@ -97,13 +97,17 @@ python server/vote_server.py --config server/config.json
 
 ### 飞书 Bot 遥控
 
-飞书“自定义机器人 webhook”只能发消息，不能接收指令；要遥控管理，需要创建飞书自建应用：
+飞书“自定义机器人 webhook”只能发消息，不能接收运营指令；遥控管理需要创建飞书企业自建应用。本项目默认使用官方 SDK 的 WebSocket 长连接，不要求公网回调地址：
 
 1. 创建飞书应用，配置 `app_id`、`app_secret`。
-2. 事件订阅 URL 填：`https://你的服务器域名/feishu/events`。
-3. 在飞书开放平台配置 `verification_token`，填入 `server/config.json`。
-4. 订阅消息事件 `im.message.receive_v1`，并授予发送消息相关权限。
-5. 把应用 Bot 加入运营群或私聊 Bot 发送指令。
+2. 启用机器人能力，授予接收私聊/群 @消息及 `im:message:send_as_bot` 权限。
+3. 事件与回调均选择“使用长连接接收”。
+4. 订阅消息事件 `im.message.receive_v1` 和卡片回调 `card.action.trigger`。
+5. 发布应用版本，把 Bot 加入运营群，并在配置中限制运营人员 `open_id` 与群 `chat_id`。
+
+向 Bot 发送“菜单”即可获得交互卡片，可点击开始默认场次、结束、刷新、查看/切换场次和发布粗略结果。自定义活动名、场次名仍使用文本指令；精确结果文件仍在运营 WebUI 上传。
+
+完整权限、配置、systemd 常驻和 HTTP 回调兼容方案见 [飞书交互卡片 Bot 部署文档](docs/FEISHU_BOT_DEPLOYMENT.md)。
 
 支持指令：
 
@@ -248,5 +252,6 @@ node --check extension/dashboard.js
 node --check site/app.js
 node --check server/webui/app.js
 python3 -m py_compile server/vote_server.py
+python3 -m py_compile server/feishu_cards.py server/feishu_ws.py
 python3 -m unittest discover -s tests -v
 ```

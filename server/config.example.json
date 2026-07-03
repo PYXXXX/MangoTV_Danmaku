@@ -38,8 +38,12 @@
   },
   "feishu": {
     "enabled": false,
+    "connection_mode": "websocket",
     "app_id": "cli_xxx",
     "app_secret": "xxx",
-    "verification_token": "xxx"
+    "verification_token": "xxx",
+    "allowed_open_ids": ["ou_xxx"],
+    "allowed_chat_ids": ["oc_xxx"],
+    "public_results_url": "https://your-name.github.io/MangoTV_Danmaku/"
   }
 }

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import tempfile
 import unittest
@@ -29,6 +30,12 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
             }
             service = VoteService(config)
             try:
+                self.assertFalse(service.start_feishu_connection(asyncio.get_running_loop()))
+                service.feishu.config["allowed_open_ids"] = ["ou_operator"]
+                service.feishu.config["allowed_chat_ids"] = ["oc_control_room"]
+                self.assertTrue(service.feishu.is_allowed("ou_operator", "oc_control_room"))
+                self.assertFalse(service.feishu.is_allowed("ou_other", "oc_control_room"))
+                self.assertFalse(service.feishu.is_allowed("ou_operator", "oc_other"))
                 meta = await service.store.create_round("歌手 2026", "第一轮", "", service.default_candidates, "all")
                 meta = await service.store.stop_active()
                 payload = {

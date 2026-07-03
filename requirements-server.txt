@@ -1,1 +1,2 @@
 aiohttp>=3.9
+lark-oapi>=1.7,<2

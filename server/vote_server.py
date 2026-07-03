@@ -29,8 +29,10 @@ from aiohttp import ClientSession, web
 
 try:
     from server.precise_results import parse_precise_result, validate_precise_result
+    from server.feishu_cards import build_control_card, build_round_list_card
 except ModuleNotFoundError:  # Support `python server/vote_server.py`.
     from precise_results import parse_precise_result, validate_precise_result
+    from feishu_cards import build_control_card, build_round_list_card
 
 
 def now_iso() -> str:
@@ -681,38 +683,62 @@ class FeishuBot:
         self.config = config
         self.token: str | None = None
         self.token_expire_at = 0.0
+        self.token_lock = asyncio.Lock()
+        self.api_base = str(config.get("api_base_url") or "https://open.feishu.cn").rstrip("/")
 
     def enabled(self) -> bool:
         return bool(self.config.get("enabled"))
 
     async def tenant_token(self) -> str:
-        if self.token and time.time() < self.token_expire_at - 60:
+        async with self.token_lock:
+            if self.token and time.time() < self.token_expire_at - 60:
+                return self.token
+            async with ClientSession() as session:
+                async with session.post(
+                    f"{self.api_base}/open-apis/auth/v3/tenant_access_token/internal",
+                    json={"app_id": self.config["app_id"], "app_secret": self.config["app_secret"]},
+                ) as response:
+                    data = await response.json()
+            if data.get("code") != 0:
+                raise RuntimeError(f"飞书 token 获取失败：{data}")
+            self.token = data["tenant_access_token"]
+            self.token_expire_at = time.time() + int(data.get("expire", 7200))
             return self.token
-        async with ClientSession() as session:
-            async with session.post(
-                "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
-                json={"app_id": self.config["app_id"], "app_secret": self.config["app_secret"]},
-            ) as response:
-                data = await response.json()
-        if data.get("code") != 0:
-            raise RuntimeError(f"飞书 token 获取失败：{data}")
-        self.token = data["tenant_access_token"]
-        self.token_expire_at = time.time() + int(data.get("expire", 7200))
-        return self.token
 
-    async def send_text(self, open_id: str, text: str) -> None:
-        if not self.enabled() or not open_id:
+    def is_allowed(self, open_id: str, chat_id: str = "") -> bool:
+        users = self.config.get("allowed_open_ids") or []
+        chats = self.config.get("allowed_chat_ids") or []
+        if isinstance(users, str):
+            users = [item.strip() for item in users.split(",") if item.strip()]
+        if isinstance(chats, str):
+            chats = [item.strip() for item in chats.split(",") if item.strip()]
+        if not users and not chats:
+            return True
+        if users and "*" not in users and open_id not in users:
+            return False
+        if chat_id:
+            return not chats or "*" in chats or chat_id in chats
+        return not chats
+
+    async def send_message(self, receive_id: str, receive_id_type: str, msg_type: str, content: dict[str, Any]) -> None:
+        if not self.enabled() or not receive_id:
             return
         token = await self.tenant_token()
         async with ClientSession(headers={"Authorization": f"Bearer {token}"}) as session:
             async with session.post(
-                "https://open.feishu.cn/open-apis/im/v1/messages",
-                params={"receive_id_type": "open_id"},
-                json={"receive_id": open_id, "msg_type": "text", "content": json.dumps({"text": text}, ensure_ascii=False)},
+                f"{self.api_base}/open-apis/im/v1/messages",
+                params={"receive_id_type": receive_id_type},
+                json={"receive_id": receive_id, "msg_type": msg_type, "content": json.dumps(content, ensure_ascii=False)},
             ) as response:
-                data = await response.json()
-        if data.get("code") != 0:
-            raise RuntimeError(f"飞书消息发送失败：{data}")
+                data = await response.json(content_type=None)
+        if response.status not in (200, 201) or data.get("code") != 0:
+            raise RuntimeError(f"飞书消息发送失败：HTTP {response.status} {data}")
+
+    async def send_text(self, open_id: str, text: str) -> None:
+        await self.send_message(open_id, "open_id", "text", {"text": text})
+
+    async def send_card(self, receive_id: str, receive_id_type: str, card: dict[str, Any]) -> None:
+        await self.send_message(receive_id, receive_id_type, "interactive", card)
 
 
 class VoteService:
@@ -727,6 +753,76 @@ class VoteService:
         self.default_candidates = candidates_from_config(config.get("vote", {}).get("candidates", []))
         self.default_policy = config.get("vote", {}).get("multi_candidate_policy", "all")
         self.user_selection: dict[str, str] = {}
+        self.feishu_connection: Any = None
+
+    def start_feishu_connection(self, loop: asyncio.AbstractEventLoop) -> bool:
+        try:
+            from server.feishu_ws import FeishuLongConnection
+        except ModuleNotFoundError:
+            from feishu_ws import FeishuLongConnection
+
+        self.feishu_connection = FeishuLongConnection(self.config.get("feishu", {}), self)
+        return self.feishu_connection.start(loop)
+
+    def feishu_card(self, open_id: str, notice: str = "") -> dict[str, Any]:
+        public_url = str(self.config.get("feishu", {}).get("public_results_url") or "")
+        return build_control_card(self.store.public_state(), self.user_selection.get(open_id), notice, public_url)
+
+    async def handle_feishu_text(
+        self,
+        text: str,
+        open_id: str,
+        chat_id: str,
+        receive_id: str,
+        receive_id_type: str,
+    ) -> None:
+        if not self.feishu.is_allowed(open_id, chat_id):
+            await self.feishu.send_card(receive_id, receive_id_type, build_control_card(self.store.public_state(), notice="无操作权限。"))
+            return
+        normalized = normalize(text)
+        if normalized in {"菜单", "卡片", "控制台", "/menu"}:
+            reply = "控制卡片已刷新。"
+        else:
+            reply = await self.handle_command(normalized, open_id)
+        await self.feishu.send_card(receive_id, receive_id_type, self.feishu_card(open_id, reply))
+
+    async def handle_feishu_card_action(self, action: str, open_id: str, chat_id: str, option: str = "") -> dict[str, Any]:
+        if not self.feishu.is_allowed(open_id, chat_id):
+            return build_control_card(self.store.public_state(), notice="无操作权限。")
+        notice = "状态已刷新。"
+        try:
+            if action == "show_rounds":
+                return build_round_list_card(self.store.public_state(), self.user_selection.get(open_id))
+            if action == "control":
+                return self.feishu_card(open_id)
+            if action == "select_round":
+                meta = self.store.find_round(option)
+                if not meta:
+                    notice = "找不到所选场次。"
+                else:
+                    self.user_selection[open_id] = meta.id
+                    notice = f"已切换到：{meta.name}"
+            elif action == "start_default":
+                if self.store.active_round_id:
+                    notice = "已有场次正在采集，请先结束本轮。"
+                else:
+                    name = f"第 {len(self.store.round_order) + 1} 轮"
+                    meta = await self.start_round(name)
+                    self.user_selection[open_id] = meta.id
+                    notice = f"已开始：{meta.activity} / {meta.name}"
+            elif action == "end_round":
+                meta = await self.end_round(publish=True)
+                notice = "当前没有进行中的场次。" if not meta else f"已结束并发布粗略结果：{meta.name}"
+                if meta:
+                    self.user_selection[open_id] = meta.id
+            elif action == "publish_rough":
+                url = await self.publisher.publish(force=True, result_kind="rough")
+                notice = f"粗略结果发布完成：{url}"
+            elif action != "refresh":
+                notice = "未识别的卡片操作。"
+        except Exception as exc:
+            notice = f"操作失败：{exc}"
+        return self.feishu_card(open_id, notice)
 
     async def start_round(self, name: str, url: str | None = None, activity: str | None = None) -> RoundMeta:
         if self.store.active_round_id:
@@ -854,7 +950,15 @@ def create_app(service: VoteService) -> web.Application:
         return web.FileResponse(webui_dir / "index.html")
 
     async def health(_: web.Request) -> web.Response:
-        return web.json_response({"ok": True, "collectorRunning": service.collector.running(), "activeRoundId": service.store.active_round_id})
+        feishu_thread = getattr(service.feishu_connection, "thread", None)
+        return web.json_response({
+            "ok": True,
+            "collectorRunning": service.collector.running(),
+            "activeRoundId": service.store.active_round_id,
+            "feishuEnabled": service.feishu.enabled(),
+            "feishuConnectionMode": service.config.get("feishu", {}).get("connection_mode", "websocket"),
+            "feishuWorkerAlive": bool(feishu_thread and feishu_thread.is_alive()),
+        })
 
     async def precise_result_doc(_: web.Request) -> web.FileResponse:
         return web.FileResponse(precise_doc, headers={"Content-Type": "text/markdown; charset=utf-8"})
@@ -904,22 +1008,38 @@ def create_app(service: VoteService) -> web.Application:
     async def feishu_events(request: web.Request) -> web.Response:
         body = await request.json()
         token = service.config.get("feishu", {}).get("verification_token")
-        if token and body.get("token") and body.get("token") != token:
+        supplied_token = body.get("token") or body.get("header", {}).get("token") or body.get("event", {}).get("token")
+        if token and supplied_token != token:
             return web.json_response({"error": "invalid token"}, status=403)
         if body.get("type") == "url_verification":
             return web.json_response({"challenge": body.get("challenge")})
         header = body.get("header", {})
         event = body.get("event", {})
+        if header.get("event_type") == "card.action.trigger" or body.get("type") == "card.action.trigger":
+            action = event.get("action", {})
+            value = action.get("value") or {}
+            operator = event.get("operator") or {}
+            context = event.get("context") or {}
+            card = await service.handle_feishu_card_action(
+                str(value.get("action") or ""),
+                str(operator.get("open_id") or ""),
+                str(context.get("open_chat_id") or ""),
+                str(action.get("option") or ""),
+            )
+            return web.json_response({"card": {"type": "raw", "data": card}}, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
         if header.get("event_type") not in {"im.message.receive_v1", None}:
             return web.json_response({"ok": True})
         message = event.get("message", {})
         if message.get("message_type") != "text":
             return web.json_response({"ok": True})
         content = json.loads(message.get("content") or "{}")
-        text = content.get("text", "")
+        text = re.sub(r"@_user_\d+\s*", "", content.get("text", "")).strip()
         open_id = event.get("sender", {}).get("sender_id", {}).get("open_id", "")
-        reply = await service.handle_command(text, open_id)
-        await service.feishu.send_text(open_id, reply)
+        chat_id = message.get("chat_id", "")
+        chat_type = message.get("chat_type", "")
+        receive_id = chat_id if chat_type == "group" else open_id
+        receive_id_type = "chat_id" if chat_type == "group" else "open_id"
+        await service.handle_feishu_text(text, open_id, chat_id, receive_id, receive_id_type)
         return web.json_response({"ok": True})
 
     app.router.add_get("/", webui_index)
@@ -941,12 +1061,15 @@ async def amain() -> None:
     args = parser.parse_args()
     config = json.loads(Path(args.config).read_text(encoding="utf-8"))
     service = VoteService(config)
+    feishu_ws_started = service.start_feishu_connection(asyncio.get_running_loop())
     app = create_app(service)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, config.get("listen", {}).get("host", "0.0.0.0"), int(config.get("listen", {}).get("port", 8080)))
     await site.start()
     print(f"vote server listening on {config.get('listen', {}).get('host', '0.0.0.0')}:{config.get('listen', {}).get('port', 8080)}", flush=True)
+    if feishu_ws_started:
+        print("feishu bot connected with WebSocket long connection", flush=True)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
