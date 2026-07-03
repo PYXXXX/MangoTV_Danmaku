@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>弹幕票仓 · 实时大屏</title>
+    <link rel="stylesheet" href="dashboard.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div><p>MGTV LIVE VOTE</p><h1>实时票仓</h1></div>
+        <div class="header-controls">
+          <select id="sessionSelect" aria-label="切换场次"><option>等待场次</option></select>
+          <div class="live"><i></i><span id="status">等待场次</span></div>
+        </div>
+      </header>
+      <section class="metrics">
+        <div><span>弹幕样本</span><strong id="messages">0</strong></div>
+        <div><span>有效计票</span><strong id="votes">0</strong></div>
+        <div><span>语义待审</span><strong id="reviews">0</strong></div>
+      </section>
+      <section id="ranking" class="ranking"></section>
+      <footer><span id="pageTitle">尚未连接直播页面</span><time id="updated">--:--:--</time></footer>
+    </main>
+    <script src="dashboard.js"></script>
+  </body>
+</html>

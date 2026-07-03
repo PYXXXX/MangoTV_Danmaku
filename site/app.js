@@ -1,0 +1,118 @@
+const elements = {
+  activitySelect: document.querySelector("#activitySelect"),
+  sessionSelect: document.querySelector("#sessionSelect"),
+  liveState: document.querySelector("#liveState"),
+  liveText: document.querySelector("#liveState span"),
+  program: document.querySelector("#program"),
+  messages: document.querySelector("#messages"),
+  votes: document.querySelector("#votes"),
+  reviews: document.querySelector("#reviews"),
+  ranking: document.querySelector("#ranking"),
+  updated: document.querySelector("#updated")
+};
+
+let publicState = null;
+let selectedActivity = null;
+let selectedSessionId = null;
+
+function formatCount(value) {
+  const number = Number(value || 0);
+  if (number < 1000) return number.toLocaleString("zh-CN");
+  const units = [
+    { value: 1_000_000_000, suffix: "b" },
+    { value: 1_000_000, suffix: "m" },
+    { value: 1_000, suffix: "k" }
+  ];
+  const unit = units.find((item) => number >= item.value);
+  const scaled = number / unit.value;
+  const digits = scaled < 10 ? 1 : 0;
+  return scaled.toFixed(digits).replace(/\.0$/, "") + unit.suffix;
+}
+
+function renderRanking(session) {
+  const rows = (session.candidates || [])
+    .map((candidate) => ({ ...candidate, count: session.voteCounts?.[candidate.id] || 0 }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "zh-CN"));
+  const max = Math.max(1, ...rows.map((item) => item.count));
+  const total = rows.reduce((sum, item) => sum + item.count, 0);
+  elements.ranking.replaceChildren(...rows.map((item, index) => {
+    const row = document.createElement("article"); row.className = "row";
+    const rank = document.createElement("span"); rank.className = "rank"; rank.textContent = String(index + 1).padStart(2, "0");
+    const name = document.createElement("span"); name.className = "name"; name.textContent = item.name;
+    const track = document.createElement("div"); track.className = "track";
+    const bar = document.createElement("div"); bar.className = "bar"; bar.style.width = `${(item.count / max) * 100}%`; track.append(bar);
+    const count = document.createElement("strong"); count.className = "count"; count.textContent = formatCount(item.count); count.title = item.count.toLocaleString("zh-CN");
+    row.append(rank, name, track, count);
+    return row;
+  }));
+  return total;
+}
+
+function render() {
+  const sessions = publicState?.sessions || [];
+  if (!sessions.length) return;
+  const activities = Array.from(new Set(sessions.map((item) => item.activity || "未分类活动")));
+  if (!selectedActivity || !activities.includes(selectedActivity)) {
+    const active = sessions.find((item) => item.id === publicState.activeSessionId);
+    selectedActivity = active?.activity || activities[0];
+  }
+  elements.activitySelect.disabled = false;
+  elements.activitySelect.replaceChildren(...activities.map((activity) => {
+    const option = document.createElement("option");
+    option.value = activity;
+    option.textContent = activity;
+    option.selected = activity === selectedActivity;
+    return option;
+  }));
+  const filtered = sessions.filter((item) => (item.activity || "未分类活动") === selectedActivity);
+  const session = filtered.find((item) => item.id === selectedSessionId)
+    || filtered.find((item) => item.id === publicState.activeSessionId)
+    || filtered[0];
+  if (!session) return;
+  selectedSessionId = session.id;
+  elements.sessionSelect.disabled = false;
+  elements.sessionSelect.replaceChildren(...filtered.map((item) => {
+    const option = document.createElement("option");
+    option.value = item.id;
+    option.textContent = `${item.status === "running" ? "● " : ""}${item.name}`;
+    option.selected = item.id === selectedSessionId;
+    return option;
+  }));
+  const total = renderRanking(session);
+  const active = session.status === "running";
+  elements.liveState.classList.toggle("active", active);
+  elements.liveText.textContent = active ? "LIVE · 本轮进行中" : "本轮已结束";
+  elements.program.textContent = `${session.activity || "未分类活动"} / ${session.name}${session.pageTitle ? ` · ${session.pageTitle}` : ""}`;
+  elements.messages.textContent = formatCount(session.messageCount);
+  elements.messages.title = Number(session.messageCount || 0).toLocaleString("zh-CN");
+  elements.votes.textContent = formatCount(total);
+  elements.votes.title = total.toLocaleString("zh-CN");
+  elements.reviews.textContent = formatCount(session.reviewCount);
+  elements.reviews.title = Number(session.reviewCount || 0).toLocaleString("zh-CN");
+  elements.updated.textContent = `数据发布于 ${new Date(publicState.publishedAt).toLocaleString("zh-CN", { hour12: false })}`;
+}
+
+async function load() {
+  try {
+    const response = await fetch(`./data/results.json?t=${Date.now()}`, { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    publicState = await response.json();
+    render();
+  } catch (error) {
+    elements.liveText.textContent = "数据暂不可用";
+    elements.updated.textContent = `读取失败：${error.message}`;
+  }
+}
+
+elements.sessionSelect.addEventListener("change", () => {
+  selectedSessionId = elements.sessionSelect.value;
+  render();
+});
+elements.activitySelect.addEventListener("change", () => {
+  selectedActivity = elements.activitySelect.value;
+  selectedSessionId = null;
+  render();
+});
+
+load();
+setInterval(load, 30000);

@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "芒果直播弹幕票仓",
+  "version": "0.2.0",
+  "description": "采集芒果 TV 直播热聊，实时关键词计票并导出 JSONL 供离线语义清洗。",
+  "permissions": ["activeTab", "storage", "downloads", "unlimitedStorage"],
+  "host_permissions": ["https://www.mgtv.com/*", "https://api.github.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "弹幕票仓",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.mgtv.com/z/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["dashboard.html", "dashboard.css", "dashboard.js"],
+      "matches": ["https://www.mgtv.com/*"]
+    }
+  ]
+}

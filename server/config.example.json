@@ -1,0 +1,45 @@
+{
+  "listen": {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "public_base_url": "https://your-domain.example.com"
+  },
+  "mgtv": {
+    "url": "https://www.mgtv.com/z/1001668/5366.html?fpa=12437&fpos&lastp=ch_home&_source_=B",
+    "history_api": "https://lb.bz.mgtv.com/get_history",
+    "flag": "liveshow",
+    "poll_seconds": 2.0,
+    "reconnect_seconds": 5,
+    "count_initial_history": false,
+    "dedup_hot_cache_size": 200000,
+    "dedup_max_records": 100000000,
+    "dedup_db_path": "server/data/fingerprints.sqlite3"
+  },
+  "vote": {
+    "activity": "歌手 2026",
+    "multi_candidate_policy": "all",
+    "candidates": [
+      { "name": "张远", "aliases": ["张远", "远远"] },
+      { "name": "窦靖童", "aliases": ["窦靖童", "童童"] },
+      { "name": "陈楚生", "aliases": ["陈楚生", "陈老师"] },
+      { "name": "妮达", "aliases": ["妮达"] }
+    ]
+  },
+  "storage": {
+    "directory": "server/data"
+  },
+  "github": {
+    "enabled": false,
+    "owner": "your-github-owner",
+    "repo": "MangoTV_Danmaku",
+    "branch": "main",
+    "path": "site/data/results.json",
+    "token": "github_pat_xxx"
+  },
+  "feishu": {
+    "enabled": false,
+    "app_id": "cli_xxx",
+    "app_secret": "xxx",
+    "verification_token": "xxx"
+  }
+}

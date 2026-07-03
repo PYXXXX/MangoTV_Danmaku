@@ -1,0 +1,885 @@
+#!/usr/bin/env python3
+"""Server-side MGTV danmaku vote collector with Feishu remote control.
+
+This service intentionally publishes only aggregate vote results. Raw danmaku
+messages are stored locally as JSONL for audit/offline cleaning.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import base64
+import hashlib
+import json
+import re
+import secrets
+import signal
+import sqlite3
+import time
+import unicodedata
+from collections import OrderedDict
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from aiohttp import ClientSession, web
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def normalize(text: str) -> str:
+    text = unicodedata.normalize("NFKC", str(text or ""))
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def safe_id() -> str:
+    return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
+
+
+BEIJING_TZ = ZoneInfo("Asia/Shanghai")
+
+
+def parse_iso(value: str | None) -> datetime:
+    if not value:
+        return datetime.now(timezone.utc)
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def format_beijing_range(start: str, end: str) -> str:
+    start_dt = parse_iso(start).astimezone(BEIJING_TZ)
+    end_dt = parse_iso(end).astimezone(BEIJING_TZ)
+    return f"{start_dt:%Y%m%d %H:%M:%S}-{end_dt:%Y%m%d %H:%M:%S}"
+
+
+class FingerprintCache:
+    """Small in-memory LRU cache for hot duplicate checks.
+
+    The full exact-ish dedup index lives in SQLite. This cache only avoids hitting
+    SQLite for common near-term duplicates from repeated history snapshots.
+    """
+
+    def __init__(self, max_size: int = 200_000):
+        self.max_size = max(1, int(max_size))
+        self.items: OrderedDict[bytes, None] = OrderedDict()
+
+    def clear(self) -> None:
+        self.items.clear()
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def contains(self, key: bytes) -> bool:
+        if key not in self.items:
+            return False
+        self.items.move_to_end(key)
+        return True
+
+    def add(self, key: bytes) -> None:
+        self.items[key] = None
+        self.items.move_to_end(key)
+        while len(self.items) > self.max_size:
+            self.items.popitem(last=False)
+
+
+class PersistentDeduper:
+    """SQLite-backed deduper with bounded memory and a large disk cap.
+
+    At the requested 100M scale a Python set would consume many GB of memory.
+    This class keeps only a hot LRU cache in RAM and stores fixed-size SHA-1
+    fingerprint keys in SQLite. The cap is enforced by insertion order.
+    """
+
+    def __init__(self, db_path: Path, hot_cache_size: int = 200_000, max_records: int = 100_000_000):
+        self.db_path = db_path
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.hot = FingerprintCache(hot_cache_size)
+        self.max_records = max(1, int(max_records))
+        self.seq = 0
+        self.insertions_since_prune = 0
+        self.conn = sqlite3.connect(self.db_path)
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA synchronous=NORMAL")
+        self.conn.execute("PRAGMA temp_store=MEMORY")
+        self.conn.execute("CREATE TABLE IF NOT EXISTS fingerprints (fp BLOB PRIMARY KEY, seq INTEGER NOT NULL)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_fingerprints_seq ON fingerprints(seq)")
+        row = self.conn.execute("SELECT COALESCE(MAX(seq), 0) FROM fingerprints").fetchone()
+        self.seq = int(row[0] or 0)
+
+    def clear(self) -> None:
+        self.hot.clear()
+        self.conn.execute("DELETE FROM fingerprints")
+        self.conn.commit()
+        self.seq = 0
+        self.insertions_since_prune = 0
+
+    def close(self) -> None:
+        self.conn.close()
+
+    def key_for(self, fingerprint: str) -> bytes:
+        return hashlib.sha1(fingerprint.encode("utf-8")).digest()
+
+    def seen_or_add(self, fingerprint: str) -> bool:
+        key = self.key_for(fingerprint)
+        if self.hot.contains(key):
+            return True
+        self.seq += 1
+        cursor = self.conn.execute("INSERT OR IGNORE INTO fingerprints(fp, seq) VALUES (?, ?)", (key, self.seq))
+        self.conn.commit()
+        self.hot.add(key)
+        if cursor.rowcount == 0:
+            return True
+        self.insertions_since_prune += 1
+        if self.insertions_since_prune >= 10_000:
+            self.prune()
+        return False
+
+    def prune(self) -> None:
+        self.insertions_since_prune = 0
+        row = self.conn.execute("SELECT COUNT(*) FROM fingerprints").fetchone()
+        count = int(row[0] or 0)
+        overflow = count - self.max_records
+        if overflow <= 0:
+            return
+        self.conn.execute(
+            "DELETE FROM fingerprints WHERE fp IN (SELECT fp FROM fingerprints ORDER BY seq ASC LIMIT ?)",
+            (overflow,),
+        )
+        self.conn.commit()
+
+
+@dataclass
+class Candidate:
+    id: str
+    name: str
+    aliases: list[str]
+
+
+@dataclass
+class RoundMeta:
+    id: str
+    activity: str
+    baseName: str
+    name: str
+    status: str
+    startedAt: str
+    updatedAt: str
+    stoppedAt: str | None
+    pageUrl: str
+    pageTitle: str
+    candidates: list[Candidate]
+    multiCandidatePolicy: str
+    messageCount: int = 0
+    reviewCount: int = 0
+    voteCounts: dict[str, int] = field(default_factory=dict)
+    sliceStartSeq: int = 1
+    sliceEndSeq: int | None = None
+    sliceStartTime: str = ""
+    sliceEndTime: str | None = None
+
+
+@dataclass
+class DanmakuMessage:
+    ts: str
+    nickname: str
+    content: str
+    matches: list[str]
+    votes: list[str]
+    needsReview: bool
+    url: str
+
+
+def candidates_from_config(items: list[dict[str, Any]]) -> list[Candidate]:
+    candidates: list[Candidate] = []
+    seen_aliases: dict[str, str] = {}
+    for index, item in enumerate(items, 1):
+        name = normalize(item.get("name", ""))
+        aliases = [normalize(alias) for alias in item.get("aliases", [])]
+        aliases = [alias for alias in aliases if alias]
+        if name and name not in aliases:
+            aliases.insert(0, name)
+        if not name or not aliases:
+            continue
+        candidate = Candidate(id=item.get("id") or f"c{index}", name=name, aliases=list(dict.fromkeys(aliases)))
+        for alias in candidate.aliases:
+            key = alias.casefold()
+            owner = seen_aliases.get(key)
+            if owner and owner != candidate.name:
+                raise ValueError(f"别名“{alias}”同时属于 {owner} 和 {candidate.name}")
+            seen_aliases[key] = candidate.name
+        candidates.append(candidate)
+    if not candidates:
+        raise ValueError("候选人列表为空")
+    return candidates
+
+
+class StateStore:
+    def __init__(self, directory: Path):
+        self.directory = directory
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.rounds_dir = self.directory / "rounds"
+        self.rounds_dir.mkdir(exist_ok=True)
+        self.raw_messages_path = self.directory / "raw_messages.jsonl"
+        self.meta_path = self.directory / "state.json"
+        self.lock = asyncio.Lock()
+        self.rounds: dict[str, RoundMeta] = {}
+        self.round_order: list[str] = []
+        self.active_round_id: str | None = None
+        self.global_seq = 0
+
+    def load(self) -> None:
+        if not self.meta_path.exists():
+            if self.raw_messages_path.exists():
+                self.global_seq = self._scan_last_seq()
+            return
+        raw = json.loads(self.meta_path.read_text(encoding="utf-8"))
+        self.active_round_id = raw.get("activeRoundId")
+        self.round_order = raw.get("roundOrder", [])
+        self.global_seq = int(raw.get("globalSeq") or self._scan_last_seq())
+        self.rounds = {}
+        for item in raw.get("rounds", []):
+            candidates = [Candidate(**candidate) for candidate in item.get("candidates", [])]
+            item.setdefault("activity", "未分类活动")
+            item.setdefault("baseName", item.get("name", "未命名场次"))
+            item.setdefault("sliceStartSeq", 1)
+            item.setdefault("sliceEndSeq", None if item.get("status") == "running" else self.global_seq)
+            item.setdefault("sliceStartTime", item.get("startedAt", ""))
+            item.setdefault("sliceEndTime", item.get("stoppedAt"))
+            payload = {**item, "candidates": candidates}
+            self.rounds[item["id"]] = RoundMeta(**payload)
+
+    def _scan_last_seq(self) -> int:
+        if not self.raw_messages_path.exists():
+            return 0
+        last_seq = 0
+        with self.raw_messages_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                last_seq = max(last_seq, int(item.get("seq") or 0))
+        return last_seq
+
+    async def save(self) -> None:
+        payload = {
+            "schemaVersion": 1,
+            "updatedAt": now_iso(),
+            "activeRoundId": self.active_round_id,
+            "globalSeq": self.global_seq,
+            "roundOrder": self.round_order,
+            "rounds": [asdict(self.rounds[round_id]) for round_id in self.round_order if round_id in self.rounds],
+        }
+        tmp = self.meta_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(self.meta_path)
+
+    async def create_round(self, activity: str, name: str, url: str, candidates: list[Candidate], policy: str) -> RoundMeta:
+        async with self.lock:
+            round_id = safe_id()
+            base_name = normalize(name) or f"第 {len(self.round_order) + 1} 轮"
+            started_at = now_iso()
+            meta = RoundMeta(
+                id=round_id,
+                activity=normalize(activity) or "未分类活动",
+                baseName=base_name,
+                name=base_name,
+                status="running",
+                startedAt=started_at,
+                updatedAt=started_at,
+                stoppedAt=None,
+                pageUrl=url,
+                pageTitle="",
+                candidates=candidates,
+                multiCandidatePolicy=policy,
+                voteCounts={candidate.id: 0 for candidate in candidates},
+                sliceStartSeq=self.global_seq + 1,
+                sliceEndSeq=None,
+                sliceStartTime=started_at,
+                sliceEndTime=None,
+            )
+            self.rounds[round_id] = meta
+            self.round_order.insert(0, round_id)
+            self.active_round_id = round_id
+            await self.save()
+            return meta
+
+    async def stop_active(self) -> RoundMeta | None:
+        async with self.lock:
+            if not self.active_round_id:
+                return None
+            meta = self.rounds.get(self.active_round_id)
+            if not meta:
+                return None
+            meta.status = "stopped"
+            meta.stoppedAt = now_iso()
+            meta.updatedAt = meta.stoppedAt
+            meta.sliceEndSeq = self.global_seq
+            meta.sliceEndTime = meta.stoppedAt
+            meta.name = f"{meta.baseName} · {format_beijing_range(meta.sliceStartTime, meta.sliceEndTime)}"
+            self.active_round_id = None
+            await self.save()
+            return meta
+
+    async def rename_round(self, round_id: str, name: str) -> RoundMeta:
+        async with self.lock:
+            meta = self.require_round(round_id)
+            meta.baseName = normalize(name) or meta.baseName
+            meta.name = (
+                f"{meta.baseName} · {format_beijing_range(meta.sliceStartTime, meta.sliceEndTime)}"
+                if meta.sliceEndTime
+                else meta.baseName
+            )
+            meta.updatedAt = now_iso()
+            await self.save()
+            return meta
+
+    def require_round(self, round_id: str) -> RoundMeta:
+        meta = self.rounds.get(round_id)
+        if not meta:
+            raise KeyError(f"找不到场次：{round_id}")
+        return meta
+
+    def find_round(self, query: str | None) -> RoundMeta | None:
+        if not query:
+            return self.rounds.get(self.active_round_id or "") or (self.rounds.get(self.round_order[0]) if self.round_order else None)
+        query = normalize(query)
+        if query in self.rounds:
+            return self.rounds[query]
+        for round_id in self.round_order:
+            meta = self.rounds[round_id]
+            if query in meta.name:
+                return meta
+        return None
+
+    async def append_message(self, round_id: str, message: DanmakuMessage) -> None:
+        async with self.lock:
+            meta = self.require_round(round_id)
+            self.global_seq += 1
+            seq = self.global_seq
+            meta.messageCount += 1
+            meta.reviewCount += 1 if message.needsReview else 0
+            for candidate_id in message.votes:
+                meta.voteCounts[candidate_id] = meta.voteCounts.get(candidate_id, 0) + 1
+            meta.updatedAt = now_iso()
+            record = {"type": "message", "seq": seq, "roundId": round_id, **asdict(message)}
+            line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+            with self.raw_messages_path.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+            with (self.rounds_dir / f"{round_id}.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+            await self.save()
+
+    def iter_slice_records(self, round_id: str):
+        meta = self.require_round(round_id)
+        start = meta.sliceStartSeq
+        end = meta.sliceEndSeq if meta.sliceEndSeq is not None else self.global_seq
+        if not self.raw_messages_path.exists():
+            return
+        with self.raw_messages_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                seq = int(item.get("seq") or 0)
+                if start <= seq <= end and item.get("roundId") == round_id:
+                    yield item
+
+    def export_round_jsonl(self, round_id: str) -> str:
+        meta = self.require_round(round_id)
+        lines = [json.dumps({"type": "meta", **asdict(meta)}, ensure_ascii=False, separators=(",", ":"))]
+        lines.extend(json.dumps(record, ensure_ascii=False, separators=(",", ":")) for record in self.iter_slice_records(round_id))
+        return "\n".join(lines) + "\n"
+
+    def public_state(self) -> dict[str, Any]:
+        sessions = []
+        for round_id in self.round_order:
+            meta = self.rounds[round_id]
+            sessions.append({
+                "id": meta.id,
+                "activity": meta.activity,
+                "baseName": meta.baseName,
+                "name": meta.name,
+                "status": meta.status,
+                "startedAt": meta.startedAt,
+                "updatedAt": meta.updatedAt,
+                "stoppedAt": meta.stoppedAt,
+                "pageTitle": meta.pageTitle,
+                "candidates": [asdict(candidate) for candidate in meta.candidates],
+                "messageCount": meta.messageCount,
+                "reviewCount": meta.reviewCount,
+                "voteCounts": meta.voteCounts,
+                "sliceStartSeq": meta.sliceStartSeq,
+                "sliceEndSeq": meta.sliceEndSeq,
+                "sliceStartTime": meta.sliceStartTime,
+                "sliceEndTime": meta.sliceEndTime,
+            })
+        return {
+            "schemaVersion": 1,
+            "publishedAt": now_iso(),
+            "activeSessionId": self.active_round_id or (self.round_order[0] if self.round_order else None),
+            "sessions": sessions,
+        }
+
+
+class VoteEngine:
+    def __init__(self, store: StateStore):
+        self.store = store
+
+    def match(self, text: str, candidates: list[Candidate]) -> list[str]:
+        lowered = normalize(text).casefold()
+        return [
+            candidate.id
+            for candidate in candidates
+            if any(alias.casefold() in lowered for alias in candidate.aliases)
+        ]
+
+    async def ingest(self, round_id: str, raw: dict[str, Any]) -> DanmakuMessage | None:
+        meta = self.store.require_round(round_id)
+        content = normalize(raw.get("content", ""))
+        if not content:
+            return None
+        matches = self.match(content, meta.candidates)
+        needs_review = len(matches) > 1
+        votes = [] if (needs_review and meta.multiCandidatePolicy == "review") else matches
+        message = DanmakuMessage(
+            ts=raw.get("ts") or now_iso(),
+            nickname=normalize(raw.get("nickname", "")),
+            content=content,
+            matches=matches,
+            votes=votes,
+            needsReview=needs_review,
+            url=raw.get("url") or meta.pageUrl,
+        )
+        await self.store.append_message(round_id, message)
+        return message
+
+
+class GithubPublisher:
+    def __init__(self, config: dict[str, Any], store: StateStore):
+        self.config = config
+        self.store = store
+
+    async def publish(self, force: bool = False) -> str:
+        if not self.config.get("enabled"):
+            return "GitHub 同步未启用"
+        required = ["owner", "repo", "branch", "path", "token"]
+        missing = [key for key in required if not self.config.get(key)]
+        if missing:
+            raise RuntimeError(f"GitHub 配置缺失：{', '.join(missing)}")
+        owner = self.config["owner"]
+        repo = self.config["repo"]
+        branch = self.config.get("branch", "main")
+        path = str(self.config.get("path", "site/data/results.json")).lstrip("/")
+        token = self.config["token"]
+        encoded_path = "/".join(part for part in path.split("/"))
+        base = f"https://api.github.com/repos/{owner}/{repo}/contents/{encoded_path}"
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        async with ClientSession(headers=headers) as session:
+            sha = None
+            async with session.get(base, params={"ref": branch}) as response:
+                if response.status == 200:
+                    sha = (await response.json()).get("sha")
+                elif response.status != 404:
+                    raise RuntimeError(f"GitHub 查询失败：{response.status} {await response.text()}")
+            content = json.dumps(self.store.public_state(), ensure_ascii=False, indent=2) + "\n"
+            payload = {
+                "message": f"data: sync vote results {now_iso()}",
+                "branch": branch,
+                "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+            }
+            if sha:
+                payload["sha"] = sha
+            async with session.put(base, json=payload) as response:
+                if response.status not in (200, 201):
+                    raise RuntimeError(f"GitHub 发布失败：{response.status} {await response.text()}")
+                data = await response.json()
+        return data.get("commit", {}).get("html_url", "GitHub 发布成功")
+
+
+class MgtvCollector:
+    def __init__(self, config: dict[str, Any], engine: VoteEngine):
+        self.config = config
+        self.engine = engine
+        self.task: asyncio.Task[None] | None = None
+        self.stop_event = asyncio.Event()
+        self.round_id: str | None = None
+        self.url: str | None = None
+        self.room_id: str | None = None
+        self.fingerprints = PersistentDeduper(
+            db_path=Path(config.get("dedup_db_path", "server/data/fingerprints.sqlite3")),
+            hot_cache_size=int(config.get("dedup_hot_cache_size", 200_000)),
+            max_records=int(config.get("dedup_max_records", 100_000_000)),
+        )
+
+    def running(self) -> bool:
+        return self.task is not None and not self.task.done()
+
+    async def start(self, round_id: str, url: str) -> None:
+        await self.stop()
+        self.round_id = round_id
+        self.url = url
+        self.room_id = self.resolve_room_id(url)
+        self.fingerprints.clear()
+        self.stop_event = asyncio.Event()
+        self.task = asyncio.create_task(self._run_forever(), name=f"mgtv-collector-{round_id}")
+
+    async def stop(self) -> None:
+        if not self.task:
+            return
+        self.stop_event.set()
+        try:
+            await asyncio.wait_for(self.task, timeout=10)
+        except asyncio.TimeoutError:
+            self.task.cancel()
+        finally:
+            self.task = None
+
+    def fingerprint(self, raw: dict[str, Any]) -> str:
+        message_id = raw.get("message_id") or raw.get("messageId") or raw.get("msg_id") or raw.get("mid") or raw.get("id")
+        if message_id:
+            return f"id:{normalize(message_id)}"
+        # The public history endpoint currently has no stable message id/cursor.
+        # User id + nickname + content gives us a useful anti-dup/anti-spam key.
+        key = f"{normalize(raw.get('user_id', raw.get('u', '')))}\n{normalize(raw.get('nickname', raw.get('n', '')))}\n{normalize(raw.get('content', raw.get('c', '')))}"
+        return "sha1:" + hashlib.sha1(key.encode("utf-8")).hexdigest()
+
+    def resolve_room_id(self, url: str) -> str:
+        flag = self.config.get("flag", "liveshow")
+        explicit = self.config.get("room_id")
+        if explicit:
+            return explicit
+        camera_id = self.config.get("camera_id")
+        if not camera_id:
+            match = re.search(r"/z/[^/]+/([^/?#]+)", url)
+            if match:
+                camera_id = match.group(1).removesuffix(".html")
+        if not camera_id:
+            raise ValueError("无法从直播 URL 解析 cameraId，请在配置中设置 mgtv.camera_id 或 mgtv.room_id")
+        return f"{flag}-{camera_id}"
+
+    async def _run_forever(self) -> None:
+        reconnect_seconds = float(self.config.get("reconnect_seconds", 5))
+        while not self.stop_event.is_set():
+            try:
+                await self._run_once()
+            except Exception as exc:  # noqa: BLE001 - collector must self-heal
+                print(f"[collector] reconnect after error: {exc}", flush=True)
+                try:
+                    await asyncio.wait_for(self.stop_event.wait(), timeout=reconnect_seconds)
+                except asyncio.TimeoutError:
+                    pass
+
+    async def _run_once(self) -> None:
+        assert self.url and self.round_id and self.room_id
+        api = self.config.get("history_api", "https://lb.bz.mgtv.com/get_history")
+        poll_seconds = float(self.config.get("poll_seconds", 2.0))
+        count_initial = bool(self.config.get("count_initial_history", False))
+        first_batch = True
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/537.36 Chrome Safari/537.36",
+            "Referer": "https://www.mgtv.com/",
+            "Origin": "https://www.mgtv.com",
+        }
+        async with ClientSession(headers=headers) as session:
+            while not self.stop_event.is_set():
+                async with session.get(api, params={"room_id": self.room_id}, timeout=10) as response:
+                    if response.status != 200:
+                        raise RuntimeError(f"history api HTTP {response.status}: {await response.text()}")
+                    payload = await response.json(content_type=None)
+                if isinstance(payload, dict) and payload.get("code") not in (None, 0, 200):
+                    raise RuntimeError(f"history api code={payload.get('code')}: {payload.get('msg')}")
+                items = self.extract_history_items(payload)
+                # Oldest first makes the local JSONL easier to audit.
+                for item in reversed(items):
+                    raw = {
+                        "ts": now_iso(),
+                        "message_id": item.get("messageId") or item.get("message_id") or item.get("msg_id") or item.get("mid") or item.get("id") or "",
+                        "user_id": item.get("u", ""),
+                        "nickname": item.get("n", ""),
+                        "content": item.get("c") or item.get("tp") or "",
+                        "url": self.url,
+                    }
+                    if self.fingerprints.seen_or_add(self.fingerprint(raw)):
+                        continue
+                    if first_batch and not count_initial:
+                        continue
+                    await self.engine.ingest(self.round_id, raw)
+                first_batch = False
+                try:
+                    await asyncio.wait_for(self.stop_event.wait(), timeout=poll_seconds)
+                except asyncio.TimeoutError:
+                    pass
+
+    def extract_history_items(self, payload: Any) -> list[dict[str, Any]]:
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if not isinstance(payload, dict):
+            return []
+        data = payload.get("data")
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if isinstance(data, dict):
+            merged: list[dict[str, Any]] = []
+            for key in ("barrage", "backBarrage", "list", "data"):
+                value = data.get(key)
+                if isinstance(value, list):
+                    merged.extend(item for item in value if isinstance(item, dict))
+            return merged
+        return []
+
+
+class FeishuBot:
+    def __init__(self, config: dict[str, Any]):
+        self.config = config
+        self.token: str | None = None
+        self.token_expire_at = 0.0
+
+    def enabled(self) -> bool:
+        return bool(self.config.get("enabled"))
+
+    async def tenant_token(self) -> str:
+        if self.token and time.time() < self.token_expire_at - 60:
+            return self.token
+        async with ClientSession() as session:
+            async with session.post(
+                "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+                json={"app_id": self.config["app_id"], "app_secret": self.config["app_secret"]},
+            ) as response:
+                data = await response.json()
+        if data.get("code") != 0:
+            raise RuntimeError(f"飞书 token 获取失败：{data}")
+        self.token = data["tenant_access_token"]
+        self.token_expire_at = time.time() + int(data.get("expire", 7200))
+        return self.token
+
+    async def send_text(self, open_id: str, text: str) -> None:
+        if not self.enabled() or not open_id:
+            return
+        token = await self.tenant_token()
+        async with ClientSession(headers={"Authorization": f"Bearer {token}"}) as session:
+            async with session.post(
+                "https://open.feishu.cn/open-apis/im/v1/messages",
+                params={"receive_id_type": "open_id"},
+                json={"receive_id": open_id, "msg_type": "text", "content": json.dumps({"text": text}, ensure_ascii=False)},
+            ) as response:
+                data = await response.json()
+        if data.get("code") != 0:
+            raise RuntimeError(f"飞书消息发送失败：{data}")
+
+
+class VoteService:
+    def __init__(self, config: dict[str, Any]):
+        self.config = config
+        self.store = StateStore(Path(config.get("storage", {}).get("directory", "server/data")))
+        self.store.load()
+        self.engine = VoteEngine(self.store)
+        self.publisher = GithubPublisher(config.get("github", {}), self.store)
+        self.collector = MgtvCollector(config.get("mgtv", {}), self.engine)
+        self.feishu = FeishuBot(config.get("feishu", {}))
+        self.default_candidates = candidates_from_config(config.get("vote", {}).get("candidates", []))
+        self.default_policy = config.get("vote", {}).get("multi_candidate_policy", "all")
+        self.user_selection: dict[str, str] = {}
+
+    async def start_round(self, name: str, url: str | None = None, activity: str | None = None) -> RoundMeta:
+        if self.store.active_round_id:
+            await self.end_round(publish=True)
+        url = url or self.config.get("mgtv", {}).get("url")
+        activity = activity or self.config.get("vote", {}).get("activity") or "未分类活动"
+        meta = await self.store.create_round(activity, name, url, self.default_candidates, self.default_policy)
+        await self.collector.start(meta.id, url)
+        return meta
+
+    async def end_round(self, publish: bool = True) -> RoundMeta | None:
+        await self.collector.stop()
+        meta = await self.store.stop_active()
+        if publish and meta:
+            await self.publisher.publish(force=True)
+        return meta
+
+    def result_text(self, meta: RoundMeta | None = None) -> str:
+        meta = meta or self.store.find_round(None)
+        if not meta:
+            return "暂无场次。"
+        rows = sorted(
+            ((candidate.name, meta.voteCounts.get(candidate.id, 0)) for candidate in meta.candidates),
+            key=lambda row: (-row[1], row[0]),
+        )
+        lines = [f"【{meta.activity} / {meta.name}】{meta.status}", f"弹幕样本：{meta.messageCount}，语义待审：{meta.reviewCount}"]
+        lines.extend(f"{index}. {name}：{count}" for index, (name, count) in enumerate(rows, 1))
+        return "\n".join(lines)
+
+    def round_list_text(self) -> str:
+        if not self.store.round_order:
+            return "暂无场次。"
+        lines = ["场次列表："]
+        for index, round_id in enumerate(self.store.round_order, 1):
+            meta = self.store.rounds[round_id]
+            marker = "●" if meta.status == "running" else " "
+            lines.append(f"{index}. {marker} {meta.activity} / {meta.name}｜{meta.id}｜样本 {meta.messageCount}")
+        return "\n".join(lines)
+
+    async def handle_command(self, text: str, open_id: str = "") -> str:
+        text = normalize(text)
+        if not text or text in {"帮助", "help", "/help"}:
+            return (
+                "可用指令：\n"
+                "开始 <活动名>|<场次名> [直播URL]\n"
+                "结束\n"
+                "状态\n"
+                "结果 [场次名/ID]\n"
+                "场次\n"
+                "切换 <场次名/ID>\n"
+                "命名 <新名称>\n"
+                "发布\n"
+                "候选人"
+            )
+        if text.startswith("开始"):
+            rest = normalize(text[2:])
+            if not rest:
+                rest = f"第 {len(self.store.round_order) + 1} 轮"
+            parts = rest.split()
+            url = next((part for part in parts if part.startswith("http://") or part.startswith("https://")), None)
+            label = normalize(rest.replace(url or "", "")) or f"第 {len(self.store.round_order) + 1} 轮"
+            if "|" in label:
+                activity, name = (normalize(part) for part in label.split("|", 1))
+            else:
+                activity = self.config.get("vote", {}).get("activity") or "未分类活动"
+                name = label
+            meta = await self.start_round(name, url, activity)
+            self.user_selection[open_id] = meta.id
+            return f"已开始：{meta.activity} / {meta.name}\n{meta.pageUrl}"
+        if text == "结束":
+            meta = await self.end_round(publish=True)
+            return "没有正在进行的场次。" if not meta else f"已结束并发布：\n{self.result_text(meta)}"
+        if text == "状态":
+            active = self.store.rounds.get(self.store.active_round_id or "")
+            return f"采集器：{'运行中' if self.collector.running() else '未运行'}\n{self.result_text(active)}"
+        if text.startswith("结果"):
+            query = normalize(text[2:])
+            meta = self.store.find_round(query) if query else self.store.find_round(self.user_selection.get(open_id))
+            return self.result_text(meta)
+        if text == "场次":
+            return self.round_list_text()
+        if text.startswith("切换"):
+            query = normalize(text[2:])
+            meta = self.store.find_round(query)
+            if not meta:
+                return f"找不到场次：{query}"
+            self.user_selection[open_id] = meta.id
+            return f"已切换查看：\n{self.result_text(meta)}"
+        if text.startswith("命名"):
+            name = normalize(text[2:])
+            if not name:
+                return "请发送：命名 <新名称>"
+            target_id = self.user_selection.get(open_id) or self.store.active_round_id or (self.store.round_order[0] if self.store.round_order else "")
+            meta = await self.store.rename_round(target_id, name)
+            await self.publisher.publish(force=True)
+            return f"已重命名：{meta.name}"
+        if text == "发布":
+            url = await self.publisher.publish(force=True)
+            return f"发布完成：{url}"
+        if text == "候选人":
+            return "\n".join(f"{candidate.name}：{', '.join(candidate.aliases)}" for candidate in self.default_candidates)
+        return "未识别指令。发送“帮助”查看用法。"
+
+
+def create_app(service: VoteService) -> web.Application:
+    app = web.Application()
+    webui_dir = Path(__file__).with_name("webui")
+
+    async def webui_index(_: web.Request) -> web.FileResponse:
+        return web.FileResponse(webui_dir / "index.html")
+
+    async def health(_: web.Request) -> web.Response:
+        return web.json_response({"ok": True, "collectorRunning": service.collector.running(), "activeRoundId": service.store.active_round_id})
+
+    async def results(_: web.Request) -> web.Response:
+        return web.json_response(service.store.public_state(), dumps=lambda data: json.dumps(data, ensure_ascii=False))
+
+    async def round_export(request: web.Request) -> web.Response:
+        round_id = request.match_info["round_id"]
+        try:
+            body = service.store.export_round_jsonl(round_id)
+        except KeyError as exc:
+            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.Response(
+            text=body,
+            content_type="application/x-ndjson",
+            headers={"Content-Disposition": f'attachment; filename="mgtv-round-{round_id}.jsonl"'},
+        )
+
+    async def command(request: web.Request) -> web.Response:
+        data = await request.json()
+        reply = await service.handle_command(data.get("text", ""))
+        return web.json_response({"reply": reply}, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+
+    async def feishu_events(request: web.Request) -> web.Response:
+        body = await request.json()
+        token = service.config.get("feishu", {}).get("verification_token")
+        if token and body.get("token") and body.get("token") != token:
+            return web.json_response({"error": "invalid token"}, status=403)
+        if body.get("type") == "url_verification":
+            return web.json_response({"challenge": body.get("challenge")})
+        header = body.get("header", {})
+        event = body.get("event", {})
+        if header.get("event_type") not in {"im.message.receive_v1", None}:
+            return web.json_response({"ok": True})
+        message = event.get("message", {})
+        if message.get("message_type") != "text":
+            return web.json_response({"ok": True})
+        content = json.loads(message.get("content") or "{}")
+        text = content.get("text", "")
+        open_id = event.get("sender", {}).get("sender_id", {}).get("open_id", "")
+        reply = await service.handle_command(text, open_id)
+        await service.feishu.send_text(open_id, reply)
+        return web.json_response({"ok": True})
+
+    app.router.add_get("/", webui_index)
+    app.router.add_get("/admin", webui_index)
+    app.router.add_static("/webui", webui_dir)
+    app.router.add_get("/healthz", health)
+    app.router.add_get("/api/results.json", results)
+    app.router.add_get("/api/rounds/{round_id}.jsonl", round_export)
+    app.router.add_post("/api/command", command)
+    app.router.add_post("/feishu/events", feishu_events)
+    return app
+
+
+async def amain() -> None:
+    parser = argparse.ArgumentParser(description="MGTV server-side danmaku vote collector")
+    parser.add_argument("--config", default="server/config.example.json")
+    args = parser.parse_args()
+    config = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    service = VoteService(config)
+    app = create_app(service)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, config.get("listen", {}).get("host", "0.0.0.0"), int(config.get("listen", {}).get("port", 8080)))
+    await site.start()
+    print(f"vote server listening on {config.get('listen', {}).get('host', '0.0.0.0')}:{config.get('listen', {}).get('port', 8080)}", flush=True)
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop.set)
+    await stop.wait()
+    await service.collector.stop()
+    service.collector.fingerprints.close()
+    await runner.cleanup()
+
+
+if __name__ == "__main__":
+    asyncio.run(amain())

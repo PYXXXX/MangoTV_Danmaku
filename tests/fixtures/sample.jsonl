@@ -1,0 +1,9 @@
+{"type":"meta","id":"sample-session","candidates":[{"id":"c1","name":"张远","aliases":["张远","远远"]},{"id":"c2","name":"窦靖童","aliases":["窦靖童","童童"]},{"id":"c3","name":"陈楚生","aliases":["陈楚生","陈老师"]}],"messageCount":7}
+{"type":"message","ts":"2026-07-03T10:00:00Z","nickname":"甲","content":"张远留下来"}
+{"type":"message","ts":"2026-07-03T10:00:01Z","nickname":"乙","content":"童童加油！！！"}
+{"type":"message","ts":"2026-07-03T10:00:02Z","nickname":"丙","content":"别投张远"}
+{"type":"message","ts":"2026-07-03T10:00:03Z","nickname":"丁","content":"张远还是窦靖童？"}
+{"type":"message","ts":"2026-07-03T10:00:04Z","nickname":"戊","content":"谢谢陈老师们"}
+{"type":"message","ts":"2026-07-03T10:00:05Z","nickname":"己","content":"今天天气不错"}
+{"type":"message","ts":"2026-07-03T10:00:06Z","nickname":"庚","content":"窦靖童窦靖童窦靖童"}
+

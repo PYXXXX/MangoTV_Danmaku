@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>直播投票统计 · 管理台</title>
+    <link rel="stylesheet" href="/webui/styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="kicker">LIVE VOTE CONTROL</p>
+          <h1>直播投票统计</h1>
+          <p id="subtitle" class="program">等待服务器状态</p>
+        </div>
+        <div class="controls">
+          <label for="activitySelect">活动</label>
+          <select id="activitySelect" disabled><option>暂无活动</option></select>
+          <label for="roundSelect">投票场次</label>
+          <select id="roundSelect" disabled><option>暂无场次</option></select>
+          <div id="liveState" class="live-state"><i></i><span>读取中</span></div>
+        </div>
+      </header>
+      <section class="command-grid" aria-label="场次控制">
+        <form id="startForm" class="panel">
+          <h2>开始新一轮</h2>
+          <label for="activityName">活动名称</label>
+          <input id="activityName" type="text" placeholder="例如：歌手 2026" />
+          <label for="roundName">场次名称</label>
+          <input id="roundName" type="text" placeholder="例如：第一轮 · 在线观众选择" />
+          <label for="liveUrl">直播 URL（可选）</label>
+          <input id="liveUrl" type="url" placeholder="默认使用 server/config.json 中的 mgtv.url" />
+          <button class="primary" type="submit">开始采集</button>
+        </form>
+        <section class="panel">
+          <h2>当前操作</h2>
+          <div class="button-row">
+            <button id="endRound" class="danger" type="button">结束本轮</button>
+            <button id="publish" class="secondary" type="button">发布结果</button>
+          </div>
+          <label for="renameInput">重命名所选场次</label>
+          <div class="inline-row">
+            <input id="renameInput" type="text" placeholder="输入新名称" />
+            <button id="rename" class="secondary" type="button">重命名</button>
+          </div>
+          <div class="button-row lower">
+            <a id="downloadSlice" class="link-button disabled" href="#" download>导出切片 JSONL</a>
+            <button id="refresh" class="ghost" type="button">刷新</button>
+          </div>
+        </section>
+      </section>
+      <section class="metrics" aria-label="投票概览">
+        <div><span>弹幕样本</span><strong id="messages">0</strong></div>
+        <div><span>有效计票</span><strong id="votes">0</strong></div>
+        <div><span>语义待审</span><strong id="reviews">0</strong></div>
+      </section>
+      <section class="content-grid">
+        <section>
+          <div class="section-heading">
+            <h2>实时结果</h2>
+            <span id="updated">尚未同步</span>
+          </div>
+          <div id="ranking" class="ranking" aria-live="polite">
+            <div class="empty">结果将在这里显示</div>
+          </div>
+        </section>
+        <aside class="side-panel">
+          <div class="section-heading">
+            <h2>场次列表</h2>
+            <span id="roundCount">0 场</span>
+          </div>
+          <div id="roundList" class="round-list"></div>
+        </aside>
+      </section>
+      <section class="log-panel" aria-live="polite">
+        <div class="section-heading">
+          <h2>操作回执</h2>
+          <span>最近 20 条</span>
+        </div>
+        <pre id="log">管理台已就绪。</pre>
+      </section>
+      <footer>
+        <span>管理台仅面向运营使用；公开页面仍只展示聚合结果。</span>
+        <span>统计数据不代表湖南卫视 &amp; 芒果 TV 立场，仅供娱乐参考。</span>
+      </footer>
+    </main>
+    <script src="/webui/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="芒果 TV 直播观众投票公开结果" />
+    <title>直播观众投票统计</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="kicker">LIVE AUDIENCE VOTE</p>
+          <h1>直播观众投票统计</h1>
+          <p id="program" class="program">等待发布数据</p>
+        </div>
+        <div class="controls">
+          <label for="activitySelect">活动</label>
+          <select id="activitySelect" disabled><option>暂无活动</option></select>
+          <label for="sessionSelect">投票场次</label>
+          <select id="sessionSelect" disabled><option>暂无场次</option></select>
+          <div id="liveState" class="live-state"><i></i><span>等待同步</span></div>
+        </div>
+      </header>
+
+      <section class="metrics" aria-label="投票概览">
+        <div><span>弹幕样本</span><strong id="messages">0</strong></div>
+        <div><span>有效计票</span><strong id="votes">0</strong></div>
+        <div><span>语义待审</span><strong id="reviews">0</strong></div>
+      </section>
+
+      <section id="ranking" class="ranking" aria-live="polite">
+        <div class="empty">结果发布后将在这里显示</div>
+      </section>
+
+      <section class="disclaimer" aria-label="免责声明">
+        统计数据不代表湖南卫视 &amp; 芒果 TV 立场，仅供娱乐参考。
+      </section>
+
+      <footer>
+        <span>页面仅展示聚合票数，不包含观众昵称与原始弹幕</span>
+        <time id="updated">尚未同步</time>
+      </footer>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>

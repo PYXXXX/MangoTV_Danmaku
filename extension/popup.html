@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>弹幕票仓</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="kicker">MANGO LIVE OPS</p>
+          <h1>弹幕票仓</h1>
+        </div>
+        <span id="status" class="status idle">未连接</span>
+      </header>
+
+      <section class="panel setup-panel">
+        <label for="sessionName">新轮次名称</label>
+        <input id="sessionName" type="text" maxlength="40" placeholder="例如：第一轮 · 在线观众选择" />
+
+        <label for="candidates">候选人及别名</label>
+        <textarea id="candidates" rows="6" spellcheck="false" placeholder="张远, 远远&#10;窦靖童, 童童&#10;陈楚生, 陈老师"></textarea>
+        <p class="hint">每行一位，首项为正式名，后面用逗号补充昵称。</p>
+
+        <label for="multiPolicy">一条弹幕提到多人</label>
+        <select id="multiPolicy">
+          <option value="all">每位都计 1 票</option>
+          <option value="review">实时暂不计，留给语义审核</option>
+        </select>
+
+        <div class="actions">
+          <button id="start" class="primary">开始新一轮</button>
+          <button id="stop" class="finish" disabled>结束并保存本轮</button>
+        </div>
+      </section>
+
+      <section class="rounds">
+        <div class="section-title">
+          <label for="sessionSelect">场次结果</label>
+          <span id="roundStatus">暂无场次</span>
+        </div>
+        <select id="sessionSelect" disabled><option>暂无场次</option></select>
+        <div class="rename-row">
+          <input id="renameInput" type="text" maxlength="40" placeholder="修改当前场次名称" disabled />
+          <button id="rename" class="secondary" disabled>重命名</button>
+        </div>
+
+        <div class="summary" aria-live="polite">
+          <div><span>已采集</span><strong id="messageCount">0</strong></div>
+          <div><span>待审核</span><strong id="reviewCount">0</strong></div>
+        </div>
+        <ol id="resultList" class="result-list"><li class="empty">结果将在这里出现</li></ol>
+      </section>
+
+      <div class="footer-actions">
+        <button id="dashboard" class="text-button">打开实时大屏</button>
+        <button id="export" class="text-button">导出所选场次</button>
+      </div>
+
+      <details class="publisher">
+        <summary>GitHub Pages 公开同步</summary>
+        <div class="publisher-body">
+          <label class="checkbox"><input id="publishEnabled" type="checkbox" />启用聚合票数同步</label>
+          <div class="two-cols">
+            <div><label for="githubOwner">仓库所有者</label><input id="githubOwner" type="text" placeholder="your-name" /></div>
+            <div><label for="githubRepo">仓库名</label><input id="githubRepo" type="text" placeholder="MangoTV_Danmaku" /></div>
+          </div>
+          <div class="two-cols">
+            <div><label for="githubBranch">分支</label><input id="githubBranch" type="text" value="main" /></div>
+            <div><label for="publishInterval">间隔（秒）</label><input id="publishInterval" type="number" min="30" value="120" /></div>
+          </div>
+          <label for="githubPath">结果文件路径</label>
+          <input id="githubPath" type="text" value="site/data/results.json" />
+          <label for="githubToken">Fine-grained token</label>
+          <input id="githubToken" type="password" autocomplete="off" placeholder="仅保存在本机扩展存储" />
+          <button id="publishNow" class="secondary wide">保存配置并立即同步</button>
+          <p id="publishStatus" class="publish-status">未配置</p>
+        </div>
+      </details>
+
+      <p id="error" class="error" hidden></p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
+
