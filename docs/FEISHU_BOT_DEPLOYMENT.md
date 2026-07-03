@@ -17,17 +17,29 @@
 
 ## 2. 服务端配置
 
-安装依赖并创建本地配置：
+安装依赖并运行交互式配置向导：
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-server.txt
-cp server/config.example.json server/config.json
-chmod 600 server/config.json
+python tools/setup_feishu_bot.py
 ```
 
-编辑 `server/config.json`：
+向导会从 `server/config.example.json` 创建或更新本机 `server/config.json`，逐项提示：
+
+- `app_id`：飞书开放平台 → 企业自建应用 → 凭证与基础信息 → App ID。
+- `app_secret`：同一页面的 App Secret，输入时不会回显。
+- `public_results_url`：飞书卡片“打开公开结果页”按钮使用的地址。
+- `allowed_open_ids` / `allowed_chat_ids`：限制可操作 Bot 的运营人员和运营群。
+
+首次联调还不知道 `open_id` 和 `chat_id` 时，可以在向导里选择“首次联调”，临时写入 `*`；启动服务后向 Bot 发送“我的ID”，Bot 会回显当前来源 ID。拿到真实 ID 后重新运行：
+
+```bash
+python tools/setup_feishu_bot.py
+```
+
+并选择“正式使用”，填入回显的 `open_id` 与 `chat_id`。最终 `server/config.json` 中的飞书配置大致为：
 
 ```json
 {
@@ -47,6 +59,7 @@ chmod 600 server/config.json
 - 两个白名单都省略时，为兼容旧配置会允许所有能访问机器人的用户操作，不建议用于正式节目。
 - WebSocket 模式不使用 `verification_token`；该字段只供 HTTP 回调兼容模式使用。
 - `app_secret`、GitHub token 和原始弹幕均只保存在服务器，不提交到仓库。
+- 配置向导会把 `server/config.json` 权限设为仅当前用户可读写；覆盖已有配置时会生成 `server/config.json.bak-时间戳` 备份，备份文件也已被 Git 忽略。
 
 ## 3. 卡片操作范围
 
@@ -85,6 +98,8 @@ feishu bot connected with WebSocket long connection
 ```
 
 随后私聊机器人发送“菜单”，确认卡片可以显示；点击“刷新状态”，确认卡片原地更新。
+
+如果使用了首次联调白名单，继续发送“我的ID”，记录 Bot 返回的 `open_id` 和 `chat_id`，再重新运行配置向导锁定正式白名单。
 
 ## 5. systemd 常驻部署
 

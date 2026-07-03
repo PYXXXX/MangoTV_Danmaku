@@ -782,6 +782,14 @@ class VoteService:
         normalized = normalize(text)
         if normalized in {"菜单", "卡片", "控制台", "/menu"}:
             reply = "控制卡片已刷新。"
+        elif normalized in {"我的id", "我的ID", "配置id", "配置ID", "id", "ids", "/id"}:
+            reply = (
+                "当前飞书来源 ID：\n"
+                f"open_id: {open_id or '未获取到'}\n"
+                f"chat_id: {chat_id or '私聊无群 ID'}\n"
+                "把这些值填入 server/config.json 的 allowed_open_ids / allowed_chat_ids，"
+                "或重新运行 python tools/setup_feishu_bot.py 选择“正式使用”。"
+            )
         else:
             reply = await self.handle_command(normalized, open_id)
         await self.feishu.send_card(receive_id, receive_id_type, self.feishu_card(open_id, reply))
@@ -889,7 +897,8 @@ class VoteService:
                 "切换 <场次名/ID>\n"
                 "命名 <新名称>\n"
                 "发布粗略\n"
-                "候选人"
+                "候选人\n"
+                "我的ID"
             )
         if text.startswith("开始"):
             rest = normalize(text[2:])

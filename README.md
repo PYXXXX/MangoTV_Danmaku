@@ -70,6 +70,8 @@ cp server/config.example.json server/config.json
 python server/vote_server.py --config server/config.json
 ```
 
+如果要启用飞书 Bot 遥控，再运行 `python tools/setup_feishu_bot.py` 交互式更新本机配置。
+
 启动后打开 `http://服务器地址:8080/` 即可进入管理 WebUI，风格与公开结果页一致，可开始/结束场次、重命名、发布粗略结果、查看排名、导出切片，以及上传并发布清洗后的精确结果。
 
 可用 HTTP 接口：
@@ -105,6 +107,8 @@ python server/vote_server.py --config server/config.json
 4. 订阅消息事件 `im.message.receive_v1` 和卡片回调 `card.action.trigger`。
 5. 发布应用版本，把 Bot 加入运营群，并在配置中限制运营人员 `open_id` 与群 `chat_id`。
 
+本地运行 `python tools/setup_feishu_bot.py` 可交互式生成 `server/config.json`：向导会说明每个 ID 去哪里找，并支持首次联调临时写入 `*`。连通后向 Bot 发送“我的ID”，拿到 `open_id` / `chat_id` 后再重跑向导切换为正式白名单。
+
 向 Bot 发送“菜单”即可获得交互卡片，可点击开始默认场次、结束、刷新、查看/切换场次和发布粗略结果。自定义活动名、场次名仍使用文本指令；精确结果文件仍在运营 WebUI 上传。
 
 完整权限、配置、systemd 常驻和 HTTP 回调兼容方案见 [飞书交互卡片 Bot 部署文档](docs/FEISHU_BOT_DEPLOYMENT.md)。
@@ -122,6 +126,7 @@ python server/vote_server.py --config server/config.json
 命名 <新名称>
 发布粗略
 候选人
+我的ID
 ```
 
 例子：

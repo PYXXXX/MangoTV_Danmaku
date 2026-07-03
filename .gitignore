@@ -5,3 +5,4 @@ output/
 server/data/
 .venv/
 server/config.json
+server/config.json.bak-*
