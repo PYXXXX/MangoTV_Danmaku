@@ -27,6 +27,11 @@ from zoneinfo import ZoneInfo
 
 from aiohttp import ClientSession, web
 
+try:
+    from server.precise_results import parse_precise_result, validate_precise_result
+except ModuleNotFoundError:  # Support `python server/vote_server.py`.
+    from precise_results import parse_precise_result, validate_precise_result
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -180,6 +185,8 @@ class RoundMeta:
     sliceEndSeq: int | None = None
     sliceStartTime: str = ""
     sliceEndTime: str | None = None
+    preciseResult: dict[str, Any] | None = None
+    precisePublishedAt: str | None = None
 
 
 @dataclass
@@ -249,6 +256,8 @@ class StateStore:
             item.setdefault("sliceEndSeq", None if item.get("status") == "running" else self.global_seq)
             item.setdefault("sliceStartTime", item.get("startedAt", ""))
             item.setdefault("sliceEndTime", item.get("stoppedAt"))
+            item.setdefault("preciseResult", None)
+            item.setdefault("precisePublishedAt", None)
             payload = {**item, "candidates": candidates}
             self.rounds[item["id"]] = RoundMeta(**payload)
 
@@ -336,7 +345,22 @@ class StateStore:
                 if meta.sliceEndTime
                 else meta.baseName
             )
+            if meta.preciseResult:
+                meta.preciseResult["sessionName"] = meta.name
             meta.updatedAt = now_iso()
+            await self.save()
+            return meta
+
+    async def set_precise_result(self, round_id: str, result: dict[str, Any]) -> RoundMeta:
+        async with self.lock:
+            meta = self.require_round(round_id)
+            if meta.status == "running":
+                raise ValueError("场次仍在采集中，请先结束场次再上传精确结果")
+            published_at = now_iso()
+            result["publishedAt"] = published_at
+            meta.preciseResult = result
+            meta.precisePublishedAt = published_at
+            meta.updatedAt = published_at
             await self.save()
             return meta
 
@@ -404,6 +428,14 @@ class StateStore:
         sessions = []
         for round_id in self.round_order:
             meta = self.rounds[round_id]
+            rough_result = {
+                "resultType": "rough",
+                "voteCounts": meta.voteCounts,
+                "messageCount": meta.messageCount,
+                "reviewCount": meta.reviewCount,
+                "generatedAt": meta.updatedAt,
+            }
+            precise_result = meta.preciseResult
             sessions.append({
                 "id": meta.id,
                 "activity": meta.activity,
@@ -418,6 +450,8 @@ class StateStore:
                 "messageCount": meta.messageCount,
                 "reviewCount": meta.reviewCount,
                 "voteCounts": meta.voteCounts,
+                "defaultResultType": "precise" if precise_result else "rough",
+                "results": {"rough": rough_result, "precise": precise_result},
                 "sliceStartSeq": meta.sliceStartSeq,
                 "sliceEndSeq": meta.sliceEndSeq,
                 "sliceStartTime": meta.sliceStartTime,
@@ -469,7 +503,7 @@ class GithubPublisher:
         self.config = config
         self.store = store
 
-    async def publish(self, force: bool = False) -> str:
+    async def publish(self, force: bool = False, result_kind: str = "rough") -> str:
         if not self.config.get("enabled"):
             return "GitHub 同步未启用"
         required = ["owner", "repo", "branch", "path", "token"]
@@ -497,7 +531,7 @@ class GithubPublisher:
                     raise RuntimeError(f"GitHub 查询失败：{response.status} {await response.text()}")
             content = json.dumps(self.store.public_state(), ensure_ascii=False, indent=2) + "\n"
             payload = {
-                "message": f"data: sync vote results {now_iso()}",
+                "message": f"data: publish {result_kind} vote results {now_iso()}",
                 "branch": branch,
                 "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
             }
@@ -707,18 +741,32 @@ class VoteService:
         await self.collector.stop()
         meta = await self.store.stop_active()
         if publish and meta:
-            await self.publisher.publish(force=True)
+            await self.publisher.publish(force=True, result_kind="rough")
         return meta
+
+    async def publish_precise_file(self, round_id: str, filename: str, content: bytes) -> tuple[RoundMeta, str]:
+        if not content:
+            raise ValueError("上传文件为空")
+        if len(content) > 2 * 1024 * 1024:
+            raise ValueError("精确结果文件不能超过 2 MB")
+        meta = self.store.require_round(round_id)
+        payload = parse_precise_result(filename, content)
+        result = validate_precise_result(payload, meta, content, filename)
+        meta = await self.store.set_precise_result(round_id, result)
+        url = await self.publisher.publish(force=True, result_kind="precise")
+        return meta, url
 
     def result_text(self, meta: RoundMeta | None = None) -> str:
         meta = meta or self.store.find_round(None)
         if not meta:
             return "暂无场次。"
+        result_label = "精确结果" if meta.preciseResult else "粗略结果"
+        counts = meta.preciseResult.get("voteCounts", {}) if meta.preciseResult else meta.voteCounts
         rows = sorted(
-            ((candidate.name, meta.voteCounts.get(candidate.id, 0)) for candidate in meta.candidates),
+            ((candidate.name, counts.get(candidate.id, 0)) for candidate in meta.candidates),
             key=lambda row: (-row[1], row[0]),
         )
-        lines = [f"【{meta.activity} / {meta.name}】{meta.status}", f"弹幕样本：{meta.messageCount}，语义待审：{meta.reviewCount}"]
+        lines = [f"【{meta.activity} / {meta.name}】{meta.status} · {result_label}", f"弹幕样本：{meta.messageCount}，语义待审：{meta.reviewCount}"]
         lines.extend(f"{index}. {name}：{count}" for index, (name, count) in enumerate(rows, 1))
         return "\n".join(lines)
 
@@ -744,7 +792,7 @@ class VoteService:
                 "场次\n"
                 "切换 <场次名/ID>\n"
                 "命名 <新名称>\n"
-                "发布\n"
+                "发布粗略\n"
                 "候选人"
             )
         if text.startswith("开始"):
@@ -787,25 +835,29 @@ class VoteService:
                 return "请发送：命名 <新名称>"
             target_id = self.user_selection.get(open_id) or self.store.active_round_id or (self.store.round_order[0] if self.store.round_order else "")
             meta = await self.store.rename_round(target_id, name)
-            await self.publisher.publish(force=True)
+            await self.publisher.publish(force=True, result_kind="rough")
             return f"已重命名：{meta.name}"
-        if text == "发布":
-            url = await self.publisher.publish(force=True)
-            return f"发布完成：{url}"
+        if text in {"发布", "发布粗略"}:
+            url = await self.publisher.publish(force=True, result_kind="rough")
+            return f"粗略结果发布完成：{url}"
         if text == "候选人":
             return "\n".join(f"{candidate.name}：{', '.join(candidate.aliases)}" for candidate in self.default_candidates)
         return "未识别指令。发送“帮助”查看用法。"
 
 
 def create_app(service: VoteService) -> web.Application:
-    app = web.Application()
+    app = web.Application(client_max_size=3 * 1024 * 1024)
     webui_dir = Path(__file__).with_name("webui")
+    precise_doc = Path(__file__).resolve().parents[1] / "docs" / "PRECISE_RESULT_AGENT.md"
 
     async def webui_index(_: web.Request) -> web.FileResponse:
         return web.FileResponse(webui_dir / "index.html")
 
     async def health(_: web.Request) -> web.Response:
         return web.json_response({"ok": True, "collectorRunning": service.collector.running(), "activeRoundId": service.store.active_round_id})
+
+    async def precise_result_doc(_: web.Request) -> web.FileResponse:
+        return web.FileResponse(precise_doc, headers={"Content-Type": "text/markdown; charset=utf-8"})
 
     async def results(_: web.Request) -> web.Response:
         return web.json_response(service.store.public_state(), dumps=lambda data: json.dumps(data, ensure_ascii=False))
@@ -826,6 +878,28 @@ def create_app(service: VoteService) -> web.Application:
         data = await request.json()
         reply = await service.handle_command(data.get("text", ""))
         return web.json_response({"reply": reply}, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+
+    async def precise_upload(request: web.Request) -> web.Response:
+        round_id = request.match_info["round_id"]
+        try:
+            if not request.content_type.startswith("multipart/"):
+                raise ValueError("请求必须使用 multipart/form-data")
+            reader = await request.multipart()
+            field = await reader.next()
+            if field is None or field.name != "file" or not field.filename:
+                raise ValueError("请通过 file 字段上传 .json 或 .xml 文件")
+            content = await field.read(decode=False)
+            meta, url = await service.publish_precise_file(round_id, field.filename, content)
+        except KeyError as exc:
+            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except (ValueError, web.HTTPBadRequest) as exc:
+            return web.json_response({"error": str(exc)}, status=400, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except RuntimeError as exc:
+            return web.json_response({"error": str(exc)}, status=502, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response(
+            {"ok": True, "roundId": meta.id, "publishedAt": meta.precisePublishedAt, "publishUrl": url},
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+        )
 
     async def feishu_events(request: web.Request) -> web.Response:
         body = await request.json()
@@ -852,8 +926,10 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_get("/admin", webui_index)
     app.router.add_static("/webui", webui_dir)
     app.router.add_get("/healthz", health)
+    app.router.add_get("/docs/precise-result-agent", precise_result_doc)
     app.router.add_get("/api/results.json", results)
     app.router.add_get("/api/rounds/{round_id}.jsonl", round_export)
+    app.router.add_post("/api/rounds/{round_id}/precise-result", precise_upload)
     app.router.add_post("/api/command", command)
     app.router.add_post("/feishu/events", feishu_events)
     return app

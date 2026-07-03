@@ -1,6 +1,7 @@
 const elements = {
   activitySelect: document.querySelector("#activitySelect"),
   sessionSelect: document.querySelector("#sessionSelect"),
+  resultMode: document.querySelector("#resultMode"),
   liveState: document.querySelector("#liveState"),
   liveText: document.querySelector("#liveState span"),
   program: document.querySelector("#program"),
@@ -14,6 +15,7 @@ const elements = {
 let publicState = null;
 let selectedActivity = null;
 let selectedSessionId = null;
+const selectedResultBySession = {};
 
 function formatCount(value) {
   const number = Number(value || 0);
@@ -29,9 +31,19 @@ function formatCount(value) {
   return scaled.toFixed(digits).replace(/\.0$/, "") + unit.suffix;
 }
 
-function renderRanking(session) {
+function selectedResult(session) {
+  const available = session.results || {};
+  const requested = selectedResultBySession[session.id] || session.defaultResultType || "rough";
+  const type = requested === "precise" && available.precise ? "precise" : "rough";
+  return {
+    type,
+    data: available[type] || { voteCounts: session.voteCounts || {}, messageCount: session.messageCount || 0, reviewCount: session.reviewCount || 0 }
+  };
+}
+
+function renderRanking(session, result) {
   const rows = (session.candidates || [])
-    .map((candidate) => ({ ...candidate, count: session.voteCounts?.[candidate.id] || 0 }))
+    .map((candidate) => ({ ...candidate, count: result?.voteCounts?.[candidate.id] || 0 }))
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "zh-CN"));
   const max = Math.max(1, ...rows.map((item) => item.count));
   const total = rows.reduce((sum, item) => sum + item.count, 0);
@@ -78,17 +90,26 @@ function render() {
     option.selected = item.id === selectedSessionId;
     return option;
   }));
-  const total = renderRanking(session);
+  const current = selectedResult(session);
+  const total = renderRanking(session, current.data);
   const active = session.status === "running";
   elements.liveState.classList.toggle("active", active);
-  elements.liveText.textContent = active ? "LIVE · 本轮进行中" : "本轮已结束";
+  elements.liveText.textContent = current.type === "precise" ? "精确结果 · 已清洗" : (active ? "LIVE · 粗略统计中" : "粗略结果 · 本轮已结束");
+  const hasPrecise = Boolean(session.results?.precise);
+  elements.resultMode.disabled = false;
+  elements.resultMode.replaceChildren(
+    new Option("粗略结果", "rough", false, current.type === "rough"),
+    ...(hasPrecise ? [new Option("精确结果", "precise", false, current.type === "precise")] : [])
+  );
   elements.program.textContent = `${session.activity || "未分类活动"} / ${session.name}${session.pageTitle ? ` · ${session.pageTitle}` : ""}`;
-  elements.messages.textContent = formatCount(session.messageCount);
-  elements.messages.title = Number(session.messageCount || 0).toLocaleString("zh-CN");
+  const messageCount = current.type === "precise" ? current.data?.audit?.inputMessages : current.data?.messageCount;
+  const reviewCount = current.type === "precise" ? current.data?.audit?.unresolvedReviewMessages : current.data?.reviewCount;
+  elements.messages.textContent = formatCount(messageCount);
+  elements.messages.title = Number(messageCount || 0).toLocaleString("zh-CN");
   elements.votes.textContent = formatCount(total);
   elements.votes.title = total.toLocaleString("zh-CN");
-  elements.reviews.textContent = formatCount(session.reviewCount);
-  elements.reviews.title = Number(session.reviewCount || 0).toLocaleString("zh-CN");
+  elements.reviews.textContent = formatCount(reviewCount);
+  elements.reviews.title = Number(reviewCount || 0).toLocaleString("zh-CN");
   elements.updated.textContent = `数据发布于 ${new Date(publicState.publishedAt).toLocaleString("zh-CN", { hour12: false })}`;
 }
 
@@ -111,6 +132,10 @@ elements.sessionSelect.addEventListener("change", () => {
 elements.activitySelect.addEventListener("change", () => {
   selectedActivity = elements.activitySelect.value;
   selectedSessionId = null;
+  render();
+});
+elements.resultMode.addEventListener("change", () => {
+  if (selectedSessionId) selectedResultBySession[selectedSessionId] = elements.resultMode.value;
   render();
 });
 

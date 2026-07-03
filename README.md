@@ -70,13 +70,14 @@ cp server/config.example.json server/config.json
 python server/vote_server.py --config server/config.json
 ```
 
-启动后打开 `http://服务器地址:8080/` 即可进入管理 WebUI，风格与公开结果页一致，可开始/结束场次、重命名、发布、查看排名和导出切片。
+启动后打开 `http://服务器地址:8080/` 即可进入管理 WebUI，风格与公开结果页一致，可开始/结束场次、重命名、发布粗略结果、查看排名、导出切片，以及上传并发布清洗后的精确结果。
 
 可用 HTTP 接口：
 
 - `GET /healthz`：健康检查。
 - `GET /api/results.json`：当前公开聚合结果，格式与 `site/data/results.json` 一致。
 - `GET /api/rounds/{round_id}.jsonl`：导出某个场次的 JSONL 切片，包含 meta 与该场次消息。
+- `POST /api/rounds/{round_id}/precise-result`：通过 multipart 的 `file` 字段上传并发布 `.json` 或 `.xml` 精确结果。
 - `POST /api/command`：本地调试指令，例如 `{"text":"开始 第一轮"}`。
 - `POST /feishu/events`：飞书事件订阅回调地址。
 
@@ -115,7 +116,7 @@ python server/vote_server.py --config server/config.json
 场次
 切换 <场次名/ID>
 命名 <新名称>
-发布
+发布粗略
 候选人
 ```
 
@@ -125,7 +126,7 @@ python server/vote_server.py --config server/config.json
 开始 歌手 2026|第一轮·在线观众选择 https://www.mgtv.com/z/1001668/5366.html
 状态
 结束
-发布
+发布粗略
 ```
 
 服务器模式的去重指纹为 `用户标识 + 昵称 + 内容`。这能降低重复刷屏影响，但如果同一用户在短时间内重复发送完全相同内容，会按一条计。去重索引采用“内存热缓存 + SQLite 持久索引”，默认支撑 1 亿条指纹上限，主要消耗磁盘而不是内存。
@@ -149,8 +150,9 @@ python3 tools/export_round_slice.py --data-dir server/data --round "第一轮" -
 1. 在管理 WebUI 输入活动名与场次名后开始采集。
 2. 点击“结束场次”，系统锁定 JSONL 切片，并把北京时间范围追加到场次名。
 3. 运营人员检查票数与待审数量；需要语义清洗时先导出该场次切片。
-4. 确认结果后点击“发布”，仅把活动、场次、聚合票数、样本量和发布时间写入公开 JSON。
-5. GitHub Actions 部署成功后，公开客户端会在下一次轮询时显示新结果。
+4. 需要快速对外展示时点击“发布粗略结果”；数据来自实时切片关键词统计。
+5. 需要精确结果时按 [Agent 清洗规范](docs/PRECISE_RESULT_AGENT.md) 完成清洗，上传 `precise_result.json` 或 `precise_result.xml`。服务端校验后立即发布。
+6. GitHub Actions 部署成功后，公开客户端会在下一次轮询时显示新结果，并默认优先展示精确结果；访客仍可切换查看粗略结果。
 
 ### 配置运营端自动同步
 
@@ -211,6 +213,10 @@ python3 tools/merge_results.py output
 
 - `output/final_result.json`：机器可读排名和审核完整性。
 - `output/final_report.md`：可直接查看的票数表。
+- `output/precise_result.json`：运营端可上传的精确结果 JSON。
+- `output/precise_result.xml`：与 JSON 等价的精确结果 XML。
+
+Agent 在开始审核前必须阅读 [docs/PRECISE_RESULT_AGENT.md](docs/PRECISE_RESULT_AGENT.md)。`offline_clean.py` 也会把该规范复制为输出目录内的 `AGENT_INSTRUCTIONS.md`，避免遗漏清洗与发布约束。
 
 若 `preliminary.json` 的 `reviewMessages` 为 0，可以跳过 Codex，直接执行合并脚本。
 

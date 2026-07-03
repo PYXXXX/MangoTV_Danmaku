@@ -17,6 +17,12 @@ select:focus, input:focus { border-color: #ff7a1a; box-shadow: 0 0 0 3px rgba(25
 .command-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; padding: 24px 0; border-bottom: 1px solid #2a2c30; }
 .panel, .side-panel, .log-panel { border: 1px solid #2a2c30; border-radius: 16px; background: rgba(17, 18, 20, .72); padding: 18px; }
 .panel label { display: block; margin: 12px 0 7px; }
+.precise-panel { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, .8fr); gap: 28px; align-items: end; }
+.panel-copy { margin: 0; max-width: 68ch; color: #888b92; font-size: 12px; line-height: 1.7; }
+.panel-copy code { color: #d8d8d5; }
+.doc-link { display: inline-block; margin-top: 12px; color: #ff9a50; font-size: 12px; text-decoration: none; }
+.doc-link:hover { text-decoration: underline; }
+.upload-form .primary { margin-top: 10px; }
 button, .link-button { min-height: 41px; border: 0; border-radius: 10px; padding: 0 15px; font: inherit; font-size: 13px; font-weight: 680; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
 button:active, .link-button:active { transform: translateY(1px); }
 .primary { width: 100%; margin-top: 14px; background: #ff7a1a; color: #16100b; }
@@ -52,5 +58,4 @@ button:active, .link-button:active { transform: translateY(1px); }
 .log-panel { margin-bottom: 20px; }
 pre { margin: 0; max-height: 180px; overflow: auto; white-space: pre-wrap; color: #b8bac0; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
 footer { display: flex; justify-content: space-between; gap: 20px; padding-top: 18px; border-top: 1px solid #222428; color: #666970; font-size: 12px; }
-@media (max-width: 860px) { main { width: min(100% - 28px, 1180px); padding-top: 24px; } header, footer { flex-direction: column; } .controls { width: 100%; min-width: 0; } .command-grid, .content-grid { grid-template-columns: 1fr; } .metrics div + div { padding-left: 12px; } .row { grid-template-columns: 30px 1fr 70px; gap: 10px; } .track { grid-column: 2 / 4; grid-row: 2; margin-bottom: 12px; } }
-
+@media (max-width: 860px) { main { width: min(100% - 28px, 1180px); padding-top: 24px; } header, footer { flex-direction: column; } .controls { width: 100%; min-width: 0; } .command-grid, .content-grid, .precise-panel { grid-template-columns: 1fr; } .metrics div + div { padding-left: 12px; } .row { grid-template-columns: 30px 1fr 70px; gap: 10px; } .track { grid-column: 2 / 4; grid-row: 2; margin-bottom: 12px; } }

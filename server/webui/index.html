@@ -19,6 +19,8 @@
           <select id="activitySelect" disabled><option>暂无活动</option></select>
           <label for="roundSelect">投票场次</label>
           <select id="roundSelect" disabled><option>暂无场次</option></select>
+          <label for="resultMode">结果版本</label>
+          <select id="resultMode" disabled><option value="rough">粗略结果</option></select>
           <div id="liveState" class="live-state"><i></i><span>读取中</span></div>
         </div>
       </header>
@@ -37,7 +39,7 @@
           <h2>当前操作</h2>
           <div class="button-row">
             <button id="endRound" class="danger" type="button">结束本轮</button>
-            <button id="publish" class="secondary" type="button">发布结果</button>
+            <button id="publish" class="secondary" type="button">发布粗略结果</button>
           </div>
           <label for="renameInput">重命名所选场次</label>
           <div class="inline-row">
@@ -49,6 +51,18 @@
             <button id="refresh" class="ghost" type="button">刷新</button>
           </div>
         </section>
+        <section class="panel precise-panel">
+          <div>
+            <h2>精确结果发布</h2>
+            <p class="panel-copy">先结束场次并导出切片，按清洗规范生成 <code>precise_result.json</code> 或 XML，再上传。系统校验通过后会立即发布。</p>
+            <a class="doc-link" href="/docs/precise-result-agent" target="_blank" rel="noreferrer">查看 Agent 清洗规范</a>
+          </div>
+          <form id="preciseForm" class="upload-form">
+            <label for="preciseFile">精确结果文件（JSON/XML，最大 2 MB）</label>
+            <input id="preciseFile" type="file" accept=".json,.xml,application/json,application/xml,text/xml" required />
+            <button id="uploadPrecise" class="primary" type="submit">上传并发布精确结果</button>
+          </form>
+        </section>
       </section>
       <section class="metrics" aria-label="投票概览">
         <div><span>弹幕样本</span><strong id="messages">0</strong></div>
@@ -58,7 +72,7 @@
       <section class="content-grid">
         <section>
           <div class="section-heading">
-            <h2>实时结果</h2>
+            <h2 id="resultHeading">粗略结果</h2>
             <span id="updated">尚未同步</span>
           </div>
           <div id="ranking" class="ranking" aria-live="polite">

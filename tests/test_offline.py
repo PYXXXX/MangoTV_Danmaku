@@ -2,7 +2,11 @@ import json
 import subprocess
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
+from types import SimpleNamespace
+
+from server.precise_results import parse_precise_result, validate_precise_result
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,8 +43,32 @@ class OfflinePipelineTest(unittest.TestCase):
             self.assertEqual(result["ranking"][0]["name"], "窦靖童")
             self.assertEqual(result["ranking"][0]["votes"], 2)
             self.assertEqual(result["unresolvedReviewMessages"], 0)
+            self.assertTrue((out / "AGENT_INSTRUCTIONS.md").exists())
+
+            precise_path = out / "precise_result.json"
+            precise = json.loads(precise_path.read_text(encoding="utf-8"))
+            self.assertEqual(precise["resultType"], "precise")
+            self.assertEqual(precise["sessionId"], "sample-session")
+            self.assertEqual(precise["audit"]["inputMessages"], 7)
+            self.assertEqual(precise["audit"]["unresolvedReviewMessages"], 0)
+            self.assertEqual(ET.parse(out / "precise_result.xml").getroot().tag, "preciseResult")
+
+            meta = SimpleNamespace(
+                id="sample-session", activity="未分类活动", name=precise["sessionName"],
+                candidates=[
+                    SimpleNamespace(id="c1", name="张远"),
+                    SimpleNamespace(id="c2", name="窦靖童"),
+                    SimpleNamespace(id="c3", name="陈楚生"),
+                ],
+                messageCount=7,
+            )
+            content = precise_path.read_bytes()
+            normalized = validate_precise_result(parse_precise_result("precise_result.json", content), meta, content, "precise_result.json")
+            self.assertEqual(normalized["voteCounts"]["c2"], 2)
+            xml_content = (out / "precise_result.xml").read_bytes()
+            normalized_xml = validate_precise_result(parse_precise_result("precise_result.xml", xml_content), meta, xml_content, "precise_result.xml")
+            self.assertEqual(normalized_xml["source"]["format"], "xml")
 
 
 if __name__ == "__main__":
     unittest.main()
-

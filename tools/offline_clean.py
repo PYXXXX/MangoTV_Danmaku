@@ -120,7 +120,7 @@ def build_prompt(meta: dict[str, Any], context: str, batch_count: int) -> str:
     )
     return f"""# Codex 弹幕语义审核任务
 
-目标：只审核规则引擎留下的歧义弹幕。明确票已经本地统计，不要重读 `clean_messages.jsonl` 或原始导出文件，以免浪费 token。
+目标：只审核规则引擎留下的歧义弹幕。开始前必须阅读同目录的 `AGENT_INSTRUCTIONS.md`。明确票已经本地统计，不要重读 `clean_messages.jsonl` 或原始导出文件，以免浪费 token。
 
 ## 候选人
 
@@ -199,8 +199,11 @@ def main() -> None:
 
     context = args.context.read_text(encoding="utf-8") if args.context else ""
     (args.out / "codex_prompt.md").write_text(build_prompt(meta, context, len(batches)), encoding="utf-8")
+    agent_doc = Path(__file__).resolve().parents[1] / "docs" / "PRECISE_RESULT_AGENT.md"
+    (args.out / "AGENT_INSTRUCTIONS.md").write_text(agent_doc.read_text(encoding="utf-8"), encoding="utf-8")
     summary = {
         "sessionId": meta.get("id"),
+        "activity": meta.get("activity", "未分类活动"),
         "sessionName": meta.get("name", "未命名场次"),
         "inputMessages": len(messages),
         "cleanMessages": len(clean_records),

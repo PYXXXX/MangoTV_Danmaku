@@ -4,6 +4,7 @@ const el = {
   subtitle: $("#subtitle"),
   activitySelect: $("#activitySelect"),
   roundSelect: $("#roundSelect"),
+  resultMode: $("#resultMode"),
   liveState: $("#liveState"),
   liveText: $("#liveState span"),
   startForm: $("#startForm"),
@@ -12,6 +13,8 @@ const el = {
   liveUrl: $("#liveUrl"),
   endRound: $("#endRound"),
   publish: $("#publish"),
+  preciseForm: $("#preciseForm"),
+  preciseFile: $("#preciseFile"),
   renameInput: $("#renameInput"),
   rename: $("#rename"),
   refresh: $("#refresh"),
@@ -20,6 +23,7 @@ const el = {
   votes: $("#votes"),
   reviews: $("#reviews"),
   ranking: $("#ranking"),
+  resultHeading: $("#resultHeading"),
   updated: $("#updated"),
   roundCount: $("#roundCount"),
   roundList: $("#roundList"),
@@ -29,6 +33,7 @@ const el = {
 let state = null;
 let selectedActivity = null;
 let selectedRoundId = null;
+const selectedResultByRound = {};
 const logs = ["管理台已就绪。"];
 
 function formatCount(value) {
@@ -75,13 +80,22 @@ function selectedRound() {
     || null;
 }
 
-function renderRanking(round) {
+function selectedResult(round) {
+  if (!round) return { type: "rough", data: null };
+  const available = round.results || {};
+  const requested = selectedResultByRound[round.id] || round.defaultResultType || "rough";
+  const type = requested === "precise" && available.precise ? "precise" : "rough";
+  const fallback = { voteCounts: round.voteCounts || {}, messageCount: round.messageCount || 0, reviewCount: round.reviewCount || 0 };
+  return { type, data: available[type] || fallback };
+}
+
+function renderRanking(round, result) {
   if (!round) {
     el.ranking.innerHTML = '<div class="empty">结果将在这里显示</div>';
     return 0;
   }
   const rows = (round.candidates || [])
-    .map((candidate) => Object.assign({}, candidate, { count: (round.voteCounts && round.voteCounts[candidate.id]) || 0 }))
+    .map((candidate) => Object.assign({}, candidate, { count: (result && result.voteCounts && result.voteCounts[candidate.id]) || 0 }))
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "zh-CN"));
   const max = Math.max(1, ...rows.map((item) => item.count));
   const total = rows.reduce((sum, item) => sum + item.count, 0);
@@ -129,7 +143,7 @@ function renderRounds(round) {
     const title = document.createElement("strong");
     title.textContent = (item.status === "running" ? "● " : "") + item.name;
     const meta = document.createElement("span");
-    meta.textContent = (item.activity || "未分类活动") + " · " + formatCount(item.messageCount) + " 样本";
+    meta.textContent = (item.activity || "未分类活动") + " · " + formatCount(item.messageCount) + " 样本" + (item.results && item.results.precise ? " · 精确已发布" : " · 仅粗略");
     button.append(title, meta);
     button.addEventListener("click", () => {
       selectedRoundId = item.id;
@@ -144,17 +158,28 @@ function render() {
   const round = selectedRound();
   if (round) selectedRoundId = round.id;
   renderRounds(round);
-  const total = renderRanking(round);
+  const current = selectedResult(round);
+  const total = renderRanking(round, current.data);
   const active = round && round.status === "running";
   el.liveState.classList.toggle("active", Boolean(active));
-  el.liveText.textContent = active ? "LIVE · 采集中" : (round ? "场次已保存" : "等待场次");
+  el.liveText.textContent = current.type === "precise" ? "精确结果 · 已清洗" : (active ? "LIVE · 粗略统计中" : (round ? "粗略结果 · 已保存" : "等待场次"));
+  el.resultHeading.textContent = current.type === "precise" ? "精确结果" : "粗略结果";
+  const hasRound = Boolean(round);
+  const hasPrecise = Boolean(round && round.results && round.results.precise);
+  el.resultMode.disabled = !hasRound;
+  el.resultMode.replaceChildren(
+    new Option("粗略结果", "rough", false, current.type === "rough"),
+    ...(hasPrecise ? [new Option("精确结果", "precise", false, current.type === "precise")] : [])
+  );
   el.subtitle.textContent = round ? ((round.activity || "未分类活动") + " / " + round.name + " · " + round.status) : "等待开始场次";
-  el.messages.textContent = formatCount(round && round.messageCount);
-  el.messages.title = Number((round && round.messageCount) || 0).toLocaleString("zh-CN");
+  const messageCount = current.type === "precise" ? current.data?.audit?.inputMessages : current.data?.messageCount;
+  const reviewCount = current.type === "precise" ? current.data?.audit?.unresolvedReviewMessages : current.data?.reviewCount;
+  el.messages.textContent = formatCount(messageCount);
+  el.messages.title = Number(messageCount || 0).toLocaleString("zh-CN");
   el.votes.textContent = formatCount(total);
   el.votes.title = total.toLocaleString("zh-CN");
-  el.reviews.textContent = formatCount(round && round.reviewCount);
-  el.reviews.title = Number((round && round.reviewCount) || 0).toLocaleString("zh-CN");
+  el.reviews.textContent = formatCount(reviewCount);
+  el.reviews.title = Number(reviewCount || 0).toLocaleString("zh-CN");
   el.updated.textContent = state && state.publishedAt ? ("数据更新于 " + new Date(state.publishedAt).toLocaleString("zh-CN", { hour12: false })) : "尚未同步";
   if (document.activeElement !== el.renameInput) el.renameInput.value = (round && round.name) || "";
   if (round) {
@@ -193,7 +218,26 @@ el.startForm.addEventListener("submit", async (event) => {
 });
 
 el.endRound.addEventListener("click", () => sendCommand("结束").catch((error) => addLog(error.message)));
-el.publish.addEventListener("click", () => sendCommand("发布").catch((error) => addLog(error.message)));
+el.publish.addEventListener("click", () => sendCommand("发布粗略").catch((error) => addLog(error.message)));
+el.preciseForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const round = selectedRound();
+  const file = el.preciseFile.files && el.preciseFile.files[0];
+  if (!round || !file) return addLog("请先选择场次和精确结果文件");
+  const body = new FormData();
+  body.append("file", file);
+  try {
+    const response = await fetch("/api/rounds/" + encodeURIComponent(round.id) + "/precise-result", { method: "POST", body });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "HTTP " + response.status);
+    selectedResultByRound[round.id] = "precise";
+    el.preciseFile.value = "";
+    addLog("精确结果已校验并发布：" + (payload.publishUrl || payload.publishedAt));
+    await load();
+  } catch (error) {
+    addLog("精确结果发布失败：" + error.message);
+  }
+});
 el.refresh.addEventListener("click", () => load().then(() => addLog("已刷新")).catch((error) => addLog(error.message)));
 el.rename.addEventListener("click", async () => {
   const round = selectedRound();
@@ -208,6 +252,11 @@ el.rename.addEventListener("click", async () => {
 });
 el.roundSelect.addEventListener("change", () => {
   selectedRoundId = el.roundSelect.value;
+  render();
+});
+el.resultMode.addEventListener("change", () => {
+  const round = selectedRound();
+  if (round) selectedResultByRound[round.id] = el.resultMode.value;
   render();
 });
 el.activitySelect.addEventListener("change", () => {
