@@ -1,7 +1,7 @@
 const elements = {
   activitySelect: document.querySelector("#activitySelect"),
   sessionSelect: document.querySelector("#sessionSelect"),
-  resultMode: document.querySelector("#resultMode"),
+  resultButtons: Array.from(document.querySelectorAll("#resultMode [data-result-type]")),
   liveState: document.querySelector("#liveState"),
   liveText: document.querySelector("#liveState span"),
   program: document.querySelector("#program"),
@@ -96,11 +96,14 @@ function render() {
   elements.liveState.classList.toggle("active", active);
   elements.liveText.textContent = current.type === "precise" ? "精确结果 · 已清洗" : (active ? "LIVE · 粗略统计中" : "粗略结果 · 本轮已结束");
   const hasPrecise = Boolean(session.results?.precise);
-  elements.resultMode.disabled = false;
-  elements.resultMode.replaceChildren(
-    new Option("粗略结果", "rough", false, current.type === "rough"),
-    ...(hasPrecise ? [new Option("精确结果", "precise", false, current.type === "precise")] : [])
-  );
+  elements.resultButtons.forEach((button) => {
+    const type = button.dataset.resultType;
+    const selected = type === current.type;
+    button.disabled = type === "precise" && !hasPrecise;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-pressed", String(selected));
+    button.title = type === "precise" && !hasPrecise ? "精确结果尚未发布" : "";
+  });
   elements.program.textContent = `${session.activity || "未分类活动"} / ${session.name}${session.pageTitle ? ` · ${session.pageTitle}` : ""}`;
   const messageCount = current.type === "precise" ? current.data?.audit?.inputMessages : current.data?.messageCount;
   const reviewCount = current.type === "precise" ? current.data?.audit?.unresolvedReviewMessages : current.data?.reviewCount;
@@ -134,10 +137,10 @@ elements.activitySelect.addEventListener("change", () => {
   selectedSessionId = null;
   render();
 });
-elements.resultMode.addEventListener("change", () => {
-  if (selectedSessionId) selectedResultBySession[selectedSessionId] = elements.resultMode.value;
+elements.resultButtons.forEach((button) => button.addEventListener("click", () => {
+  if (selectedSessionId && !button.disabled) selectedResultBySession[selectedSessionId] = button.dataset.resultType;
   render();
-});
+}));
 
 load();
 setInterval(load, 30000);

@@ -19,8 +19,11 @@
           <select id="activitySelect" disabled><option>暂无活动</option></select>
           <label for="roundSelect">投票场次</label>
           <select id="roundSelect" disabled><option>暂无场次</option></select>
-          <label for="resultMode">结果版本</label>
-          <select id="resultMode" disabled><option value="rough">粗略结果</option></select>
+          <span class="control-label">结果版本</span>
+          <div id="resultMode" class="result-toggle" role="group" aria-label="结果版本">
+            <button type="button" data-result-type="rough" aria-pressed="true" disabled>粗略结果</button>
+            <button type="button" data-result-type="precise" aria-pressed="false" disabled>精确结果</button>
+          </div>
           <div id="liveState" class="live-state"><i></i><span>读取中</span></div>
         </div>
       </header>

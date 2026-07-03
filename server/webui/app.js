@@ -4,7 +4,7 @@ const el = {
   subtitle: $("#subtitle"),
   activitySelect: $("#activitySelect"),
   roundSelect: $("#roundSelect"),
-  resultMode: $("#resultMode"),
+  resultButtons: Array.from(document.querySelectorAll("#resultMode [data-result-type]")),
   liveState: $("#liveState"),
   liveText: $("#liveState span"),
   startForm: $("#startForm"),
@@ -166,11 +166,14 @@ function render() {
   el.resultHeading.textContent = current.type === "precise" ? "精确结果" : "粗略结果";
   const hasRound = Boolean(round);
   const hasPrecise = Boolean(round && round.results && round.results.precise);
-  el.resultMode.disabled = !hasRound;
-  el.resultMode.replaceChildren(
-    new Option("粗略结果", "rough", false, current.type === "rough"),
-    ...(hasPrecise ? [new Option("精确结果", "precise", false, current.type === "precise")] : [])
-  );
+  el.resultButtons.forEach((button) => {
+    const type = button.dataset.resultType;
+    const selected = type === current.type;
+    button.disabled = !hasRound || (type === "precise" && !hasPrecise);
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-pressed", String(selected));
+    button.title = type === "precise" && !hasPrecise ? "精确结果尚未发布" : "";
+  });
   el.subtitle.textContent = round ? ((round.activity || "未分类活动") + " / " + round.name + " · " + round.status) : "等待开始场次";
   const messageCount = current.type === "precise" ? current.data?.audit?.inputMessages : current.data?.messageCount;
   const reviewCount = current.type === "precise" ? current.data?.audit?.unresolvedReviewMessages : current.data?.reviewCount;
@@ -254,11 +257,11 @@ el.roundSelect.addEventListener("change", () => {
   selectedRoundId = el.roundSelect.value;
   render();
 });
-el.resultMode.addEventListener("change", () => {
+el.resultButtons.forEach((button) => button.addEventListener("click", () => {
   const round = selectedRound();
-  if (round) selectedResultByRound[round.id] = el.resultMode.value;
+  if (round && !button.disabled) selectedResultByRound[round.id] = button.dataset.resultType;
   render();
-});
+}));
 el.activitySelect.addEventListener("change", () => {
   selectedActivity = el.activitySelect.value;
   selectedRoundId = null;
