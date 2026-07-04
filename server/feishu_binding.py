@@ -55,6 +55,16 @@ def as_int(value: Any, default: int) -> int:
         return default
 
 
+async def read_json_payload(response: Any, action: str) -> dict[str, Any]:
+    try:
+        payload = await response.json(content_type=None)
+    except Exception as exc:
+        raise FeishuBindingError(f"{action}失败：飞书授权服务没有返回有效 JSON") from exc
+    if not isinstance(payload, dict):
+        raise FeishuBindingError(f"{action}失败：飞书授权服务返回格式无效")
+    return payload
+
+
 async def begin_binding(session: ClientSession) -> FeishuBindingBegin:
     data = {
         "action": "begin",
@@ -63,7 +73,7 @@ async def begin_binding(session: ClientSession) -> FeishuBindingBegin:
         "request_user_info": "open_id tenant_brand",
     }
     async with session.post(f"{ACCOUNTS_FEISHU}{APP_REGISTRATION_PATH}", data=data) as response:
-        payload = await response.json(content_type=None)
+        payload = await read_json_payload(response, "飞书绑定初始化")
     if response.status >= 400 or payload.get("error"):
         message = payload.get("error_description") or payload.get("error") or f"HTTP {response.status}"
         raise FeishuBindingError(f"飞书绑定初始化失败：{message}")
@@ -86,7 +96,7 @@ async def begin_binding(session: ClientSession) -> FeishuBindingBegin:
 async def poll_binding_once(session: ClientSession, device_code: str, *, accounts_base: str = ACCOUNTS_FEISHU) -> FeishuBindingResult | None:
     data = {"action": "poll", "device_code": device_code}
     async with session.post(f"{accounts_base}{APP_REGISTRATION_PATH}", data=data) as response:
-        payload = await response.json(content_type=None)
+        payload = await read_json_payload(response, "飞书绑定轮询")
 
     error = str(payload.get("error") or "")
     if response.status >= 400 and not error:

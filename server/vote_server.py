@@ -29,7 +29,7 @@ from typing import Any
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-from aiohttp import ClientSession, web
+from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
 try:
     from server import feishu_binding
@@ -910,7 +910,8 @@ class VoteService:
         task = self.feishu_binding_task
         if task is not None and not task.done() and self.feishu_binding_state.get("status") == "pending":
             return self.feishu_binding_view()
-        async with ClientSession() as session:
+        timeout = ClientTimeout(total=20, connect=8, sock_read=12)
+        async with ClientSession(timeout=timeout) as session:
             started = await feishu_binding.begin_binding(session)
         self._set_feishu_binding_state(
             status="pending",
@@ -939,7 +940,8 @@ class VoteService:
         interval: int,
     ) -> None:
         try:
-            async with ClientSession() as session:
+            timeout = ClientTimeout(total=20, connect=8, sock_read=12)
+            async with ClientSession(timeout=timeout) as session:
                 while time.time() < expires_at:
                     await asyncio.sleep(max(1, interval))
                     result = await feishu_binding.poll_binding_once(session, device_code)
@@ -974,6 +976,16 @@ class VoteService:
                 status="failed",
                 message="飞书绑定失败。",
                 error=str(exc),
+                verificationUrl="",
+                userCode="",
+                expiresAt=0,
+                deviceCode="",
+            )
+        except (asyncio.TimeoutError, ClientError) as exc:
+            self._set_feishu_binding_state(
+                status="failed",
+                message="飞书绑定失败。",
+                error=f"连接飞书授权服务超时或失败：{exc}",
                 verificationUrl="",
                 userCode="",
                 expiresAt=0,
@@ -1522,6 +1534,8 @@ def create_app(service: VoteService) -> web.Application:
     async def start_feishu_binding(_: web.Request) -> web.Response:
         try:
             result = await service.start_feishu_binding(asyncio.get_running_loop())
+        except (asyncio.TimeoutError, ClientError) as exc:
+            return web.json_response({"error": f"连接飞书授权服务超时或失败：{exc}"}, status=504, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
         except feishu_binding.FeishuBindingError as exc:
             return web.json_response({"error": str(exc)}, status=502, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
         except (OSError, RuntimeError) as exc:

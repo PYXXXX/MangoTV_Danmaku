@@ -480,8 +480,10 @@ settingsEl.startFeishuBinding.addEventListener("click", async () => {
   settingsEl.feishuBindStatus.className = "update-status available";
   settingsEl.feishuBindStatus.textContent = "发起中";
   settingsEl.feishuBindMessage.textContent = "正在向飞书申请授权链接……";
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 25000);
   try {
-    const response = await fetch("/api/feishu/binding/start", { method: "POST" });
+    const response = await fetch("/api/feishu/binding/start", { method: "POST", signal: controller.signal });
     requireLogin(response);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "飞书绑定发起失败");
@@ -491,8 +493,12 @@ settingsEl.startFeishuBinding.addEventListener("click", async () => {
   } catch (error) {
     settingsEl.feishuBindStatus.className = "update-status error";
     settingsEl.feishuBindStatus.textContent = "发起失败";
-    settingsEl.feishuBindMessage.textContent = error.message;
+    settingsEl.feishuBindMessage.textContent = error.name === "AbortError"
+      ? "连接飞书授权服务超时，请检查服务器是否能访问 accounts.feishu.cn。"
+      : error.message;
     settingsEl.startFeishuBinding.disabled = false;
+  } finally {
+    clearTimeout(timeoutId);
   }
 });
 
