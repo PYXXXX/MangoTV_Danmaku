@@ -185,6 +185,18 @@
               </div>
               <p id="updateFeedback" class="panel-copy wide">不会自动合并分叉，也不会覆盖部署目录里的未提交变更。</p>
             </div>
+            <div id="updateProgressWrap" class="update-progress" hidden>
+              <div class="update-progress-meta">
+                <span id="updateProgressStage">等待升级</span>
+                <span id="updateProgressPercent">0%</span>
+              </div>
+              <div class="update-progress-track" aria-hidden="true">
+                <div id="updateProgressBar" class="update-progress-bar"></div>
+              </div>
+              <p id="updateProgressDetail" class="panel-copy">尚未开始升级。</p>
+              <p class="update-progress-speed">传输速度：<code id="updateProgressSpeed">-</code></p>
+              <pre id="updateProgressLog" class="update-progress-log">等待升级。</pre>
+            </div>
             <div class="settings-update-actions">
               <button id="checkUpdate" class="secondary" type="button">检查新版本</button>
               <button id="applyUpdate" class="danger" type="button" hidden>立即升级并重启</button>

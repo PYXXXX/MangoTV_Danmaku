@@ -69,6 +69,14 @@ button:active, .link-button:active { transform: translateY(1px); }
 .update-status.ready { background: rgba(42, 123, 83, .18); color: #8fdbaf; }
 .update-status.available { background: rgba(255, 122, 26, .14); color: #ff9a50; }
 .update-status.blocked, .update-status.error { background: rgba(117, 52, 47, .2); color: #ffd4ce; }
+.update-progress { margin: 0 16px 16px; padding: 13px; border: 1px solid #292b30; border-radius: 12px; background: rgba(15, 16, 18, .7); }
+.update-progress[hidden] { display: none; }
+.update-progress-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 9px; color: #d8d8d5; font-size: 12px; font-weight: 680; }
+.update-progress-track { height: 9px; overflow: hidden; border-radius: 999px; background: #24262a; }
+.update-progress-bar { width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #ff7a1a, #ffd08f); transition: width .28s ease; }
+.update-progress-speed { margin: 8px 0 0; color: #666970; font-size: 11px; }
+.update-progress-speed code { color: #d8d8d5; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.update-progress-log { margin-top: 9px; max-height: 112px; border-top: 1px solid #24262a; padding-top: 9px; color: #8d9097; }
 .settings-update-actions { display: flex; justify-content: flex-end; gap: 9px; padding: 0 16px 16px; }
 .settings-update-actions [hidden] { display: none; }
 .secret-state { align-self: center; justify-self: end; color: #666970; font-size: 11px; }

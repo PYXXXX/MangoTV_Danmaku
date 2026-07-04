@@ -781,6 +781,9 @@ class VoteService:
         self.config_lock = asyncio.Lock()
         self.update_lock = asyncio.Lock()
         self.last_update_result: dict[str, Any] | None = None
+        self.last_update_status: dict[str, Any] | None = None
+        self.update_task: asyncio.Task[Any] | None = None
+        self.update_progress: dict[str, Any] = self._initial_update_progress()
         self.pending_restart_fields: list[str] = []
         self.store = StateStore(Path(config.get("storage", {}).get("directory", "server/data")))
         self.store.load()
@@ -794,6 +797,39 @@ class VoteService:
         self.user_selection: dict[str, str] = {}
         self.feishu_connection: Any = None
         self.updater = GitUpdater(self.repo_root)
+
+    def _initial_update_progress(self) -> dict[str, Any]:
+        return {
+            "status": "idle",
+            "stage": "idle",
+            "percent": 0,
+            "detail": "尚未开始升级。",
+            "speed": "",
+            "updatedAt": "",
+            "logs": [],
+            "restartScheduled": False,
+        }
+
+    def _set_update_progress(self, event: dict[str, Any]) -> None:
+        current = dict(self.update_progress or self._initial_update_progress())
+        current["status"] = event.get("status", current.get("status") or "running")
+        current["stage"] = event.get("stage", current.get("stage") or "running")
+        if "percent" in event:
+            current["percent"] = max(0, min(100, int(event["percent"])))
+        if event.get("detail"):
+            current["detail"] = str(event["detail"])
+        if "speed" in event:
+            current["speed"] = str(event.get("speed") or "")
+        if "restartScheduled" in event:
+            current["restartScheduled"] = bool(event["restartScheduled"])
+        current["updatedAt"] = now_iso()
+        logs = list(current.get("logs") or [])
+        detail = str(current.get("detail") or "")
+        if detail and (not logs or logs[-1] != detail):
+            logs.append(detail)
+            logs = logs[-8:]
+        current["logs"] = logs
+        self.update_progress = current
 
     def _restart_fields_for(self, config: dict[str, Any]) -> list[str]:
         paths = [
@@ -879,21 +915,27 @@ class VoteService:
         blockers: list[str] = []
         if self.store.active_round_id or self.collector.running():
             blockers.append("场次正在采集，需先结束本轮")
-        if self.update_lock.locked():
+        if self.update_lock.locked() or (self.update_task is not None and not self.update_task.done()):
             blockers.append("已有升级任务正在执行")
         return blockers
 
     async def update_status(self) -> dict[str, Any]:
-        status = await self.updater.status()
+        in_progress = self.update_task is not None and not self.update_task.done()
+        if in_progress and self.last_update_status is not None:
+            status = dict(self.last_update_status)
+        else:
+            status = await self.updater.status()
+            self.last_update_status = dict(status)
         blockers = self.update_blockers()
-        if status.get("dirty"):
+        if status.get("dirty") and not in_progress:
             blockers.append("部署目录存在未提交或未跟踪文件")
         status.update({
-            "inProgress": self.update_lock.locked(),
+            "inProgress": in_progress,
             "canApply": bool(status.get("updateAvailable")) and not blockers,
             "blockers": blockers,
             "restartWillApplyConfig": bool(self.pending_restart_fields),
             "lastUpdate": self.last_update_result,
+            "progress": self.update_progress,
         })
         return status
 
@@ -901,23 +943,67 @@ class VoteService:
         blockers = self.update_blockers()
         if blockers:
             raise SettingsValidationError("；".join(blockers))
+        status = await self.updater.status()
+        self.last_update_status = dict(status)
+        if status.get("dirty"):
+            raise SettingsValidationError("部署目录存在未提交或未跟踪文件，已拒绝自动升级")
+        self.update_progress = self._initial_update_progress()
+        self._set_update_progress({
+            "status": "running",
+            "stage": "queued",
+            "percent": 1,
+            "detail": "升级任务已启动，正在排队执行……",
+        })
+        self.update_task = loop.create_task(self._run_update_task(loop))
+        return {
+            "ok": True,
+            "started": True,
+            "message": "升级任务已启动。",
+            "progress": self.update_progress,
+        }
+
+    async def _run_update_task(self, loop: asyncio.AbstractEventLoop) -> None:
         async with self.update_lock:
-            result = await self.updater.apply_update()
-            self.last_update_result = {
-                "updated": result.get("updated"),
-                "from": result.get("from"),
-                "to": result.get("to"),
-                "steps": result.get("steps", []),
-                "requestedAt": now_iso(),
-            }
-            if result.get("updated"):
-                loop.call_later(0.8, os.kill, os.getpid(), signal.SIGTERM)
-                result["restartScheduled"] = True
-                result["message"] = "升级已完成，服务正在自动重启。"
-            else:
-                result["restartScheduled"] = False
-                result["message"] = "当前已经是最新版本，无需重启。"
-            return result
+            try:
+                result = await self.updater.apply_update(progress=self._set_update_progress)
+                self.last_update_result = {
+                    "updated": result.get("updated"),
+                    "from": result.get("from"),
+                    "to": result.get("to"),
+                    "steps": result.get("steps", []),
+                    "requestedAt": now_iso(),
+                }
+                if result.get("updated"):
+                    self._set_update_progress({
+                        "status": "complete",
+                        "stage": "restart",
+                        "percent": 100,
+                        "detail": "升级完成，服务正在自动重启……",
+                        "speed": "",
+                        "restartScheduled": True,
+                    })
+                    loop.call_later(0.8, os.kill, os.getpid(), signal.SIGTERM)
+                else:
+                    self._set_update_progress({
+                        "status": "complete",
+                        "stage": "complete",
+                        "percent": 100,
+                        "detail": "当前已经是最新版本，无需重启。",
+                        "speed": "",
+                    })
+            except Exception as exc:
+                self.last_update_result = {
+                    "updated": False,
+                    "error": str(exc),
+                    "requestedAt": now_iso(),
+                }
+                self._set_update_progress({
+                    "status": "failed",
+                    "stage": "failed",
+                    "percent": self.update_progress.get("percent", 0),
+                    "detail": str(exc),
+                    "speed": "",
+                })
 
     def start_feishu_connection(self, loop: asyncio.AbstractEventLoop) -> bool:
         try:

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from server.updater import GitUpdater, UpdateError
+from server.updater import GitUpdater, UpdateError, parse_transfer_progress
 
 
 def run(command: list[str], cwd: Path | None = None) -> str:
@@ -49,6 +49,12 @@ def make_remote_and_clone(root: Path) -> tuple[Path, Path, Path]:
 
 
 class GitUpdaterTest(unittest.TestCase):
+    def test_parse_transfer_progress_reads_percent_and_speed(self):
+        parsed = parse_transfer_progress("Receiving objects: 42% (42/100), 1.23 MiB | 4.56 MiB/s")
+        self.assertEqual(parsed["rawPercent"], 42)
+        self.assertEqual(parsed["speed"], "4.56 MiB/s")
+        self.assertIn("Receiving objects", parsed["detail"])
+
     def test_detects_and_applies_fast_forward_update(self):
         with tempfile.TemporaryDirectory() as temp:
             _, source, deploy = make_remote_and_clone(Path(temp))
@@ -61,11 +67,16 @@ class GitUpdaterTest(unittest.TestCase):
             self.assertEqual(status["remoteSha"], next_sha)
             self.assertFalse(status["dirty"])
 
-            result = asyncio.run(updater.apply_update())
+            progress_events = []
+            result = asyncio.run(updater.apply_update(progress_events.append))
             self.assertTrue(result["updated"])
             self.assertEqual(result["to"], next_sha)
             self.assertEqual((deploy / "app.txt").read_text(encoding="utf-8"), "v2\n")
             self.assertFalse(asyncio.run(updater.status())["updateAvailable"])
+            stages = [event.get("stage") for event in progress_events]
+            self.assertIn("fetch", stages)
+            self.assertIn("merge", stages)
+            self.assertTrue(any(event.get("percent", 0) >= 78 for event in progress_events))
 
     def test_dirty_worktree_rejects_auto_update(self):
         with tempfile.TemporaryDirectory() as temp:
