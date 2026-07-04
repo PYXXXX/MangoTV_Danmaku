@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import base64
 import hashlib
+import html
 import json
 import re
 import secrets
@@ -23,6 +24,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from aiohttp import ClientSession, web
@@ -30,9 +32,11 @@ from aiohttp import ClientSession, web
 try:
     from server.precise_results import parse_precise_result, validate_precise_result
     from server.feishu_cards import build_control_card, build_round_list_card
+    from server.operator_auth import OperatorAuth, safe_next_url
 except ModuleNotFoundError:  # Support `python server/vote_server.py`.
     from precise_results import parse_precise_result, validate_precise_result
     from feishu_cards import build_control_card, build_round_list_card
+    from operator_auth import OperatorAuth, safe_next_url
 
 
 def now_iso() -> str:
@@ -951,12 +955,108 @@ class VoteService:
 
 
 def create_app(service: VoteService) -> web.Application:
-    app = web.Application(client_max_size=3 * 1024 * 1024)
     webui_dir = Path(__file__).with_name("webui")
     precise_doc = Path(__file__).resolve().parents[1] / "docs" / "PRECISE_RESULT_AGENT.md"
+    auth = OperatorAuth(service.config.get("operator_auth") or {})
+    index_template = (webui_dir / "index.html").read_text(encoding="utf-8")
+    login_template = (webui_dir / "login.html").read_text(encoding="utf-8")
 
-    async def webui_index(_: web.Request) -> web.FileResponse:
-        return web.FileResponse(webui_dir / "index.html")
+    @web.middleware
+    async def security_headers(request: web.Request, handler: Any) -> web.StreamResponse:
+        try:
+            response = await handler(request)
+        except web.HTTPException as exc:
+            exc.headers.setdefault("X-Content-Type-Options", "nosniff")
+            exc.headers.setdefault("X-Frame-Options", "DENY")
+            exc.headers.setdefault("Referrer-Policy", "no-referrer")
+            exc.headers.setdefault(
+                "Content-Security-Policy",
+                "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; "
+                "form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+            )
+            raise
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; "
+            "form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+        )
+        return response
+
+    @web.middleware
+    async def operator_auth_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
+        if not auth.enabled:
+            return await handler(request)
+        public_paths = {"/login", "/auth/login", "/healthz", "/feishu/events", "/webui/styles.css"}
+        if request.path in public_paths or auth.request_is_authenticated(request):
+            return await handler(request)
+        if request.path.startswith("/api/"):
+            return web.json_response({"error": "登录已过期，请重新登录"}, status=401, headers={"Cache-Control": "no-store"})
+        next_url = quote(str(request.rel_url), safe="")
+        raise web.HTTPFound(location=f"/login?next={next_url}")
+
+    app = web.Application(
+        client_max_size=3 * 1024 * 1024,
+        middlewares=[security_headers, operator_auth_middleware],
+    )
+
+    def login_response(error: str = "", next_url: str = "/", status: int = 200) -> web.Response:
+        safe_next = safe_next_url(next_url)
+        error_block = f'<p class="auth-error" role="alert">{html.escape(error)}</p>' if error else ""
+        body = (
+            login_template
+            .replace("{{NEXT_URL}}", html.escape(safe_next, quote=True))
+            .replace("{{ERROR_BLOCK}}", error_block)
+        )
+        return web.Response(
+            text=body,
+            content_type="text/html",
+            status=status,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def webui_index(_: web.Request) -> web.Response:
+        auth_control = ""
+        if auth.enabled:
+            auth_control = (
+                '<form class="logout-form" action="/auth/logout" method="post">'
+                '<button class="logout-button" type="submit">退出登录</button>'
+                "</form>"
+            )
+        body = index_template.replace("<!-- OPERATOR_AUTH_CONTROL -->", auth_control)
+        return web.Response(text=body, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+    async def login_page(request: web.Request) -> web.StreamResponse:
+        next_url = safe_next_url(request.query.get("next"))
+        if not auth.enabled:
+            raise web.HTTPFound(location="/")
+        if auth.request_is_authenticated(request):
+            raise web.HTTPFound(location=next_url)
+        return login_response(next_url=next_url)
+
+    async def login_submit(request: web.Request) -> web.StreamResponse:
+        if not auth.enabled:
+            raise web.HTTPFound(location="/")
+        data = await request.post()
+        next_url = safe_next_url(str(data.get("next") or "/"))
+        client_key = request.remote or "unknown"
+        if auth.is_rate_limited(client_key):
+            return login_response("尝试次数过多，请稍后再试。", next_url, status=429)
+        password = str(data.get("password") or "")
+        if not auth.verify_password(password):
+            auth.record_failure(client_key)
+            return login_response("密码错误，请重试。", next_url, status=401)
+        auth.clear_failures(client_key)
+        response = web.HTTPSeeOther(location=next_url)
+        auth.set_session_cookie(response)
+        raise response
+
+    async def logout(_: web.Request) -> web.StreamResponse:
+        response = web.HTTPSeeOther(location="/login")
+        auth.clear_session_cookie(response)
+        raise response
 
     async def health(_: web.Request) -> web.Response:
         feishu_thread = getattr(service.feishu_connection, "thread", None)
@@ -1053,6 +1153,10 @@ def create_app(service: VoteService) -> web.Application:
 
     app.router.add_get("/", webui_index)
     app.router.add_get("/admin", webui_index)
+    app.router.add_get("/login", login_page)
+    app.router.add_post("/auth/login", login_submit)
+    app.router.add_post("/auth/logout", logout)
+    app.router.add_get("/webui/index.html", webui_index)
     app.router.add_static("/webui", webui_dir)
     app.router.add_get("/healthz", health)
     app.router.add_get("/docs/precise-result-agent", precise_result_doc)
