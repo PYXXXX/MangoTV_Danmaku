@@ -164,6 +164,34 @@
           </details>
 
           <details>
+            <summary>程序版本升级</summary>
+            <p class="settings-warning">点击检查后会读取 GitHub 远端 commit；确认升级后仅执行 fast-forward 更新、安装服务端依赖并自动重启。采集中的场次会阻止升级。</p>
+            <div class="settings-grid update-grid">
+              <div>
+                <span class="field-label">当前 commit</span>
+                <code id="updateCurrentCommit">尚未检查</code>
+              </div>
+              <div>
+                <span class="field-label">远端 commit</span>
+                <code id="updateRemoteCommit">尚未检查</code>
+              </div>
+              <div>
+                <span class="field-label">目标分支</span>
+                <code id="updateBranch">尚未检查</code>
+              </div>
+              <div>
+                <span class="field-label">升级状态</span>
+                <span id="updateStatus" class="update-status">尚未检查</span>
+              </div>
+              <p id="updateFeedback" class="panel-copy wide">不会自动合并分叉，也不会覆盖部署目录里的未提交变更。</p>
+            </div>
+            <div class="settings-update-actions">
+              <button id="checkUpdate" class="secondary" type="button">检查新版本</button>
+              <button id="applyUpdate" class="danger" type="button" hidden>立即升级并重启</button>
+            </div>
+          </details>
+
+          <details>
             <summary>高级服务参数</summary>
             <p class="settings-warning">监听地址、端口、数据目录和 SQLite 路径涉及 socket 或持久化文件，保存后需要由 systemd 重启服务。不要在场次采集中切换。</p>
             <div class="settings-grid">
