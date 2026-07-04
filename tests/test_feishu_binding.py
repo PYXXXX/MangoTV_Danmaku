@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from server.feishu_binding import (
+    ACCOUNTS_LARK,
     APP_REGISTRATION_PATH,
     FeishuBindingError,
     FeishuBindingResult,
@@ -58,9 +59,11 @@ class FeishuBindingTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_begin_binding_posts_expected_device_registration_payload(self):
         session = FakeSession([
+            FakeResponse({"supported_auth_methods": ["client_secret"]}),
             FakeResponse({
                 "device_code": "device-1",
                 "user_code": "USER-1",
+                "verification_uri_complete": "https://open.feishu.cn/page/cli?user_code=USER-1&from=server",
                 "expires_in": 600,
                 "interval": 3,
             })
@@ -69,12 +72,25 @@ class FeishuBindingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.device_code, "device-1")
         self.assertEqual(result.user_code, "USER-1")
         self.assertEqual(result.interval, 3)
-        self.assertIn("user_code=USER-1", result.verification_url)
+        self.assertEqual(result.verification_url, "https://open.feishu.cn/page/cli?user_code=USER-1&from=server")
         self.assertEqual(session.posts[0][0], "https://accounts.feishu.cn" + APP_REGISTRATION_PATH)
-        self.assertEqual(session.posts[0][1]["action"], "begin")
-        self.assertEqual(session.posts[0][1]["archetype"], "PersonalAgent")
-        self.assertEqual(session.posts[0][1]["auth_method"], "client_secret")
-        self.assertEqual(session.posts[0][1]["request_user_info"], "open_id tenant_brand")
+        self.assertEqual(session.posts[0][1], {"action": "init"})
+        self.assertEqual(session.posts[1][0], "https://accounts.feishu.cn" + APP_REGISTRATION_PATH)
+        self.assertEqual(session.posts[1][1]["action"], "begin")
+        self.assertEqual(session.posts[1][1]["archetype"], "PersonalAgent")
+        self.assertEqual(session.posts[1][1]["auth_method"], "client_secret")
+        self.assertEqual(session.posts[1][1]["request_user_info"], "open_id tenant_brand")
+
+    async def test_begin_binding_falls_back_to_cli_url(self):
+        session = FakeSession([
+            FakeResponse({}),
+            FakeResponse({
+                "device_code": "device-1",
+                "user_code": "USER-1",
+            }),
+        ])
+        result = await begin_binding(session)
+        self.assertIn("user_code=USER-1", result.verification_url)
 
     async def test_poll_pending_returns_none(self):
         session = FakeSession([FakeResponse({"error": "authorization_pending"})])
@@ -94,6 +110,21 @@ class FeishuBindingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.app_secret, "secret-value")
         self.assertEqual(result.open_id, "ou_operator")
         self.assertEqual(result.tenant_brand, "feishu")
+
+    async def test_poll_switches_to_lark_accounts_when_tenant_brand_requires_it(self):
+        session = FakeSession([
+            FakeResponse({"error": "authorization_pending", "user_info": {"tenant_brand": "lark"}}),
+            FakeResponse({
+                "client_id": "cli_lark",
+                "client_secret": "secret-value",
+                "user_info": {"open_id": "ou_operator", "tenant_brand": "lark"},
+            }),
+        ])
+        result = await poll_binding_once(session, "device-1")
+        self.assertIsNotNone(result)
+        self.assertEqual(result.app_id, "cli_lark")
+        self.assertEqual(result.tenant_brand, "lark")
+        self.assertEqual(session.posts[1][0], ACCOUNTS_LARK + APP_REGISTRATION_PATH)
 
     async def test_poll_denied_raises_friendly_error(self):
         session = FakeSession([FakeResponse({"error": "access_denied"})])

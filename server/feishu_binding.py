@@ -1,8 +1,9 @@
 """Feishu one-click app registration flow used by the operator Web UI.
 
-This mirrors the public flow used by larksuite/cli `config init --new`:
-request an app-registration device code, show the verification URL to the
-operator, then poll until Feishu returns app credentials.
+This follows the same public app-registration flow used by larksuite/cli and
+cc-connect: initialise the registration endpoint, request a PersonalAgent
+device code, show the verification URL to the operator, then poll until Feishu
+returns app credentials.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from aiohttp import ClientSession
 
 
 ACCOUNTS_FEISHU = "https://accounts.feishu.cn"
+ACCOUNTS_LARK = "https://accounts.larksuite.com"
 OPEN_FEISHU = "https://open.feishu.cn"
 APP_REGISTRATION_PATH = "/oauth/v1/app/registration"
 
@@ -33,6 +35,7 @@ class FeishuBindingBegin:
     expires_in: int
     interval: int
     expires_at: float
+    accounts_base: str = ACCOUNTS_FEISHU
 
 
 @dataclass(frozen=True)
@@ -55,6 +58,23 @@ def as_int(value: Any, default: int) -> int:
         return default
 
 
+async def registration_call(
+    session: ClientSession,
+    action: str,
+    data: dict[str, str] | None = None,
+    *,
+    accounts_base: str = ACCOUNTS_FEISHU,
+) -> dict[str, Any]:
+    payload_data = {"action": action}
+    if data:
+        payload_data.update(data)
+    async with session.post(f"{accounts_base}{APP_REGISTRATION_PATH}", data=payload_data) as response:
+        payload = await read_json_payload(response, "飞书绑定")
+    if response.status >= 400 and not payload.get("error"):
+        raise FeishuBindingError(f"飞书绑定失败：HTTP {response.status}")
+    return payload
+
+
 async def read_json_payload(response: Any, action: str) -> dict[str, Any]:
     try:
         payload = await response.json(content_type=None)
@@ -66,27 +86,34 @@ async def read_json_payload(response: Any, action: str) -> dict[str, Any]:
 
 
 async def begin_binding(session: ClientSession) -> FeishuBindingBegin:
+    init_payload = await registration_call(session, "init")
+    if init_payload.get("error"):
+        message = init_payload.get("error_description") or init_payload.get("error")
+        raise FeishuBindingError(f"飞书绑定初始化失败：{message}")
+    methods = init_payload.get("supported_auth_methods")
+    if isinstance(methods, list) and methods and "client_secret" not in {str(item).lower() for item in methods}:
+        raise FeishuBindingError("飞书绑定初始化失败：当前环境不支持 client_secret 授权方式")
+
     data = {
-        "action": "begin",
         "archetype": "PersonalAgent",
         "auth_method": "client_secret",
         "request_user_info": "open_id tenant_brand",
     }
-    async with session.post(f"{ACCOUNTS_FEISHU}{APP_REGISTRATION_PATH}", data=data) as response:
-        payload = await read_json_payload(response, "飞书绑定初始化")
-    if response.status >= 400 or payload.get("error"):
-        message = payload.get("error_description") or payload.get("error") or f"HTTP {response.status}"
+    payload = await registration_call(session, "begin", data)
+    if payload.get("error"):
+        message = payload.get("error_description") or payload.get("error")
         raise FeishuBindingError(f"飞书绑定初始化失败：{message}")
     user_code = str(payload.get("user_code") or "")
     device_code = str(payload.get("device_code") or "")
     if not user_code or not device_code:
         raise FeishuBindingError("飞书绑定初始化失败：未返回 user_code 或 device_code")
+    verification_url = str(payload.get("verification_uri_complete") or "").strip() or build_verification_url(user_code)
     expires_in = as_int(payload.get("expires_in"), 300)
     interval = max(1, as_int(payload.get("interval"), 5))
     return FeishuBindingBegin(
         device_code=device_code,
         user_code=user_code,
-        verification_url=build_verification_url(user_code),
+        verification_url=verification_url,
         expires_in=expires_in,
         interval=interval,
         expires_at=time.time() + expires_in,
@@ -111,8 +138,13 @@ async def poll_binding_once(session: ClientSession, device_code: str, *, account
             app_id=app_id,
             app_secret=app_secret,
             open_id=str(user_info.get("open_id") or ""),
-            tenant_brand=str(user_info.get("tenant_brand") or "feishu"),
+            tenant_brand=str(user_info.get("tenant_brand") or "feishu").lower(),
         )
+
+    user_info = payload.get("user_info") if isinstance(payload.get("user_info"), dict) else {}
+    tenant_brand = str(user_info.get("tenant_brand") or "").lower()
+    if tenant_brand == "lark" and accounts_base != ACCOUNTS_LARK:
+        return await poll_binding_once(session, device_code, accounts_base=ACCOUNTS_LARK)
 
     if error in {"authorization_pending", ""}:
         return None

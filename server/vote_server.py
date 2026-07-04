@@ -818,6 +818,7 @@ class VoteService:
             "warning": "",
             "deviceCode": "",
             "interval": 5,
+            "accountsBase": feishu_binding.ACCOUNTS_FEISHU,
         }
 
     def _set_feishu_binding_state(self, **updates: Any) -> None:
@@ -829,6 +830,7 @@ class VoteService:
         feishu_config = self.config.get("feishu") or {}
         state = dict(self.feishu_binding_state or self._initial_feishu_binding_state())
         state.pop("deviceCode", None)
+        state.pop("accountsBase", None)
         if state.get("status") == "idle" and has_real_value(feishu_config.get("app_id")) and has_real_value(feishu_config.get("app_secret")):
             state["status"] = "bound"
             state["message"] = "飞书应用凭据已配置。"
@@ -926,9 +928,10 @@ class VoteService:
             tenantBrand="",
             deviceCode=started.device_code,
             interval=started.interval,
+            accountsBase=started.accounts_base,
         )
         self.feishu_binding_task = loop.create_task(
-            self._run_feishu_binding_poll(loop, started.device_code, started.expires_at, started.interval)
+            self._run_feishu_binding_poll(loop, started.device_code, started.expires_at, started.interval, started.accounts_base)
         )
         return self.feishu_binding_view()
 
@@ -938,13 +941,14 @@ class VoteService:
         device_code: str,
         expires_at: float,
         interval: int,
+        accounts_base: str,
     ) -> None:
         try:
             timeout = ClientTimeout(total=20, connect=8, sock_read=12)
             async with ClientSession(timeout=timeout) as session:
                 while time.time() < expires_at:
                     await asyncio.sleep(max(1, interval))
-                    result = await feishu_binding.poll_binding_once(session, device_code)
+                    result = await feishu_binding.poll_binding_once(session, device_code, accounts_base=accounts_base)
                     if result is None:
                         continue
                     warning = await self._complete_feishu_binding(result, loop)
