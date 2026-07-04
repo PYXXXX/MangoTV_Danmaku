@@ -10,11 +10,13 @@ const settingsEl = Object.fromEntries([
   "cfgAuthEnabled", "cfgNewPassword", "cfgSessionHours", "cfgSecureCookie", "cfgMaxFailures",
   "cfgFailureWindow", "authSecretState",
   "updateCurrentCommit", "updateRemoteCommit", "updateBranch", "updateStatus", "updateFeedback",
-  "checkUpdate", "applyUpdate",
+  "updateProgressWrap", "updateProgressStage", "updateProgressPercent", "updateProgressBar",
+  "updateProgressDetail", "updateProgressSpeed", "updateProgressLog", "checkUpdate", "applyUpdate",
   "cfgListenHost", "cfgListenPort", "cfgPublicBaseUrl", "cfgStorageDir"
 ].map((id) => [id, document.getElementById(id)]));
 
 let settingsSnapshot = null;
+let updatePollTimer = null;
 
 function setField(id, value) {
   settingsEl[id].value = value == null ? "" : String(value);
@@ -57,6 +59,38 @@ function shortCommit(value) {
   return value ? String(value).slice(0, 12) : "未读取";
 }
 
+function stageText(stage) {
+  return {
+    idle: "等待升级",
+    queued: "排队中",
+    preflight: "前置检查",
+    fetch: "拉取代码",
+    verify: "校验快进",
+    merge: "切换版本",
+    dependencies: "更新依赖",
+    finalize: "收尾检查",
+    restart: "等待重启",
+    complete: "已完成",
+    failed: "升级失败"
+  }[stage] || "升级中";
+}
+
+function renderUpdateProgress(progress) {
+  if (!progress || progress.status === "idle") {
+    settingsEl.updateProgressWrap.hidden = true;
+    settingsEl.updateProgressBar.style.width = "0%";
+    return;
+  }
+  const percent = Math.max(0, Math.min(100, Number(progress.percent || 0)));
+  settingsEl.updateProgressWrap.hidden = false;
+  settingsEl.updateProgressStage.textContent = stageText(progress.stage);
+  settingsEl.updateProgressPercent.textContent = Math.round(percent) + "%";
+  settingsEl.updateProgressBar.style.width = percent + "%";
+  settingsEl.updateProgressDetail.textContent = progress.detail || "正在升级……";
+  settingsEl.updateProgressSpeed.textContent = progress.speed || "-";
+  settingsEl.updateProgressLog.textContent = ((progress.logs || []).slice(-8).join("\n")) || progress.detail || "正在升级……";
+}
+
 function renderUpdateStatus(payload) {
   settingsEl.updateCurrentCommit.textContent = shortCommit(payload && (payload.currentShort || payload.currentSha));
   settingsEl.updateRemoteCommit.textContent = shortCommit(payload && (payload.remoteShort || payload.remoteSha));
@@ -64,6 +98,7 @@ function renderUpdateStatus(payload) {
     ? [payload.remote, payload.remoteBranch || payload.branch || "main"].join("/")
     : "未读取";
 
+  renderUpdateProgress(payload && payload.progress);
   settingsEl.applyUpdate.hidden = true;
   settingsEl.updateStatus.className = "update-status";
 
@@ -75,6 +110,16 @@ function renderUpdateStatus(payload) {
   }
 
   const blockers = payload.blockers || [];
+  if (payload.inProgress) {
+    settingsEl.updateStatus.classList.add("available");
+    settingsEl.updateStatus.textContent = "升级中";
+    settingsEl.checkUpdate.disabled = true;
+    settingsEl.applyUpdate.hidden = true;
+    settingsEl.updateFeedback.textContent = "升级正在执行：" + ((payload.progress && payload.progress.detail) || "请稍候……");
+    return;
+  }
+  settingsEl.checkUpdate.disabled = false;
+
   if (!payload.updateAvailable) {
     settingsEl.updateStatus.classList.add("ready");
     settingsEl.updateStatus.textContent = "已是最新";
@@ -97,6 +142,42 @@ function renderUpdateStatus(payload) {
   settingsEl.updateFeedback.textContent = blockers.length
     ? ("发现新版本，但当前被阻止：" + blockers.join("；"))
     : "发现新版本，但当前环境暂不可自动升级。";
+}
+
+function stopUpdatePolling() {
+  if (updatePollTimer) {
+    clearInterval(updatePollTimer);
+    updatePollTimer = null;
+  }
+}
+
+function startUpdatePolling() {
+  stopUpdatePolling();
+  updatePollTimer = setInterval(async () => {
+    try {
+      const response = await fetch("/api/update/status?t=" + Date.now(), { cache: "no-store" });
+      requireLogin(response);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "版本状态读取失败");
+      renderUpdateStatus(payload);
+      const progress = payload.progress || {};
+      if (!payload.inProgress) {
+        stopUpdatePolling();
+        settingsEl.checkUpdate.disabled = false;
+        settingsEl.applyUpdate.disabled = false;
+        if (progress.status === "complete" && progress.restartScheduled) {
+          settingsEl.updateFeedback.textContent = "升级完成，服务正在重启，页面稍后自动刷新。";
+          setTimeout(() => window.location.reload(), 5000);
+        }
+      }
+    } catch (error) {
+      settingsEl.updateStatus.className = "update-status available";
+      settingsEl.updateStatus.textContent = "等待服务";
+      settingsEl.updateFeedback.textContent = "服务可能正在重启：" + error.message + "。页面稍后自动刷新。";
+      stopUpdatePolling();
+      setTimeout(() => window.location.reload(), 5000);
+    }
+  }, 1000);
 }
 
 function populateSettings(payload) {
@@ -236,6 +317,7 @@ async function loadSettings(showFeedback = true) {
 }
 
 async function checkUpdate(offerApply = false) {
+  if (settingsEl.checkUpdate.disabled && !offerApply) return;
   settingsEl.checkUpdate.disabled = true;
   settingsEl.updateStatus.className = "update-status";
   settingsEl.updateStatus.textContent = "检查中";
@@ -246,6 +328,7 @@ async function checkUpdate(offerApply = false) {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "版本检查失败");
     renderUpdateStatus(payload);
+    if (payload.inProgress) startUpdatePolling();
     if (offerApply && payload.updateAvailable && payload.canApply) {
       const confirmed = window.confirm("发现新版本 " + shortCommit(payload.remoteSha) + "，是否立即升级并自动重启服务？");
       if (confirmed) await applyUpdate(false);
@@ -254,7 +337,7 @@ async function checkUpdate(offerApply = false) {
     renderUpdateStatus({ ok: false, error: error.message });
     addLog("版本检查失败：" + error.message);
   } finally {
-    settingsEl.checkUpdate.disabled = false;
+    if (!updatePollTimer) settingsEl.checkUpdate.disabled = false;
   }
 }
 
@@ -270,20 +353,22 @@ async function applyUpdate(askConfirm = true) {
     requireLogin(response);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "升级失败");
-    if (payload.status) renderUpdateStatus(payload.status);
-    settingsEl.updateFeedback.textContent = payload.message || "升级完成，服务正在重启。";
+    renderUpdateProgress(payload.progress);
+    settingsEl.updateFeedback.textContent = payload.message || "升级任务已启动。";
     addLog(settingsEl.updateFeedback.textContent);
-    if (payload.restartScheduled) {
-      setTimeout(() => window.location.reload(), 6000);
-    }
+    startUpdatePolling();
   } catch (error) {
     settingsEl.updateStatus.className = "update-status error";
     settingsEl.updateStatus.textContent = "升级失败";
     settingsEl.updateFeedback.textContent = error.message || "升级请求中断，服务可能正在重启，请稍后刷新。";
     addLog("程序升级失败：" + settingsEl.updateFeedback.textContent);
-  } finally {
-    settingsEl.applyUpdate.disabled = false;
     settingsEl.checkUpdate.disabled = false;
+    settingsEl.applyUpdate.disabled = false;
+  } finally {
+    if (!updatePollTimer) {
+      settingsEl.applyUpdate.disabled = false;
+      settingsEl.checkUpdate.disabled = false;
+    }
   }
 }
 
