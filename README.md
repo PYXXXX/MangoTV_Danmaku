@@ -97,6 +97,8 @@ python tools/setup_operator_password.py
 
 启用 `operator_auth` 后，运营页面、清洗规范和 `/api/*` 均要求登录；`/healthz`、登录入口与飞书回调保持可访问。
 
+登录后点击“系统配置”可在线维护活动、候选人、别名、多人策略、直播源、采集/去重、GitHub、飞书与密码策略。大多数配置立即热应用；当前场次的候选人口径保持冻结，监听地址、端口、数据目录和 SQLite 路径由界面提示安全重启后生效。
+
 ### 运营端密码保护
 
 运行 `python tools/setup_operator_password.py` 后按提示输入并确认密码。默认会话时长为 12 小时，连续 5 次输错后同一来源会被限制 5 分钟。

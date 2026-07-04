@@ -15,7 +15,10 @@
           <p id="subtitle" class="program">等待服务器状态</p>
         </div>
         <div class="controls">
-          <!-- OPERATOR_AUTH_CONTROL -->
+          <div class="operator-tools">
+            <button id="settingsToggle" class="settings-toggle" type="button">系统配置</button>
+            <!-- OPERATOR_AUTH_CONTROL -->
+          </div>
           <label for="activitySelect">活动</label>
           <select id="activitySelect" disabled><option>暂无活动</option></select>
           <label for="roundSelect">投票场次</label>
@@ -68,6 +71,118 @@
           </form>
         </section>
       </section>
+      <section id="settingsPanel" class="settings-panel" hidden aria-labelledby="settingsTitle">
+        <div class="settings-heading">
+          <div>
+            <p class="kicker">RUNTIME CONFIG</p>
+            <h2 id="settingsTitle">系统配置</h2>
+            <p class="panel-copy">保存后自动校验并热应用。正在采集的场次保持启动时的候选人与计票口径；带“需重启”的高级项会保存但不会切换当前进程。</p>
+          </div>
+          <div class="settings-actions-top">
+            <span id="configStatus" class="config-status">尚未读取</span>
+            <button id="settingsClose" class="ghost" type="button">关闭</button>
+          </div>
+        </div>
+        <form id="settingsForm" class="settings-form">
+          <details open>
+            <summary>节目、候选人与计票</summary>
+            <div class="settings-grid">
+              <label>默认活动名称<input id="cfgActivity" type="text" required /></label>
+              <label>多人弹幕策略
+                <select id="cfgPolicy">
+                  <option value="all">all · 每位各计 1 票</option>
+                  <option value="review">review · 留待语义审核</option>
+                </select>
+              </label>
+              <label class="wide">候选人与别名（每行一位：正式名, 别名1, 别名2）
+                <textarea id="cfgCandidates" rows="7" required></textarea>
+              </label>
+            </div>
+          </details>
+
+          <details>
+            <summary>弹幕采集与去重</summary>
+            <div class="settings-grid">
+              <label class="wide">默认直播 URL<input id="cfgLiveUrl" type="url" required /></label>
+              <label>room_id<input id="cfgRoomId" type="text" placeholder="例如 liveshow-5366" /></label>
+              <label>camera_id<input id="cfgCameraId" type="text" /></label>
+              <label class="wide">历史弹幕接口<input id="cfgHistoryApi" type="url" required /></label>
+              <label>room_id 前缀<input id="cfgFlag" type="text" required /></label>
+              <label>轮询间隔（秒）<input id="cfgPollSeconds" type="number" min="0.25" max="60" step="0.25" required /></label>
+              <label>重连间隔（秒）<input id="cfgReconnectSeconds" type="number" min="1" max="300" step="1" required /></label>
+              <label class="check-label"><input id="cfgCountInitial" type="checkbox" /> 将首批历史弹幕计入场次</label>
+              <label>内存去重缓存<input id="cfgDedupHot" type="number" min="1000" max="10000000" required /></label>
+              <label>去重记录上限<input id="cfgDedupMax" type="number" min="10000" max="1000000000" required /></label>
+              <label class="wide">SQLite 去重路径（修改后需重启）<input id="cfgDedupDb" type="text" required /></label>
+            </div>
+          </details>
+
+          <details>
+            <summary>GitHub 公开结果发布</summary>
+            <div class="settings-grid">
+              <label class="check-label"><input id="cfgGithubEnabled" type="checkbox" /> 启用 GitHub 发布</label>
+              <span id="githubSecretState" class="secret-state"></span>
+              <label>仓库所有者<input id="cfgGithubOwner" type="text" /></label>
+              <label>仓库名称<input id="cfgGithubRepo" type="text" /></label>
+              <label>分支<input id="cfgGithubBranch" type="text" /></label>
+              <label>结果文件路径<input id="cfgGithubPath" type="text" /></label>
+              <label class="wide">Fine-grained Token（留空保留现值）<input id="cfgGithubToken" type="password" autocomplete="new-password" /></label>
+            </div>
+          </details>
+
+          <details>
+            <summary>飞书 Bot</summary>
+            <div class="settings-grid">
+              <label class="check-label"><input id="cfgFeishuEnabled" type="checkbox" /> 启用飞书 Bot</label>
+              <span id="feishuSecretState" class="secret-state"></span>
+              <label>连接模式
+                <select id="cfgFeishuMode">
+                  <option value="websocket">WebSocket 长连接</option>
+                  <option value="webhook">HTTP 回调</option>
+                </select>
+              </label>
+              <label>App ID<input id="cfgFeishuAppId" type="text" /></label>
+              <label class="wide">App Secret（留空保留现值）<input id="cfgFeishuSecret" type="password" autocomplete="new-password" /></label>
+              <label class="wide">Verification Token（仅 webhook；留空保留）<input id="cfgFeishuToken" type="password" autocomplete="new-password" /></label>
+              <label class="wide">允许操作的 open_id（逗号或换行分隔）<textarea id="cfgFeishuOpenIds" rows="3"></textarea></label>
+              <label class="wide">允许操作的 chat_id（逗号或换行分隔）<textarea id="cfgFeishuChatIds" rows="3"></textarea></label>
+              <label class="wide">公开结果页 URL<input id="cfgFeishuPublicUrl" type="url" /></label>
+            </div>
+          </details>
+
+          <details>
+            <summary>运营端登录安全</summary>
+            <div class="settings-grid">
+              <label class="check-label"><input id="cfgAuthEnabled" type="checkbox" /> 启用运营密码</label>
+              <span id="authSecretState" class="secret-state"></span>
+              <label class="wide">设置新密码（至少 10 个字符；留空保留现值）<input id="cfgNewPassword" type="password" minlength="10" autocomplete="new-password" /></label>
+              <label>会话有效期（小时）<input id="cfgSessionHours" type="number" min="1" max="168" required /></label>
+              <label class="check-label"><input id="cfgSecureCookie" type="checkbox" /> Cookie 仅通过 HTTPS 发送</label>
+              <label>失败次数上限<input id="cfgMaxFailures" type="number" min="3" max="20" required /></label>
+              <label>限速窗口（秒）<input id="cfgFailureWindow" type="number" min="60" max="3600" required /></label>
+            </div>
+          </details>
+
+          <details>
+            <summary>高级服务参数</summary>
+            <p class="settings-warning">监听地址、端口、数据目录和 SQLite 路径涉及 socket 或持久化文件，保存后需要由 systemd 重启服务。不要在场次采集中切换。</p>
+            <div class="settings-grid">
+              <label>监听地址<input id="cfgListenHost" type="text" required /></label>
+              <label>监听端口<input id="cfgListenPort" type="number" min="1" max="65535" required /></label>
+              <label class="wide">外部访问 URL<input id="cfgPublicBaseUrl" type="url" /></label>
+              <label class="wide">数据目录（修改后需重启）<input id="cfgStorageDir" type="text" required /></label>
+            </div>
+          </details>
+
+          <div class="settings-footer">
+            <p id="settingsFeedback" class="panel-copy">敏感字段不会回显；留空表示保留服务器现值。</p>
+            <div class="settings-submit-actions">
+              <button id="restartService" class="danger" type="button" hidden>安全重启服务</button>
+              <button id="saveSettings" class="primary" type="submit">保存并热应用</button>
+            </div>
+          </div>
+        </form>
+      </section>
       <section class="metrics" aria-label="投票概览">
         <div><span>弹幕样本</span><strong id="messages">0</strong></div>
         <div><span>有效计票</span><strong id="votes">0</strong></div>
@@ -104,5 +219,6 @@
       </footer>
     </main>
     <script src="/webui/app.js"></script>
+    <script src="/webui/settings.js"></script>
   </body>
 </html>
