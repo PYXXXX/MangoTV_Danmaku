@@ -8,6 +8,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WebuiSettingsJsTest(unittest.TestCase):
+    def test_settings_js_keeps_feishu_binding_entrypoints(self):
+        source = (ROOT / "server" / "webui" / "settings.js").read_text(encoding="utf-8")
+        self.assertIn("startFeishuBinding", source)
+        self.assertIn("/api/feishu/binding/start", source)
+        self.assertIn("AbortController", source)
+
     def test_feishu_binding_button_click_posts_start_endpoint(self):
         script = textwrap.dedent(
             r"""

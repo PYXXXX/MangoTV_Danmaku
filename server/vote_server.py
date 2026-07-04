@@ -1384,11 +1384,64 @@ class VoteService:
         return "未识别指令。发送“帮助”查看用法。"
 
 
+def _safe_static_version(value: str) -> str:
+    text = re.sub(r"[^0-9A-Za-z._-]+", "-", str(value or "").strip()).strip("-._")
+    return text or f"runtime-{int(time.time())}"
+
+
+def _git_dir_for(repo_root: Path) -> Path:
+    git_path = repo_root / ".git"
+    if git_path.is_dir():
+        return git_path
+    try:
+        content = git_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return git_path
+    if content.startswith("gitdir:"):
+        target = Path(content.split(":", 1)[1].strip())
+        return target if target.is_absolute() else (repo_root / target).resolve()
+    return git_path
+
+
+def static_asset_version(repo_root: Path) -> str:
+    configured = os.environ.get("MGTV_STATIC_VERSION")
+    if configured:
+        return _safe_static_version(configured)
+    git_dir = _git_dir_for(repo_root)
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+        if head.startswith("ref:"):
+            ref = head.split(":", 1)[1].strip()
+            ref_path = git_dir / ref
+            if ref_path.exists():
+                commit = ref_path.read_text(encoding="utf-8").strip()
+            else:
+                commit = ""
+                for line in (git_dir / "packed-refs").read_text(encoding="utf-8").splitlines():
+                    if line and not line.startswith("#"):
+                        parts = line.split(" ", 1)
+                        if len(parts) == 2 and parts[1] == ref:
+                            commit = parts[0]
+                            break
+        else:
+            commit = head
+        if re.fullmatch(r"[0-9a-fA-F]{7,40}", commit):
+            return commit[:12].lower()
+    except OSError:
+        pass
+    return f"runtime-{int(time.time())}-{secrets.token_hex(4)}"
+
+
 def create_app(service: VoteService) -> web.Application:
     webui_dir = Path(__file__).with_name("webui")
     precise_doc = Path(__file__).resolve().parents[1] / "docs" / "PRECISE_RESULT_AGENT.md"
     index_template = (webui_dir / "index.html").read_text(encoding="utf-8")
     login_template = (webui_dir / "login.html").read_text(encoding="utf-8")
+    version_root = getattr(service, "repo_root", Path(__file__).resolve().parents[1])
+    static_version = static_asset_version(Path(version_root))
+
+    def render_static_version(template: str) -> str:
+        return template.replace("{{STATIC_VERSION}}", html.escape(static_version, quote=True))
 
     @web.middleware
     async def security_headers(request: web.Request, handler: Any) -> web.StreamResponse:
@@ -1436,7 +1489,7 @@ def create_app(service: VoteService) -> web.Application:
         safe_next = safe_next_url(next_url)
         error_block = f'<p class="auth-error" role="alert">{html.escape(error)}</p>' if error else ""
         body = (
-            login_template
+            render_static_version(login_template)
             .replace("{{NEXT_URL}}", html.escape(safe_next, quote=True))
             .replace("{{ERROR_BLOCK}}", error_block)
         )
@@ -1455,7 +1508,10 @@ def create_app(service: VoteService) -> web.Application:
                 '<button class="logout-button" type="submit">退出登录</button>'
                 "</form>"
             )
-        body = index_template.replace("<!-- OPERATOR_AUTH_CONTROL -->", auth_control)
+        body = (
+            render_static_version(index_template)
+            .replace("<!-- OPERATOR_AUTH_CONTROL -->", auth_control)
+        )
         return web.Response(text=body, content_type="text/html", headers={"Cache-Control": "no-store"})
 
     async def login_page(request: web.Request) -> web.StreamResponse:

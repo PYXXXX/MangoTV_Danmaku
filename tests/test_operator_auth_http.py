@@ -66,6 +66,13 @@ class OperatorAuthHttpTest(AuthHttpTestBase):
     async def get_application(self):
         return create_app(FakeService())
 
+    async def test_login_page_stylesheet_is_cache_busted(self):
+        login = await self.client.get("/login")
+        self.assertEqual(login.status, 200)
+        page = await login.text()
+        self.assertIn('/webui/styles.css?v=', page)
+        self.assertNotIn("{{STATIC_VERSION}}", page)
+
     async def test_protected_routes_login_and_logout(self):
         home = await self.client.get("/", allow_redirects=False)
         self.assertEqual(home.status, 302)
@@ -100,6 +107,10 @@ class OperatorAuthHttpTest(AuthHttpTestBase):
         page = await authenticated.text()
         self.assertIn("直播投票统计", page)
         self.assertIn("退出登录", page)
+        self.assertIn('/webui/styles.css?v=', page)
+        self.assertIn('/webui/app.js?v=', page)
+        self.assertIn('/webui/settings.js?v=', page)
+        self.assertNotIn("{{STATIC_VERSION}}", page)
 
         logout = await self.client.post(
             "/auth/logout",
@@ -118,7 +129,12 @@ class DisabledOperatorAuthHttpTest(AuthHttpTestBase):
     async def test_disabled_auth_preserves_existing_access(self):
         home = await self.client.get("/")
         self.assertEqual(home.status, 200)
-        self.assertNotIn("退出登录", await home.text())
+        page = await home.text()
+        self.assertNotIn("退出登录", page)
+        self.assertIn('/webui/styles.css?v=', page)
+        self.assertIn('/webui/app.js?v=', page)
+        self.assertIn('/webui/settings.js?v=', page)
+        self.assertNotIn("{{STATIC_VERSION}}", page)
         api = await self.client.get("/api/results.json")
         self.assertEqual(api.status, 200)
 
