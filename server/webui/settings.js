@@ -53,6 +53,12 @@ function parseCandidates(value) {
   });
 }
 
+function settingsDebug(message, ...args) {
+  if (window.console && typeof window.console.debug === "function") {
+    window.console.debug("[settings] " + message, ...args);
+  }
+}
+
 function updateConfigStatus(runtime) {
   const fields = (runtime && runtime.restartFields) || [];
   settingsEl.configStatus.className = "config-status " + (fields.length ? "restart" : "ready");
@@ -457,26 +463,11 @@ async function applyUpdate(askConfirm = true) {
   }
 }
 
-settingsEl.settingsToggle.addEventListener("click", async () => {
-  settingsEl.settingsPanel.hidden = false;
-  settingsEl.settingsPanel.scrollIntoView({ behavior: "smooth", block: "start" });
-  try {
-    await loadSettings();
-    await loadFeishuBinding(false);
-    checkUpdate(false).catch(() => {});
-  } catch (error) {
-    settingsEl.settingsFeedback.className = "panel-copy error";
-    settingsEl.settingsFeedback.textContent = error.message;
-  }
-});
-
-settingsEl.settingsClose.addEventListener("click", () => {
-  settingsEl.settingsPanel.hidden = true;
-  stopFeishuBindingPolling();
-});
-
-settingsEl.startFeishuBinding.addEventListener("click", async () => {
-  settingsEl.startFeishuBinding.disabled = true;
+async function handleStartFeishuBindingClick() {
+  const button = settingsEl.startFeishuBinding || document.getElementById("startFeishuBinding");
+  settingsDebug("start feishu binding clicked");
+  if (!button || button.disabled) return;
+  button.disabled = true;
   settingsEl.feishuBindStatus.className = "update-status available";
   settingsEl.feishuBindStatus.textContent = "发起中";
   settingsEl.feishuBindMessage.textContent = "正在向飞书申请授权链接……";
@@ -496,10 +487,38 @@ settingsEl.startFeishuBinding.addEventListener("click", async () => {
     settingsEl.feishuBindMessage.textContent = error.name === "AbortError"
       ? "连接飞书授权服务超时，请检查服务器是否能访问 accounts.feishu.cn。"
       : error.message;
-    settingsEl.startFeishuBinding.disabled = false;
+    button.disabled = false;
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+settingsDebug("startFeishuBinding button found", Boolean(settingsEl.startFeishuBinding || document.getElementById("startFeishuBinding")));
+document.addEventListener("click", (event) => {
+  const target = event.target && typeof event.target.closest === "function"
+    ? event.target.closest("#startFeishuBinding")
+    : (event.target && event.target.id === "startFeishuBinding" ? event.target : null);
+  if (!target) return;
+  event.preventDefault();
+  handleStartFeishuBindingClick();
+});
+
+settingsEl.settingsToggle.addEventListener("click", async () => {
+  settingsEl.settingsPanel.hidden = false;
+  settingsEl.settingsPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+  try {
+    await loadSettings();
+    await loadFeishuBinding(false);
+    checkUpdate(false).catch(() => {});
+  } catch (error) {
+    settingsEl.settingsFeedback.className = "panel-copy error";
+    settingsEl.settingsFeedback.textContent = error.message;
+  }
+});
+
+settingsEl.settingsClose.addEventListener("click", () => {
+  settingsEl.settingsPanel.hidden = true;
+  stopFeishuBindingPolling();
 });
 
 settingsEl.settingsForm.addEventListener("submit", async (event) => {
