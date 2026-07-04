@@ -23,6 +23,8 @@ class FeishuLongConnection:
         self.loop: asyncio.AbstractEventLoop | None = None
         self.client: Any = None
         self.thread: threading.Thread | None = None
+        self.sdk_loop: asyncio.AbstractEventLoop | None = None
+        self._stopping = threading.Event()
         self._dedup: dict[str, float] = {}
         self._dedup_lock = threading.Lock()
 
@@ -34,19 +36,45 @@ class FeishuLongConnection:
         if importlib.util.find_spec("lark_oapi") is None:
             raise RuntimeError("飞书长连接需要安装 lark-oapi，请重新执行 pip install -r requirements-server.txt")
         self.loop = loop
+        self._stopping.clear()
         self.thread = threading.Thread(target=self._run, name="feishu-websocket", daemon=True)
         self.thread.start()
         return True
+
+    def stop(self, timeout: float = 8.0) -> None:
+        self._stopping.set()
+        client = self.client
+        sdk_loop = self.sdk_loop
+        if client is not None:
+            client._auto_reconnect = False
+        if client is not None and sdk_loop is not None and sdk_loop.is_running():
+            try:
+                future = asyncio.run_coroutine_threadsafe(client._disconnect(), sdk_loop)
+                future.result(timeout=max(1.0, timeout / 2))
+            except Exception:
+                LOGGER.exception("关闭飞书长连接失败")
+            sdk_loop.call_soon_threadsafe(sdk_loop.stop)
+        thread = self.thread
+        if thread and thread.is_alive():
+            thread.join(timeout=timeout)
+        self.client = None
+        self.thread = None
+        self.sdk_loop = None
 
     def _run(self) -> None:
         # Import inside the worker thread so the SDK owns a dedicated asyncio
         # loop instead of trying to reuse aiohttp's already-running main loop.
         import lark_oapi as lark
+        import lark_oapi.ws.client as ws_client
         from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTriggerResponse
 
         loop = self.loop
         if loop is None:
             return
+        sdk_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(sdk_loop)
+        ws_client.loop = sdk_loop
+        self.sdk_loop = sdk_loop
 
         def on_message(data: Any) -> None:
             try:
@@ -112,7 +140,18 @@ class FeishuLongConnection:
             event_handler=event_handler,
             log_level=lark.LogLevel.INFO,
         )
-        self.client.start()
+        try:
+            self.client.start()
+        except RuntimeError:
+            if not self._stopping.is_set():
+                raise
+        finally:
+            pending = asyncio.all_tasks(sdk_loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                sdk_loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            sdk_loop.close()
 
     def _is_duplicate(self, key: str) -> bool:
         now = time.monotonic()

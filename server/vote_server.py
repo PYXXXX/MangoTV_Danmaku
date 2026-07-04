@@ -13,6 +13,7 @@ import base64
 import hashlib
 import html
 import json
+import os
 import re
 import secrets
 import signal
@@ -33,10 +34,17 @@ try:
     from server.precise_results import parse_precise_result, validate_precise_result
     from server.feishu_cards import build_control_card, build_round_list_card
     from server.operator_auth import OperatorAuth, safe_next_url
+    from server.runtime_settings import (
+        SettingsValidationError,
+        build_settings_update,
+        public_settings,
+        save_config_atomic,
+    )
 except ModuleNotFoundError:  # Support `python server/vote_server.py`.
     from precise_results import parse_precise_result, validate_precise_result
     from feishu_cards import build_control_card, build_round_list_card
     from operator_auth import OperatorAuth, safe_next_url
+    from runtime_settings import SettingsValidationError, build_settings_update, public_settings, save_config_atomic
 
 
 def now_iso() -> str:
@@ -96,6 +104,11 @@ class FingerprintCache:
         while len(self.items) > self.max_size:
             self.items.popitem(last=False)
 
+    def resize(self, max_size: int) -> None:
+        self.max_size = max(1, int(max_size))
+        while len(self.items) > self.max_size:
+            self.items.popitem(last=False)
+
 
 class PersistentDeduper:
     """SQLite-backed deduper with bounded memory and a large disk cap.
@@ -130,6 +143,11 @@ class PersistentDeduper:
 
     def close(self) -> None:
         self.conn.close()
+
+    def reconfigure(self, hot_cache_size: int, max_records: int) -> None:
+        self.hot.resize(hot_cache_size)
+        self.max_records = max(1, int(max_records))
+        self.prune()
 
     def key_for(self, fingerprint: str) -> bytes:
         return hashlib.sha1(fingerprint.encode("utf-8")).digest()
@@ -568,6 +586,13 @@ class MgtvCollector:
     def running(self) -> bool:
         return self.task is not None and not self.task.done()
 
+    def apply_config(self, config: dict[str, Any]) -> None:
+        self.config = config
+        self.fingerprints.reconfigure(
+            int(config.get("dedup_hot_cache_size", 200_000)),
+            int(config.get("dedup_max_records", 100_000_000)),
+        )
+
     async def start(self, round_id: str, url: str) -> None:
         await self.stop()
         self.round_id = round_id
@@ -612,12 +637,12 @@ class MgtvCollector:
         return f"{flag}-{camera_id}"
 
     async def _run_forever(self) -> None:
-        reconnect_seconds = float(self.config.get("reconnect_seconds", 5))
         while not self.stop_event.is_set():
             try:
                 await self._run_once()
             except Exception as exc:  # noqa: BLE001 - collector must self-heal
                 print(f"[collector] reconnect after error: {exc}", flush=True)
+                reconnect_seconds = float(self.config.get("reconnect_seconds", 5))
                 try:
                     await asyncio.wait_for(self.stop_event.wait(), timeout=reconnect_seconds)
                 except asyncio.TimeoutError:
@@ -625,8 +650,6 @@ class MgtvCollector:
 
     async def _run_once(self) -> None:
         assert self.url and self.round_id and self.room_id
-        api = self.config.get("history_api", "https://lb.bz.mgtv.com/get_history")
-        poll_seconds = float(self.config.get("poll_seconds", 2.0))
         count_initial = bool(self.config.get("count_initial_history", False))
         first_batch = True
         headers = {
@@ -636,6 +659,7 @@ class MgtvCollector:
         }
         async with ClientSession(headers=headers) as session:
             while not self.stop_event.is_set():
+                api = self.config.get("history_api", "https://lb.bz.mgtv.com/get_history")
                 async with session.get(api, params={"room_id": self.room_id}, timeout=10) as response:
                     if response.status != 200:
                         raise RuntimeError(f"history api HTTP {response.status}: {await response.text()}")
@@ -659,6 +683,7 @@ class MgtvCollector:
                         continue
                     await self.engine.ingest(self.round_id, raw)
                 first_batch = False
+                poll_seconds = float(self.config.get("poll_seconds", 2.0))
                 try:
                     await asyncio.wait_for(self.stop_event.wait(), timeout=poll_seconds)
                 except asyncio.TimeoutError:
@@ -746,18 +771,103 @@ class FeishuBot:
 
 
 class VoteService:
-    def __init__(self, config: dict[str, Any]):
+    def __init__(self, config: dict[str, Any], config_path: Path | None = None):
         self.config = config
+        self.startup_config = json.loads(json.dumps(config))
+        self.config_path = config_path
+        self.config_lock = asyncio.Lock()
+        self.pending_restart_fields: list[str] = []
         self.store = StateStore(Path(config.get("storage", {}).get("directory", "server/data")))
         self.store.load()
         self.engine = VoteEngine(self.store)
         self.publisher = GithubPublisher(config.get("github", {}), self.store)
         self.collector = MgtvCollector(config.get("mgtv", {}), self.engine)
         self.feishu = FeishuBot(config.get("feishu", {}))
+        self.operator_auth = OperatorAuth(config.get("operator_auth") or {})
         self.default_candidates = candidates_from_config(config.get("vote", {}).get("candidates", []))
         self.default_policy = config.get("vote", {}).get("multi_candidate_policy", "all")
         self.user_selection: dict[str, str] = {}
         self.feishu_connection: Any = None
+
+    def _restart_fields_for(self, config: dict[str, Any]) -> list[str]:
+        paths = [
+            ("listen.host", "listen", "host"),
+            ("listen.port", "listen", "port"),
+            ("storage.directory", "storage", "directory"),
+            ("mgtv.dedup_db_path", "mgtv", "dedup_db_path"),
+        ]
+        return [
+            label
+            for label, group, key in paths
+            if (self.startup_config.get(group) or {}).get(key) != (config.get(group) or {}).get(key)
+        ]
+
+    def settings_runtime(self) -> dict[str, Any]:
+        feishu_thread = getattr(self.feishu_connection, "thread", None)
+        return {
+            "activeRoundId": self.store.active_round_id,
+            "collectorRunning": self.collector.running(),
+            "feishuWorkerAlive": bool(feishu_thread and feishu_thread.is_alive()),
+            "restartRequired": bool(self.pending_restart_fields),
+            "restartFields": self.pending_restart_fields,
+            "configPath": str(self.config_path) if self.config_path else "",
+        }
+
+    def settings_view(self) -> dict[str, Any]:
+        return public_settings(self.config, self.settings_runtime())
+
+    async def apply_settings(self, payload: dict[str, Any], loop: asyncio.AbstractEventLoop) -> dict[str, Any]:
+        if self.config_path is None:
+            raise RuntimeError("当前服务未指定可写配置文件，无法在线保存")
+        async with self.config_lock:
+            update = build_settings_update(
+                self.config,
+                payload,
+                active_round=bool(self.store.active_round_id),
+            )
+            old_config = self.config
+            new_config = update.config
+            save_config_atomic(self.config_path, new_config)
+
+            self.config = new_config
+            self.default_candidates = candidates_from_config(new_config.get("vote", {}).get("candidates", []))
+            self.default_policy = new_config.get("vote", {}).get("multi_candidate_policy", "all")
+            self.publisher.config = new_config.get("github", {})
+
+            runtime_mgtv = dict(new_config.get("mgtv", {}))
+            old_db_path = (self.startup_config.get("mgtv") or {}).get(
+                "dedup_db_path",
+                "server/data/fingerprints.sqlite3",
+            )
+            if "mgtv.dedup_db_path" in self._restart_fields_for(new_config):
+                runtime_mgtv["dedup_db_path"] = old_db_path
+            self.collector.apply_config(runtime_mgtv)
+
+            old_feishu = old_config.get("feishu") or {}
+            new_feishu = new_config.get("feishu") or {}
+            if old_feishu != new_feishu:
+                self.feishu = FeishuBot(new_feishu)
+                await self.reload_feishu_connection(loop)
+
+            self.operator_auth = OperatorAuth(new_config.get("operator_auth") or {})
+            self.pending_restart_fields = self._restart_fields_for(new_config)
+            return {
+                "ok": True,
+                "warnings": update.warnings,
+                "restartRequired": bool(self.pending_restart_fields),
+                "restartFields": self.pending_restart_fields,
+                "reauthRequired": update.reauth_required,
+                "settings": self.settings_view(),
+            }
+
+    def request_safe_restart(self, loop: asyncio.AbstractEventLoop) -> list[str]:
+        if self.store.active_round_id or self.collector.running():
+            raise SettingsValidationError("场次正在采集，必须先结束本轮才能重启服务")
+        if not self.pending_restart_fields:
+            raise SettingsValidationError("当前没有需要重启生效的配置")
+        fields = list(self.pending_restart_fields)
+        loop.call_later(0.8, os.kill, os.getpid(), signal.SIGTERM)
+        return fields
 
     def start_feishu_connection(self, loop: asyncio.AbstractEventLoop) -> bool:
         try:
@@ -767,6 +877,11 @@ class VoteService:
 
         self.feishu_connection = FeishuLongConnection(self.config.get("feishu", {}), self)
         return self.feishu_connection.start(loop)
+
+    async def reload_feishu_connection(self, loop: asyncio.AbstractEventLoop) -> bool:
+        if self.feishu_connection is not None:
+            await asyncio.to_thread(self.feishu_connection.stop)
+        return self.start_feishu_connection(loop)
 
     def feishu_card(self, open_id: str, notice: str = "") -> dict[str, Any]:
         public_url = str(self.config.get("feishu", {}).get("public_results_url") or "")
@@ -957,7 +1072,6 @@ class VoteService:
 def create_app(service: VoteService) -> web.Application:
     webui_dir = Path(__file__).with_name("webui")
     precise_doc = Path(__file__).resolve().parents[1] / "docs" / "PRECISE_RESULT_AGENT.md"
-    auth = OperatorAuth(service.config.get("operator_auth") or {})
     index_template = (webui_dir / "index.html").read_text(encoding="utf-8")
     login_template = (webui_dir / "login.html").read_text(encoding="utf-8")
 
@@ -987,6 +1101,7 @@ def create_app(service: VoteService) -> web.Application:
 
     @web.middleware
     async def operator_auth_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
+        auth = service.operator_auth
         if not auth.enabled:
             return await handler(request)
         public_paths = {"/login", "/auth/login", "/healthz", "/feishu/events", "/webui/styles.css"}
@@ -1019,7 +1134,7 @@ def create_app(service: VoteService) -> web.Application:
 
     async def webui_index(_: web.Request) -> web.Response:
         auth_control = ""
-        if auth.enabled:
+        if service.operator_auth.enabled:
             auth_control = (
                 '<form class="logout-form" action="/auth/logout" method="post">'
                 '<button class="logout-button" type="submit">退出登录</button>'
@@ -1029,6 +1144,7 @@ def create_app(service: VoteService) -> web.Application:
         return web.Response(text=body, content_type="text/html", headers={"Cache-Control": "no-store"})
 
     async def login_page(request: web.Request) -> web.StreamResponse:
+        auth = service.operator_auth
         next_url = safe_next_url(request.query.get("next"))
         if not auth.enabled:
             raise web.HTTPFound(location="/")
@@ -1037,6 +1153,7 @@ def create_app(service: VoteService) -> web.Application:
         return login_response(next_url=next_url)
 
     async def login_submit(request: web.Request) -> web.StreamResponse:
+        auth = service.operator_auth
         if not auth.enabled:
             raise web.HTTPFound(location="/")
         data = await request.post()
@@ -1055,19 +1172,53 @@ def create_app(service: VoteService) -> web.Application:
 
     async def logout(_: web.Request) -> web.StreamResponse:
         response = web.HTTPSeeOther(location="/login")
-        auth.clear_session_cookie(response)
+        service.operator_auth.clear_session_cookie(response)
         raise response
 
     async def health(_: web.Request) -> web.Response:
-        feishu_thread = getattr(service.feishu_connection, "thread", None)
+        runtime = service.settings_runtime()
         return web.json_response({
             "ok": True,
             "collectorRunning": service.collector.running(),
             "activeRoundId": service.store.active_round_id,
             "feishuEnabled": service.feishu.enabled(),
             "feishuConnectionMode": service.config.get("feishu", {}).get("connection_mode", "websocket"),
-            "feishuWorkerAlive": bool(feishu_thread and feishu_thread.is_alive()),
+            "feishuWorkerAlive": runtime["feishuWorkerAlive"],
+            "restartRequired": runtime["restartRequired"],
+            "restartFields": runtime["restartFields"],
         })
+
+    async def get_settings(_: web.Request) -> web.Response:
+        return web.json_response(
+            service.settings_view(),
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def update_settings(request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+            result = await service.apply_settings(payload, asyncio.get_running_loop())
+        except SettingsValidationError as exc:
+            return web.json_response({"error": str(exc)}, status=400, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except (OSError, RuntimeError) as exc:
+            return web.json_response({"error": str(exc)}, status=500, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response(
+            result,
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def restart_service(_: web.Request) -> web.Response:
+        try:
+            fields = service.request_safe_restart(asyncio.get_running_loop())
+        except SettingsValidationError as exc:
+            return web.json_response({"error": str(exc)}, status=409, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response(
+            {"ok": True, "message": "服务正在安全重启", "fields": fields},
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
 
     async def precise_result_doc(_: web.Request) -> web.FileResponse:
         return web.FileResponse(precise_doc, headers={"Content-Type": "text/markdown; charset=utf-8"})
@@ -1161,6 +1312,9 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_get("/healthz", health)
     app.router.add_get("/docs/precise-result-agent", precise_result_doc)
     app.router.add_get("/api/results.json", results)
+    app.router.add_get("/api/settings", get_settings)
+    app.router.add_post("/api/settings", update_settings)
+    app.router.add_post("/api/restart", restart_service)
     app.router.add_get("/api/rounds/{round_id}.jsonl", round_export)
     app.router.add_post("/api/rounds/{round_id}/precise-result", precise_upload)
     app.router.add_post("/api/command", command)
@@ -1172,8 +1326,9 @@ async def amain() -> None:
     parser = argparse.ArgumentParser(description="MGTV server-side danmaku vote collector")
     parser.add_argument("--config", default="server/config.example.json")
     args = parser.parse_args()
-    config = json.loads(Path(args.config).read_text(encoding="utf-8"))
-    service = VoteService(config)
+    config_path = Path(args.config)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    service = VoteService(config, config_path=config_path)
     feishu_ws_started = service.start_feishu_connection(asyncio.get_running_loop())
     app = create_app(service)
     runner = web.AppRunner(app)
@@ -1189,6 +1344,8 @@ async def amain() -> None:
         loop.add_signal_handler(sig, stop.set)
     await stop.wait()
     await service.collector.stop()
+    if service.feishu_connection is not None:
+        await asyncio.to_thread(service.feishu_connection.stop)
     service.collector.fingerprints.close()
     await runner.cleanup()
 

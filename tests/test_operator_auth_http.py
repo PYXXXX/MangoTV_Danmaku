@@ -2,11 +2,12 @@ import unittest
 
 try:
     from aiohttp.test_utils import AioHTTPTestCase
-    from server.operator_auth import hash_password
+    from server.operator_auth import OperatorAuth, hash_password
     from server.vote_server import create_app
 except ModuleNotFoundError:
     AioHTTPTestCase = None
     hash_password = None
+    OperatorAuth = None
     create_app = None
 
 AuthHttpTestBase = AioHTTPTestCase or unittest.IsolatedAsyncioTestCase
@@ -50,6 +51,14 @@ class FakeService:
         self.store = FakeStore()
         self.feishu = FakeFeishu()
         self.feishu_connection = None
+        self.operator_auth = OperatorAuth(self.config["operator_auth"])
+
+    def settings_runtime(self):
+        return {
+            "feishuWorkerAlive": False,
+            "restartRequired": False,
+            "restartFields": [],
+        }
 
 
 @unittest.skipIf(AioHTTPTestCase is None, "aiohttp 未安装，跳过认证 HTTP 测试")
