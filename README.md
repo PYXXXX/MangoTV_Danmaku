@@ -74,7 +74,7 @@ cp server/config.example.json server/config.json
 python server/vote_server.py --config server/config.json
 ```
 
-如果要启用飞书 Bot 遥控，再运行 `python tools/setup_feishu_bot.py` 交互式更新本机配置。
+如果要启用飞书 Bot 遥控，推荐启动服务后在运营 WebUI 的“系统配置 → 飞书 Bot → 一键绑定飞书”中完成授权；本地调试也可以运行 `python tools/setup_feishu_bot.py` 手动更新配置。
 
 建议同时为运营 WebUI 设置登录密码：
 
@@ -92,6 +92,8 @@ python tools/setup_operator_password.py
 - `GET /api/results.json`：当前公开聚合结果，格式与 `site/data/results.json` 一致。
 - `GET /api/update/status`：检查当前 commit、远端 commit 与升级进度。
 - `POST /api/update/apply`：空闲时启动后台快进升级、更新依赖并自动重启。
+- `GET /api/feishu/binding`：读取飞书一键绑定状态（不返回 App Secret）。
+- `POST /api/feishu/binding/start`：发起飞书授权绑定，返回授权链接与授权码。
 - `GET /api/rounds/{round_id}.jsonl`：导出某个场次的 JSONL 切片，包含 meta 与该场次消息。
 - `POST /api/rounds/{round_id}/precise-result`：通过 multipart 的 `file` 字段上传并发布 `.json` 或 `.xml` 精确结果。
 - `POST /api/command`：本地调试指令，例如 `{"text":"开始 第一轮"}`。
@@ -124,17 +126,13 @@ python tools/setup_operator_password.py
 
 ### 飞书 Bot 遥控
 
-飞书“自定义机器人 webhook”只能发消息，不能接收运营指令；遥控管理需要创建飞书企业自建应用。本项目默认使用官方 SDK 的 WebSocket 长连接，不要求公网回调地址：
+飞书“自定义机器人 webhook”只能发消息，不能接收运营指令；遥控管理需要飞书企业自建应用。本项目默认使用官方 SDK 的 WebSocket 长连接，不要求公网回调地址。
 
-1. 创建飞书应用，配置 `app_id`、`app_secret`。
-2. 启用机器人能力，授予接收私聊/群 @消息及 `im:message:send_as_bot` 权限。
-3. 事件与回调均选择“使用长连接接收”。
-4. 订阅消息事件 `im.message.receive_v1` 和卡片回调 `card.action.trigger`。
-5. 发布应用版本，把 Bot 加入运营群，并在配置中限制运营人员 `open_id` 与群 `chat_id`。
+推荐路径：打开运营 WebUI → “系统配置” → “飞书 Bot” → “一键绑定飞书”，点击授权链接并按飞书页面完成授权/安装。绑定成功后系统会自动保存 `app_id` / `app_secret`、启用 WebSocket 长连接并热重载；`app_secret` 不会回显到页面。授权人的 `open_id` 会自动加入白名单，便于立即私聊 Bot 测试。
 
-本地运行 `python tools/setup_feishu_bot.py` 可交互式生成 `server/config.json`：向导会说明每个 ID 去哪里找，并支持首次联调临时写入 `*`。连通后向 Bot 发送“我的ID”，拿到 `open_id` / `chat_id` 后再重跑向导切换为正式白名单。
+随后把 Bot 加入运营群，在群里发送“我的ID”获取 `chat_id`，填入 WebUI 的 `allowed_chat_ids` 后保存。向 Bot 发送“菜单”即可获得交互卡片，可点击开始默认场次、结束、刷新、查看/切换场次和发布粗略结果。自定义活动名、场次名仍使用文本指令；精确结果文件仍在运营 WebUI 上传。
 
-向 Bot 发送“菜单”即可获得交互卡片，可点击开始默认场次、结束、刷新、查看/切换场次和发布粗略结果。自定义活动名、场次名仍使用文本指令；精确结果文件仍在运营 WebUI 上传。
+手动兜底：本地运行 `python tools/setup_feishu_bot.py` 可交互式生成 `server/config.json`：向导会说明每个 ID 去哪里找，并支持首次联调临时写入 `*`。连通后向 Bot 发送“我的ID”，拿到 `open_id` / `chat_id` 后再重跑向导切换为正式白名单。
 
 完整权限、白名单、systemd 常驻和 HTTP 回调兼容方案见 [完整部署手册的飞书章节](docs/DEPLOYMENT.md#6-配置飞书交互卡片-bot)。
 

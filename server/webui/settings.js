@@ -7,6 +7,9 @@ const settingsEl = Object.fromEntries([
   "cfgGithubToken", "githubSecretState",
   "cfgFeishuEnabled", "cfgFeishuMode", "cfgFeishuAppId", "cfgFeishuSecret", "cfgFeishuToken",
   "cfgFeishuOpenIds", "cfgFeishuChatIds", "cfgFeishuPublicUrl", "feishuSecretState",
+  "feishuBindStatus", "feishuBindMessage", "feishuBindAppId", "feishuBindOpenId", "feishuBindTenant",
+  "feishuBindWorker", "feishuBindingPending", "feishuBindingLink", "feishuBindingCode",
+  "feishuBindingExpires", "feishuBindingFeedback", "startFeishuBinding",
   "cfgAuthEnabled", "cfgNewPassword", "cfgSessionHours", "cfgSecureCookie", "cfgMaxFailures",
   "cfgFailureWindow", "authSecretState",
   "updateCurrentCommit", "updateRemoteCommit", "updateBranch", "updateStatus", "updateFeedback",
@@ -17,6 +20,8 @@ const settingsEl = Object.fromEntries([
 
 let settingsSnapshot = null;
 let updatePollTimer = null;
+let feishuBindingPollTimer = null;
+let feishuBindingLastStatus = "";
 
 function setField(id, value) {
   settingsEl[id].value = value == null ? "" : String(value);
@@ -142,6 +147,86 @@ function renderUpdateStatus(payload) {
   settingsEl.updateFeedback.textContent = blockers.length
     ? ("发现新版本，但当前被阻止：" + blockers.join("；"))
     : "发现新版本，但当前环境暂不可自动升级。";
+}
+
+function feishuBindingStatusText(status) {
+  return {
+    idle: "未绑定",
+    pending: "等待授权",
+    bound: "已绑定",
+    failed: "绑定失败",
+    expired: "已过期"
+  }[status] || "未知";
+}
+
+function renderFeishuBinding(payload) {
+  const status = (payload && payload.status) || "idle";
+  const className = status === "bound" ? "ready" : (status === "pending" ? "available" : (status === "failed" || status === "expired" ? "error" : ""));
+  settingsEl.feishuBindStatus.className = "update-status " + className;
+  settingsEl.feishuBindStatus.textContent = feishuBindingStatusText(status);
+  settingsEl.feishuBindMessage.textContent = (payload && (payload.error || payload.warning || payload.message))
+    || "点击“发起绑定”后会打开飞书授权页；授权完成后本页会自动保存 App ID/Secret 并热重载 Bot。";
+  settingsEl.feishuBindAppId.textContent = (payload && payload.appId) || "未配置";
+  settingsEl.feishuBindOpenId.textContent = (payload && payload.openId) || "-";
+  settingsEl.feishuBindTenant.textContent = (payload && payload.tenantBrand) || "-";
+  settingsEl.feishuBindWorker.textContent = payload && payload.workerAlive ? "运行中" : "未运行";
+  settingsEl.startFeishuBinding.disabled = status === "pending";
+  settingsEl.startFeishuBinding.textContent = status === "pending" ? "等待飞书授权…" : "发起飞书绑定";
+
+  const pending = status === "pending";
+  settingsEl.feishuBindingPending.hidden = !pending;
+  if (pending) {
+    settingsEl.feishuBindingLink.href = payload.verificationUrl || "#";
+    settingsEl.feishuBindingLink.textContent = payload.verificationUrl ? "打开飞书授权链接" : "等待授权链接";
+    settingsEl.feishuBindingCode.textContent = payload.userCode || "-";
+    const seconds = Math.max(0, Math.ceil(((payload.expiresAt || 0) * 1000 - Date.now()) / 1000));
+    settingsEl.feishuBindingExpires.textContent = seconds ? (Math.floor(seconds / 60) + "分" + String(seconds % 60).padStart(2, "0") + "秒") : "即将过期";
+    settingsEl.feishuBindingFeedback.textContent = "请完成飞书页面里的授权/安装步骤；本页会每 2 秒自动检查结果。";
+  } else if (status === "bound") {
+    const openCount = ((payload && payload.allowedOpenIds) || []).length;
+    const chatCount = ((payload && payload.allowedChatIds) || []).length;
+    settingsEl.feishuBindingFeedback.textContent = "绑定已完成。当前 open_id 白名单 " + openCount + " 项，chat_id 白名单 " + chatCount + " 项；群控请把机器人加入运营群后发送“我的ID”。";
+  } else {
+    settingsEl.feishuBindingFeedback.textContent = "绑定成功后，请把机器人添加到运营群，并在群里发送“我的ID”获取 chat_id，再填入下方白名单。";
+  }
+}
+
+function stopFeishuBindingPolling() {
+  if (feishuBindingPollTimer) {
+    clearInterval(feishuBindingPollTimer);
+    feishuBindingPollTimer = null;
+  }
+}
+
+function startFeishuBindingPolling() {
+  stopFeishuBindingPolling();
+  feishuBindingPollTimer = setInterval(() => {
+    loadFeishuBinding(false).catch((error) => {
+      settingsEl.feishuBindStatus.className = "update-status error";
+      settingsEl.feishuBindStatus.textContent = "读取失败";
+      settingsEl.feishuBindMessage.textContent = error.message;
+      stopFeishuBindingPolling();
+    });
+  }, 2000);
+}
+
+async function loadFeishuBinding(showErrors = true) {
+  const response = await fetch("/api/feishu/binding?t=" + Date.now(), { cache: "no-store" });
+  requireLogin(response);
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || "飞书绑定状态读取失败");
+  const previous = feishuBindingLastStatus;
+  feishuBindingLastStatus = payload.status || "";
+  renderFeishuBinding(payload);
+  if (payload.status === "pending") {
+    startFeishuBindingPolling();
+  } else {
+    stopFeishuBindingPolling();
+    if (payload.status === "bound" && previous === "pending") {
+      await loadSettings(false);
+    }
+  }
+  return payload;
 }
 
 function stopUpdatePolling() {
@@ -377,6 +462,7 @@ settingsEl.settingsToggle.addEventListener("click", async () => {
   settingsEl.settingsPanel.scrollIntoView({ behavior: "smooth", block: "start" });
   try {
     await loadSettings();
+    await loadFeishuBinding(false);
     checkUpdate(false).catch(() => {});
   } catch (error) {
     settingsEl.settingsFeedback.className = "panel-copy error";
@@ -386,6 +472,28 @@ settingsEl.settingsToggle.addEventListener("click", async () => {
 
 settingsEl.settingsClose.addEventListener("click", () => {
   settingsEl.settingsPanel.hidden = true;
+  stopFeishuBindingPolling();
+});
+
+settingsEl.startFeishuBinding.addEventListener("click", async () => {
+  settingsEl.startFeishuBinding.disabled = true;
+  settingsEl.feishuBindStatus.className = "update-status available";
+  settingsEl.feishuBindStatus.textContent = "发起中";
+  settingsEl.feishuBindMessage.textContent = "正在向飞书申请授权链接……";
+  try {
+    const response = await fetch("/api/feishu/binding/start", { method: "POST" });
+    requireLogin(response);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "飞书绑定发起失败");
+    renderFeishuBinding(payload);
+    if (payload.verificationUrl) window.open(payload.verificationUrl, "_blank", "noopener");
+    if (payload.status === "pending") startFeishuBindingPolling();
+  } catch (error) {
+    settingsEl.feishuBindStatus.className = "update-status error";
+    settingsEl.feishuBindStatus.textContent = "发起失败";
+    settingsEl.feishuBindMessage.textContent = error.message;
+    settingsEl.startFeishuBinding.disabled = false;
+  }
 });
 
 settingsEl.settingsForm.addEventListener("submit", async (event) => {
@@ -452,3 +560,4 @@ loadSettings(false).catch(() => {
   settingsEl.configStatus.className = "config-status";
   settingsEl.configStatus.textContent = "配置读取失败";
 });
+loadFeishuBinding(false).catch(() => {});

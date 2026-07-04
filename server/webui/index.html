@@ -132,6 +132,30 @@
 
           <details>
             <summary>飞书 Bot</summary>
+            <div class="feishu-binding-card">
+              <div>
+                <div class="feishu-binding-head">
+                  <h3>一键绑定飞书</h3>
+                  <span id="feishuBindStatus" class="update-status">未读取</span>
+                </div>
+                <p id="feishuBindMessage" class="panel-copy">点击“发起绑定”后会打开飞书授权页；授权完成后本页会自动保存 App ID/Secret 并热重载 Bot。</p>
+              </div>
+              <div class="feishu-binding-meta">
+                <div><span>App ID</span><code id="feishuBindAppId">未配置</code></div>
+                <div><span>授权 open_id</span><code id="feishuBindOpenId">-</code></div>
+                <div><span>租户</span><code id="feishuBindTenant">-</code></div>
+                <div><span>长连接</span><code id="feishuBindWorker">-</code></div>
+              </div>
+              <div id="feishuBindingPending" class="feishu-binding-pending" hidden>
+                <p>请在飞书授权页完成绑定。若浏览器没有自动打开，手动点击下面链接：</p>
+                <a id="feishuBindingLink" class="doc-link" href="#" target="_blank" rel="noreferrer">打开飞书授权链接</a>
+                <p>授权码：<code id="feishuBindingCode">-</code> · 剩余时间：<code id="feishuBindingExpires">-</code></p>
+              </div>
+              <p id="feishuBindingFeedback" class="panel-copy">绑定成功后，请把机器人添加到运营群，并在群里发送“我的ID”获取 chat_id，再填入下方白名单。</p>
+              <div class="feishu-binding-actions">
+                <button id="startFeishuBinding" class="secondary" type="button">发起飞书绑定</button>
+              </div>
+            </div>
             <div class="settings-grid">
               <label class="check-label"><input id="cfgFeishuEnabled" type="checkbox" /> 启用飞书 Bot</label>
               <span id="feishuSecretState" class="secret-state"></span>

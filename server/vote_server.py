@@ -20,6 +20,7 @@ import signal
 import sqlite3
 import time
 import unicodedata
+import copy
 from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -31,21 +32,24 @@ from zoneinfo import ZoneInfo
 from aiohttp import ClientSession, web
 
 try:
+    from server import feishu_binding
     from server.precise_results import parse_precise_result, validate_precise_result
     from server.feishu_cards import build_control_card, build_round_list_card
     from server.operator_auth import OperatorAuth, safe_next_url
     from server.runtime_settings import (
         SettingsValidationError,
         build_settings_update,
+        has_real_value,
         public_settings,
         save_config_atomic,
     )
     from server.updater import GitUpdater, UpdateError
 except ModuleNotFoundError:  # Support `python server/vote_server.py`.
+    import feishu_binding
     from precise_results import parse_precise_result, validate_precise_result
     from feishu_cards import build_control_card, build_round_list_card
     from operator_auth import OperatorAuth, safe_next_url
-    from runtime_settings import SettingsValidationError, build_settings_update, public_settings, save_config_atomic
+    from runtime_settings import SettingsValidationError, build_settings_update, has_real_value, public_settings, save_config_atomic
     from updater import GitUpdater, UpdateError
 
 
@@ -784,6 +788,8 @@ class VoteService:
         self.last_update_status: dict[str, Any] | None = None
         self.update_task: asyncio.Task[Any] | None = None
         self.update_progress: dict[str, Any] = self._initial_update_progress()
+        self.feishu_binding_task: asyncio.Task[Any] | None = None
+        self.feishu_binding_state: dict[str, Any] = self._initial_feishu_binding_state()
         self.pending_restart_fields: list[str] = []
         self.store = StateStore(Path(config.get("storage", {}).get("directory", "server/data")))
         self.store.load()
@@ -797,6 +803,46 @@ class VoteService:
         self.user_selection: dict[str, str] = {}
         self.feishu_connection: Any = None
         self.updater = GitUpdater(self.repo_root)
+
+    def _initial_feishu_binding_state(self) -> dict[str, Any]:
+        return {
+            "status": "idle",
+            "message": "",
+            "error": "",
+            "userCode": "",
+            "verificationUrl": "",
+            "expiresAt": 0,
+            "boundAt": "",
+            "openId": "",
+            "tenantBrand": "",
+            "warning": "",
+            "deviceCode": "",
+            "interval": 5,
+        }
+
+    def _set_feishu_binding_state(self, **updates: Any) -> None:
+        state = dict(self.feishu_binding_state or self._initial_feishu_binding_state())
+        state.update(updates)
+        self.feishu_binding_state = state
+
+    def feishu_binding_view(self) -> dict[str, Any]:
+        feishu_config = self.config.get("feishu") or {}
+        state = dict(self.feishu_binding_state or self._initial_feishu_binding_state())
+        state.pop("deviceCode", None)
+        if state.get("status") == "idle" and has_real_value(feishu_config.get("app_id")) and has_real_value(feishu_config.get("app_secret")):
+            state["status"] = "bound"
+            state["message"] = "飞书应用凭据已配置。"
+        feishu_thread = getattr(self.feishu_connection, "thread", None)
+        state.update({
+            "enabled": bool(feishu_config.get("enabled")),
+            "connectionMode": feishu_config.get("connection_mode", "websocket"),
+            "appId": str(feishu_config.get("app_id") or ""),
+            "appSecretConfigured": has_real_value(feishu_config.get("app_secret")),
+            "allowedOpenIds": list(feishu_config.get("allowed_open_ids") or []),
+            "allowedChatIds": list(feishu_config.get("allowed_chat_ids") or []),
+            "workerAlive": bool(feishu_thread and feishu_thread.is_alive()),
+        })
+        return state
 
     def _initial_update_progress(self) -> dict[str, Any]:
         return {
@@ -857,6 +903,127 @@ class VoteService:
 
     def settings_view(self) -> dict[str, Any]:
         return public_settings(self.config, self.settings_runtime())
+
+    async def start_feishu_binding(self, loop: asyncio.AbstractEventLoop) -> dict[str, Any]:
+        if self.config_path is None:
+            raise RuntimeError("当前服务未指定可写配置文件，无法保存飞书绑定结果")
+        task = self.feishu_binding_task
+        if task is not None and not task.done() and self.feishu_binding_state.get("status") == "pending":
+            return self.feishu_binding_view()
+        async with ClientSession() as session:
+            started = await feishu_binding.begin_binding(session)
+        self._set_feishu_binding_state(
+            status="pending",
+            message="请在飞书授权页面完成绑定，完成后本页会自动刷新。",
+            error="",
+            warning="",
+            userCode=started.user_code,
+            verificationUrl=started.verification_url,
+            expiresAt=started.expires_at,
+            boundAt="",
+            openId="",
+            tenantBrand="",
+            deviceCode=started.device_code,
+            interval=started.interval,
+        )
+        self.feishu_binding_task = loop.create_task(
+            self._run_feishu_binding_poll(loop, started.device_code, started.expires_at, started.interval)
+        )
+        return self.feishu_binding_view()
+
+    async def _run_feishu_binding_poll(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        device_code: str,
+        expires_at: float,
+        interval: int,
+    ) -> None:
+        try:
+            async with ClientSession() as session:
+                while time.time() < expires_at:
+                    await asyncio.sleep(max(1, interval))
+                    result = await feishu_binding.poll_binding_once(session, device_code)
+                    if result is None:
+                        continue
+                    warning = await self._complete_feishu_binding(result, loop)
+                    self._set_feishu_binding_state(
+                        status="bound",
+                        message="飞书绑定完成，配置已保存并热重载。",
+                        error="",
+                        warning=warning,
+                        boundAt=now_iso(),
+                        openId=result.open_id,
+                        tenantBrand=result.tenant_brand,
+                        verificationUrl="",
+                        userCode="",
+                        expiresAt=0,
+                        deviceCode="",
+                    )
+                    return
+            self._set_feishu_binding_state(
+                status="expired",
+                message="飞书绑定链接已过期，请重新发起绑定。",
+                error="",
+                verificationUrl="",
+                userCode="",
+                expiresAt=0,
+                deviceCode="",
+            )
+        except feishu_binding.FeishuBindingError as exc:
+            self._set_feishu_binding_state(
+                status="failed",
+                message="飞书绑定失败。",
+                error=str(exc),
+                verificationUrl="",
+                userCode="",
+                expiresAt=0,
+                deviceCode="",
+            )
+        except Exception as exc:
+            self._set_feishu_binding_state(
+                status="failed",
+                message="飞书绑定失败。",
+                error=str(exc),
+                verificationUrl="",
+                userCode="",
+                expiresAt=0,
+                deviceCode="",
+            )
+
+    async def _complete_feishu_binding(self, result: Any, loop: asyncio.AbstractEventLoop) -> str:
+        if self.config_path is None:
+            raise RuntimeError("当前服务未指定可写配置文件，无法保存飞书绑定结果")
+        warning = ""
+        async with self.config_lock:
+            new_config = copy.deepcopy(self.config)
+            feishu_config = dict(new_config.get("feishu") or {})
+            open_ids = list(feishu_config.get("allowed_open_ids") or [])
+            if result.open_id and "*" not in open_ids and result.open_id not in open_ids:
+                open_ids.append(result.open_id)
+            public_url = str(feishu_config.get("public_results_url") or "").strip()
+            if not public_url:
+                public_url = str((new_config.get("listen") or {}).get("public_base_url") or "").strip()
+            feishu_config.update({
+                "enabled": True,
+                "connection_mode": "websocket",
+                "app_id": result.app_id,
+                "app_secret": result.app_secret,
+                "allowed_open_ids": open_ids,
+                "public_results_url": public_url,
+            })
+            feishu_config.setdefault("allowed_chat_ids", list(feishu_config.get("allowed_chat_ids") or []))
+            new_config["feishu"] = feishu_config
+            save_config_atomic(self.config_path, new_config)
+            self.config = new_config
+            self.feishu = FeishuBot(feishu_config)
+            try:
+                started = await self.reload_feishu_connection(loop)
+                if not started:
+                    warning = "配置已保存，但飞书长连接未启动；请检查连接模式和依赖。"
+            except Exception as exc:
+                warning = f"配置已保存，但飞书长连接启动失败：{exc}"
+            self.pending_restart_fields = self._restart_fields_for(new_config)
+        return warning
 
     async def apply_settings(self, payload: dict[str, Any], loop: asyncio.AbstractEventLoop) -> dict[str, Any]:
         if self.config_path is None:
@@ -1345,6 +1512,26 @@ def create_app(service: VoteService) -> web.Application:
             headers={"Cache-Control": "no-store"},
         )
 
+    async def get_feishu_binding(_: web.Request) -> web.Response:
+        return web.json_response(
+            service.feishu_binding_view(),
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def start_feishu_binding(_: web.Request) -> web.Response:
+        try:
+            result = await service.start_feishu_binding(asyncio.get_running_loop())
+        except feishu_binding.FeishuBindingError as exc:
+            return web.json_response({"error": str(exc)}, status=502, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except (OSError, RuntimeError) as exc:
+            return web.json_response({"error": str(exc)}, status=500, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response(
+            result,
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
     async def restart_service(_: web.Request) -> web.Response:
         try:
             fields = service.request_safe_restart(asyncio.get_running_loop())
@@ -1474,6 +1661,8 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_get("/api/results.json", results)
     app.router.add_get("/api/settings", get_settings)
     app.router.add_post("/api/settings", update_settings)
+    app.router.add_get("/api/feishu/binding", get_feishu_binding)
+    app.router.add_post("/api/feishu/binding/start", start_feishu_binding)
     app.router.add_post("/api/restart", restart_service)
     app.router.add_get("/api/update/status", update_status)
     app.router.add_post("/api/update/apply", apply_update)
