@@ -3,6 +3,7 @@ const settingsEl = Object.fromEntries([
   "cfgActivity", "cfgPolicy", "cfgCandidates",
   "cfgLiveUrl", "cfgRoomId", "cfgCameraId", "cfgHistoryApi", "cfgFlag", "cfgPollSeconds",
   "cfgReconnectSeconds", "cfgCountInitial", "cfgDedupHot", "cfgDedupMax", "cfgDedupDb",
+  "mgtvUrlHint",
   "cfgGithubEnabled", "cfgGithubOwner", "cfgGithubRepo", "cfgGithubBranch", "cfgGithubPath",
   "cfgGithubToken", "githubSecretState",
   "cfgFeishuEnabled", "cfgFeishuMode", "cfgFeishuAppId", "cfgFeishuSecret", "cfgFeishuToken",
@@ -57,6 +58,43 @@ function settingsDebug(message, ...args) {
   if (window.console && typeof window.console.debug === "function") {
     window.console.debug("[settings] " + message, ...args);
   }
+}
+
+function parseMgtvLiveUrl(value, flag = "liveshow") {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const match = text.match(/\/z\/[^/?#]+\/([^/?#]+)/);
+  if (!match) return null;
+  const cameraId = match[1].replace(/\.html$/i, "").trim();
+  if (!cameraId) return null;
+  const roomFlag = String(flag || "liveshow").trim() || "liveshow";
+  return {
+    cameraId,
+    roomId: roomFlag + "-" + cameraId,
+    historyApi: "https://lb.bz.mgtv.com/get_history",
+    flag: roomFlag
+  };
+}
+
+function applyMgtvUrlAutofill() {
+  const flag = settingsEl.cfgFlag.value.trim() || "liveshow";
+  const parsed = parseMgtvLiveUrl(settingsEl.cfgLiveUrl.value, flag);
+  if (!parsed) {
+    if (settingsEl.mgtvUrlHint) {
+      settingsEl.mgtvUrlHint.textContent = "未识别到 /z/{活动ID}/{camera_id}.html，可手动填写 room_id 或 camera_id。";
+      settingsEl.mgtvUrlHint.className = "field-hint muted";
+    }
+    return false;
+  }
+  setField("cfgFlag", parsed.flag);
+  setField("cfgCameraId", parsed.cameraId);
+  setField("cfgRoomId", parsed.roomId);
+  if (!settingsEl.cfgHistoryApi.value.trim()) setField("cfgHistoryApi", parsed.historyApi);
+  if (settingsEl.mgtvUrlHint) {
+    settingsEl.mgtvUrlHint.textContent = "已自动识别 camera_id=" + parsed.cameraId + "，room_id=" + parsed.roomId + "。";
+    settingsEl.mgtvUrlHint.className = "field-hint success";
+  }
+  return true;
 }
 
 function updateConfigStatus(runtime) {
@@ -519,6 +557,21 @@ settingsEl.settingsToggle.addEventListener("click", async () => {
 settingsEl.settingsClose.addEventListener("click", () => {
   settingsEl.settingsPanel.hidden = true;
   stopFeishuBindingPolling();
+});
+
+settingsEl.cfgLiveUrl.addEventListener("input", () => {
+  applyMgtvUrlAutofill();
+});
+
+settingsEl.cfgLiveUrl.addEventListener("paste", () => {
+  setTimeout(applyMgtvUrlAutofill, 0);
+});
+
+settingsEl.cfgFlag.addEventListener("input", () => {
+  const parsed = parseMgtvLiveUrl(settingsEl.cfgLiveUrl.value, settingsEl.cfgFlag.value);
+  if (parsed && (!settingsEl.cfgRoomId.value.trim() || settingsEl.cfgRoomId.value.includes("-" + parsed.cameraId))) {
+    setField("cfgRoomId", parsed.roomId);
+  }
 });
 
 settingsEl.settingsForm.addEventListener("submit", async (event) => {

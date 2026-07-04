@@ -78,6 +78,9 @@ button:active, .link-button:active { transform: translateY(1px); }
 .feishu-binding-actions { display: flex; justify-content: flex-end; }
 .feishu-binding-actions button { min-width: 150px; }
 .field-label { color: #777a81; font-size: 11px; }
+.field-hint { display: block; margin-top: 2px; color: #666970; font-size: 11px; line-height: 1.5; }
+.field-hint.success { color: #8fdbaf; }
+.field-hint.muted { color: #777a81; }
 .update-grid code { overflow-wrap: anywhere; color: #d8d8d5; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .update-status { display: inline-flex; width: fit-content; padding: 5px 8px; border-radius: 999px; background: #202226; color: #8d9097; font-size: 11px; }
 .update-status.ready { background: rgba(42, 123, 83, .18); color: #8fdbaf; }
