@@ -195,6 +195,20 @@ sudoedit /var/lib/mgtv-danmaku/config.json
 
 正在采集时服务会拒绝重启动作。配置 API 永远不会回传 GitHub Token、飞书 Secret、密码哈希或会话密钥；敏感输入留空表示保留服务器现值。
 
+### 3.6 运营端程序升级
+
+登录运营 WebUI 后进入“系统配置 → 程序版本升级”，可以在线检查部署目录当前 commit 与远端目标分支 commit。发现新 commit 时，面板会提示是否立即升级。
+
+自动升级流程：
+
+1. 检查服务是否空闲。正在采集或有场次未结束时拒绝升级。
+2. 检查 `/opt/MangoTV_Danmaku` 是否为干净 git 工作区。存在未提交或未跟踪文件时拒绝升级，避免覆盖现场修改。
+3. 执行 `git fetch` 并只允许 `--ff-only` 快进更新；如果本地与远端分叉，必须人工处理。
+4. 使用当前服务进程的 Python 执行 `pip install -r requirements-server.txt`。
+5. 返回升级结果后发送 `SIGTERM`，由 systemd 的 `Restart=always` 自动拉起新版本。
+
+这是一键在线升级，不是 Python 代码的内存级热替换，因此会有一次短暂重启。升级重启也会顺带让 WebUI 中已保存但标记“需重启”的配置生效。
+
 ## 4. 启用运营端密码
 
 在项目目录运行：
@@ -614,7 +628,9 @@ sudo systemctl status mgtv-danmaku
 
 ### 13.1 升级
 
-先备份，再更新代码和依赖：
+推荐方式是在运营 WebUI 的“系统配置 → 程序版本升级”里检查并一键升级。WebUI 会做空闲检查、脏工作区检查、fast-forward 限制、依赖安装和自动重启。
+
+如果需要手动升级，先备份，再更新代码和依赖：
 
 ~~~bash
 sudo systemctl stop mgtv-danmaku
@@ -775,6 +791,8 @@ sudo systemctl restart mgtv-danmaku
 | GET | `/api/settings` | 否 | 读取已脱敏的在线配置 |
 | POST | `/api/settings` | 否 | 校验、保存并热应用配置 |
 | POST | `/api/restart` | 否 | 无活动场次时安全重启服务 |
+| GET | `/api/update/status` | 否 | 检查当前 commit 与远端 commit |
+| POST | `/api/update/apply` | 否 | 空闲时快进升级、更新依赖并自动重启 |
 | GET | `/api/rounds/{id}.jsonl` | 否 | 导出场次切片 |
 | POST | `/api/rounds/{id}/precise-result` | 否 | 上传精确结果 |
 | POST | `/api/command` | 否 | 执行运营指令 |

@@ -9,6 +9,8 @@ const settingsEl = Object.fromEntries([
   "cfgFeishuOpenIds", "cfgFeishuChatIds", "cfgFeishuPublicUrl", "feishuSecretState",
   "cfgAuthEnabled", "cfgNewPassword", "cfgSessionHours", "cfgSecureCookie", "cfgMaxFailures",
   "cfgFailureWindow", "authSecretState",
+  "updateCurrentCommit", "updateRemoteCommit", "updateBranch", "updateStatus", "updateFeedback",
+  "checkUpdate", "applyUpdate",
   "cfgListenHost", "cfgListenPort", "cfgPublicBaseUrl", "cfgStorageDir"
 ].map((id) => [id, document.getElementById(id)]));
 
@@ -49,6 +51,52 @@ function updateConfigStatus(runtime) {
   settingsEl.configStatus.className = "config-status " + (fields.length ? "restart" : "ready");
   settingsEl.configStatus.textContent = fields.length ? ("需重启 · " + fields.join("、")) : "热重载已就绪";
   settingsEl.restartService.hidden = !fields.length;
+}
+
+function shortCommit(value) {
+  return value ? String(value).slice(0, 12) : "未读取";
+}
+
+function renderUpdateStatus(payload) {
+  settingsEl.updateCurrentCommit.textContent = shortCommit(payload && (payload.currentShort || payload.currentSha));
+  settingsEl.updateRemoteCommit.textContent = shortCommit(payload && (payload.remoteShort || payload.remoteSha));
+  settingsEl.updateBranch.textContent = payload && payload.remote
+    ? [payload.remote, payload.remoteBranch || payload.branch || "main"].join("/")
+    : "未读取";
+
+  settingsEl.applyUpdate.hidden = true;
+  settingsEl.updateStatus.className = "update-status";
+
+  if (!payload || payload.ok === false) {
+    settingsEl.updateStatus.classList.add("error");
+    settingsEl.updateStatus.textContent = "检查失败";
+    settingsEl.updateFeedback.textContent = (payload && payload.error) || "暂时无法读取远端版本。";
+    return;
+  }
+
+  const blockers = payload.blockers || [];
+  if (!payload.updateAvailable) {
+    settingsEl.updateStatus.classList.add("ready");
+    settingsEl.updateStatus.textContent = "已是最新";
+    settingsEl.updateFeedback.textContent = "当前部署已经与远端目标分支一致。"
+      + (blockers.length ? (" 但若之后出现新版本，当前状态会阻止自动升级：" + blockers.join("；")) : "");
+    return;
+  }
+
+  if (payload.canApply) {
+    settingsEl.updateStatus.classList.add("available");
+    settingsEl.updateStatus.textContent = "发现新版本";
+    settingsEl.applyUpdate.hidden = false;
+    settingsEl.updateFeedback.textContent = "发现远端新 commit，可一键升级。升级会拉取代码、更新依赖并自动重启服务。"
+      + (payload.restartWillApplyConfig ? " 本次重启也会让待重启配置一并生效。" : "");
+    return;
+  }
+
+  settingsEl.updateStatus.classList.add("blocked");
+  settingsEl.updateStatus.textContent = "暂不可升级";
+  settingsEl.updateFeedback.textContent = blockers.length
+    ? ("发现新版本，但当前被阻止：" + blockers.join("；"))
+    : "发现新版本，但当前环境暂不可自动升级。";
 }
 
 function populateSettings(payload) {
@@ -187,11 +235,64 @@ async function loadSettings(showFeedback = true) {
   }
 }
 
+async function checkUpdate(offerApply = false) {
+  settingsEl.checkUpdate.disabled = true;
+  settingsEl.updateStatus.className = "update-status";
+  settingsEl.updateStatus.textContent = "检查中";
+  settingsEl.updateFeedback.textContent = "正在读取远端 commit……";
+  try {
+    const response = await fetch("/api/update/status?t=" + Date.now(), { cache: "no-store" });
+    requireLogin(response);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "版本检查失败");
+    renderUpdateStatus(payload);
+    if (offerApply && payload.updateAvailable && payload.canApply) {
+      const confirmed = window.confirm("发现新版本 " + shortCommit(payload.remoteSha) + "，是否立即升级并自动重启服务？");
+      if (confirmed) await applyUpdate(false);
+    }
+  } catch (error) {
+    renderUpdateStatus({ ok: false, error: error.message });
+    addLog("版本检查失败：" + error.message);
+  } finally {
+    settingsEl.checkUpdate.disabled = false;
+  }
+}
+
+async function applyUpdate(askConfirm = true) {
+  if (askConfirm && !window.confirm("升级会短暂重启服务。请确认当前没有场次正在采集，是否继续？")) return;
+  settingsEl.applyUpdate.disabled = true;
+  settingsEl.checkUpdate.disabled = true;
+  settingsEl.updateStatus.className = "update-status available";
+  settingsEl.updateStatus.textContent = "升级中";
+  settingsEl.updateFeedback.textContent = "正在拉取新 commit、安装依赖并准备重启……";
+  try {
+    const response = await fetch("/api/update/apply", { method: "POST" });
+    requireLogin(response);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "升级失败");
+    if (payload.status) renderUpdateStatus(payload.status);
+    settingsEl.updateFeedback.textContent = payload.message || "升级完成，服务正在重启。";
+    addLog(settingsEl.updateFeedback.textContent);
+    if (payload.restartScheduled) {
+      setTimeout(() => window.location.reload(), 6000);
+    }
+  } catch (error) {
+    settingsEl.updateStatus.className = "update-status error";
+    settingsEl.updateStatus.textContent = "升级失败";
+    settingsEl.updateFeedback.textContent = error.message || "升级请求中断，服务可能正在重启，请稍后刷新。";
+    addLog("程序升级失败：" + settingsEl.updateFeedback.textContent);
+  } finally {
+    settingsEl.applyUpdate.disabled = false;
+    settingsEl.checkUpdate.disabled = false;
+  }
+}
+
 settingsEl.settingsToggle.addEventListener("click", async () => {
   settingsEl.settingsPanel.hidden = false;
   settingsEl.settingsPanel.scrollIntoView({ behavior: "smooth", block: "start" });
   try {
     await loadSettings();
+    checkUpdate(false).catch(() => {});
   } catch (error) {
     settingsEl.settingsFeedback.className = "panel-copy error";
     settingsEl.settingsFeedback.textContent = error.message;
@@ -252,6 +353,14 @@ settingsEl.restartService.addEventListener("click", async () => {
     settingsEl.settingsFeedback.textContent = error.message;
     settingsEl.restartService.disabled = false;
   }
+});
+
+settingsEl.checkUpdate.addEventListener("click", () => {
+  checkUpdate(true);
+});
+
+settingsEl.applyUpdate.addEventListener("click", () => {
+  applyUpdate();
 });
 
 loadSettings(false).catch(() => {

@@ -40,11 +40,13 @@ try:
         public_settings,
         save_config_atomic,
     )
+    from server.updater import GitUpdater, UpdateError
 except ModuleNotFoundError:  # Support `python server/vote_server.py`.
     from precise_results import parse_precise_result, validate_precise_result
     from feishu_cards import build_control_card, build_round_list_card
     from operator_auth import OperatorAuth, safe_next_url
     from runtime_settings import SettingsValidationError, build_settings_update, public_settings, save_config_atomic
+    from updater import GitUpdater, UpdateError
 
 
 def now_iso() -> str:
@@ -771,11 +773,14 @@ class FeishuBot:
 
 
 class VoteService:
-    def __init__(self, config: dict[str, Any], config_path: Path | None = None):
+    def __init__(self, config: dict[str, Any], config_path: Path | None = None, repo_root: Path | None = None):
         self.config = config
         self.startup_config = json.loads(json.dumps(config))
         self.config_path = config_path
+        self.repo_root = repo_root or Path(__file__).resolve().parents[1]
         self.config_lock = asyncio.Lock()
+        self.update_lock = asyncio.Lock()
+        self.last_update_result: dict[str, Any] | None = None
         self.pending_restart_fields: list[str] = []
         self.store = StateStore(Path(config.get("storage", {}).get("directory", "server/data")))
         self.store.load()
@@ -788,6 +793,7 @@ class VoteService:
         self.default_policy = config.get("vote", {}).get("multi_candidate_policy", "all")
         self.user_selection: dict[str, str] = {}
         self.feishu_connection: Any = None
+        self.updater = GitUpdater(self.repo_root)
 
     def _restart_fields_for(self, config: dict[str, Any]) -> list[str]:
         paths = [
@@ -868,6 +874,50 @@ class VoteService:
         fields = list(self.pending_restart_fields)
         loop.call_later(0.8, os.kill, os.getpid(), signal.SIGTERM)
         return fields
+
+    def update_blockers(self) -> list[str]:
+        blockers: list[str] = []
+        if self.store.active_round_id or self.collector.running():
+            blockers.append("场次正在采集，需先结束本轮")
+        if self.update_lock.locked():
+            blockers.append("已有升级任务正在执行")
+        return blockers
+
+    async def update_status(self) -> dict[str, Any]:
+        status = await self.updater.status()
+        blockers = self.update_blockers()
+        if status.get("dirty"):
+            blockers.append("部署目录存在未提交或未跟踪文件")
+        status.update({
+            "inProgress": self.update_lock.locked(),
+            "canApply": bool(status.get("updateAvailable")) and not blockers,
+            "blockers": blockers,
+            "restartWillApplyConfig": bool(self.pending_restart_fields),
+            "lastUpdate": self.last_update_result,
+        })
+        return status
+
+    async def apply_update(self, loop: asyncio.AbstractEventLoop) -> dict[str, Any]:
+        blockers = self.update_blockers()
+        if blockers:
+            raise SettingsValidationError("；".join(blockers))
+        async with self.update_lock:
+            result = await self.updater.apply_update()
+            self.last_update_result = {
+                "updated": result.get("updated"),
+                "from": result.get("from"),
+                "to": result.get("to"),
+                "steps": result.get("steps", []),
+                "requestedAt": now_iso(),
+            }
+            if result.get("updated"):
+                loop.call_later(0.8, os.kill, os.getpid(), signal.SIGTERM)
+                result["restartScheduled"] = True
+                result["message"] = "升级已完成，服务正在自动重启。"
+            else:
+                result["restartScheduled"] = False
+                result["message"] = "当前已经是最新版本，无需重启。"
+            return result
 
     def start_feishu_connection(self, loop: asyncio.AbstractEventLoop) -> bool:
         try:
@@ -1220,6 +1270,30 @@ def create_app(service: VoteService) -> web.Application:
             headers={"Cache-Control": "no-store"},
         )
 
+    async def update_status(_: web.Request) -> web.Response:
+        try:
+            status = await service.update_status()
+        except UpdateError as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=502, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response(
+            status,
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def apply_update(_: web.Request) -> web.Response:
+        try:
+            result = await service.apply_update(asyncio.get_running_loop())
+        except SettingsValidationError as exc:
+            return web.json_response({"error": str(exc)}, status=409, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except UpdateError as exc:
+            return web.json_response({"error": str(exc)}, status=502, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response(
+            result,
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
     async def precise_result_doc(_: web.Request) -> web.FileResponse:
         return web.FileResponse(precise_doc, headers={"Content-Type": "text/markdown; charset=utf-8"})
 
@@ -1315,6 +1389,8 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_get("/api/settings", get_settings)
     app.router.add_post("/api/settings", update_settings)
     app.router.add_post("/api/restart", restart_service)
+    app.router.add_get("/api/update/status", update_status)
+    app.router.add_post("/api/update/apply", apply_update)
     app.router.add_get("/api/rounds/{round_id}.jsonl", round_export)
     app.router.add_post("/api/rounds/{round_id}/precise-result", precise_upload)
     app.router.add_post("/api/command", command)
