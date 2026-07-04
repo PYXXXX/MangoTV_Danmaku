@@ -1215,7 +1215,7 @@ class VoteService:
             return
         normalized = normalize(text)
         if normalized in {"菜单", "卡片", "控制台", "/menu"}:
-            reply = "控制卡片已刷新。"
+            reply = "控制台已刷新。"
         elif normalized in {"我的id", "我的ID", "配置id", "配置ID", "id", "ids", "/id"}:
             reply = (
                 "当前飞书来源 ID：\n"
@@ -1322,17 +1322,7 @@ class VoteService:
         text = normalize(text)
         if not text or text in {"帮助", "help", "/help"}:
             return (
-                "可用指令：\n"
-                "开始 <活动名>|<场次名> [直播URL]\n"
-                "结束\n"
-                "状态\n"
-                "结果 [场次名/ID]\n"
-                "场次\n"
-                "切换 <场次名/ID>\n"
-                "命名 <新名称>\n"
-                "发布粗略\n"
-                "候选人\n"
-                "我的ID"
+                "请直接使用卡片按钮操作。常用流程：开始默认场次 → 结束并发布粗略结果 → 在 WebUI 上传精确结果。"
             )
         if text.startswith("开始"):
             rest = normalize(text[2:])
@@ -1381,7 +1371,7 @@ class VoteService:
             return f"粗略结果发布完成：{url}"
         if text == "候选人":
             return "\n".join(f"{candidate.name}：{', '.join(candidate.aliases)}" for candidate in self.default_candidates)
-        return "未识别指令。发送“帮助”查看用法。"
+        return "已为你刷新控制台。请直接点击卡片按钮操作。"
 
 
 def _safe_static_version(value: str) -> str:

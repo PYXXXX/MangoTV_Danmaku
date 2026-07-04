@@ -41,6 +41,7 @@ class FeishuCardTest(unittest.TestCase):
     def test_control_card_contains_safe_operations(self):
         card = build_control_card(self.state, "r1", "状态已刷新", "https://example.com/results")
         self.assertEqual(card["header"]["template"], "orange")
+        self.assertEqual(card["header"]["title"]["content"], "直播弹幕人气控制台")
         actions = [
             action["value"]["action"]
             for element in card["elements"]
@@ -51,16 +52,26 @@ class FeishuCardTest(unittest.TestCase):
         self.assertIn("publish_rough", actions)
         self.assertNotIn("start_default", actions)
         rendered = str(card)
+        self.assertIn("● 采集中", rendered)
+        self.assertIn("结束并发布粗略结果", rendered)
+        self.assertIn("查看/切换场次", rendered)
+        self.assertIn("card.action.trigger", rendered)
         self.assertIn("120", rendered)
         self.assertIn("打开公开结果页", rendered)
 
     def test_round_list_uses_select_callback(self):
         card = build_round_list_card(self.state, "r0")
-        selector = card["elements"][0]["actions"][0]
+        selector = next(
+            action
+            for element in card["elements"]
+            for action in element.get("actions", [])
+            if action.get("tag") == "select_static"
+        )
         self.assertEqual(selector["tag"], "select_static")
         self.assertEqual(selector["value"]["action"], "select_round")
         self.assertEqual(selector["initial_option"], "r0")
         self.assertEqual(len(selector["options"]), 2)
+        self.assertEqual(card["header"]["title"]["content"], "场次管理")
 
     def test_long_connection_requires_credentials_only_when_enabled(self):
         loop = asyncio.new_event_loop()

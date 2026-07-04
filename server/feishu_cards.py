@@ -36,6 +36,39 @@ def result_counts(session: dict[str, Any]) -> tuple[str, dict[str, int]]:
     return "粗略结果", rough.get("voteCounts") or session.get("voteCounts") or {}
 
 
+def top_status(state: dict[str, Any], session: dict[str, Any] | None) -> tuple[str, str, str]:
+    active_id = state.get("activeSessionId")
+    running = bool(session and session.get("id") == active_id and session.get("status") == "running")
+    if running:
+        return "orange", "● 采集中", "当前正在实时统计弹幕"
+    if session:
+        return "green", "■ 已结束", "当前查看历史场次"
+    return "blue", "○ 空闲", "当前没有场次"
+
+
+def session_title(session: dict[str, Any] | None) -> str:
+    if not session:
+        return "尚未创建场次"
+    return f"{session.get('activity', '未分类活动')} / {session.get('name', '未命名场次')}"
+
+
+def ranking_markdown(session: dict[str, Any]) -> str:
+    label, counts = result_counts(session)
+    candidates = session.get("candidates") or []
+    ranking = sorted(
+        ((item.get("name", "未命名"), int(counts.get(item.get("id"), 0))) for item in candidates),
+        key=lambda row: (-row[1], row[0]),
+    )
+    lines = [f"**票数排行（{label}）**"]
+    if not ranking:
+        lines.append("暂无候选人。")
+    else:
+        for index, (name, votes) in enumerate(ranking[:8], 1):
+            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(index, f"{index}.")
+            lines.append(f"{medal} **{name}**　{votes} 票")
+    return "\n".join(lines)
+
+
 def build_control_card(
     state: dict[str, Any],
     selected_round_id: str | None = None,
@@ -46,37 +79,45 @@ def build_control_card(
     active_id = state.get("activeSessionId")
     running = next((item for item in state.get("sessions") or [] if item.get("id") == active_id and item.get("status") == "running"), None)
     selected_is_active = bool(session and running and session.get("id") == running.get("id"))
-    template = "orange" if running else ("green" if session and (session.get("results") or {}).get("precise") else "blue")
+    template, status_text, status_hint = top_status(state, session)
     elements: list[dict[str, Any]] = []
+    elements.append({
+        "tag": "markdown",
+        "content": (
+            f"**{status_text}｜{session_title(session)}**\n"
+            f"{status_hint}\n"
+            f"最近更新时间：{state.get('updatedAt') or '等待同步'}"
+        ),
+    })
+    elements.append({"tag": "hr"})
     if notice:
-        elements.append({"tag": "markdown", "content": f"**操作回执**\n{notice}"})
+        elements.append({"tag": "markdown", "content": f"**操作结果**\n{notice}"})
         elements.append({"tag": "hr"})
     if not session:
         elements.append({
             "tag": "markdown",
-            "content": "**当前没有场次**\n点击下方按钮可按默认活动名创建场次；自定义名称请发送 `开始 活动名|场次名`。",
+            "content": (
+                "**下一步**\n"
+                "点击“开始默认场次”会使用 WebUI 中配置的默认活动、候选人与直播源，"
+                "自动创建下一轮。需要自定义活动名或候选人时，请先在 WebUI 的系统配置里保存。"
+            ),
         })
     else:
-        label, counts = result_counts(session)
-        candidates = session.get("candidates") or []
-        ranking = sorted(
-            ((item.get("name", "未命名"), int(counts.get(item.get("id"), 0))) for item in candidates),
-            key=lambda row: (-row[1], row[0]),
-        )
-        ranking_text = "\n".join(f"{index}. **{name}**  {votes}" for index, (name, votes) in enumerate(ranking, 1)) or "暂无候选人"
-        status = "采集中" if selected_is_active else "已结束"
+        label, _ = result_counts(session)
+        precise_ready = bool((session.get("results") or {}).get("precise"))
         elements.append({
             "tag": "markdown",
             "content": (
-                f"**{session.get('activity', '未分类活动')} / {session.get('name', '未命名场次')}**\n"
-                f"状态：{status}　结果：{label}\n"
-                f"弹幕样本：**{int(session.get('messageCount') or 0)}**　语义待审：**{int(session.get('reviewCount') or 0)}**"
+                f"弹幕样本：**{int(session.get('messageCount') or 0)}**\n"
+                f"语义待审：**{int(session.get('reviewCount') or 0)}**\n"
+                f"当前结果：**{label}**\n"
+                f"精确结果：{'已发布' if precise_ready else '未上传'}"
             ),
         })
-        elements.extend([{"tag": "hr"}, {"tag": "markdown", "content": ranking_text}])
+        elements.extend([{"tag": "hr"}, {"tag": "markdown", "content": ranking_markdown(session)}])
     if running:
         elements.append(action_row(
-            button("结束本轮", "end_round", "danger"),
+            button("结束并发布粗略结果", "end_round", "danger"),
             button("刷新状态", "refresh", "default"),
         ))
     else:
@@ -85,7 +126,7 @@ def build_control_card(
             button("刷新状态", "refresh", "default"),
         ))
     elements.append(action_row(
-        button("场次列表", "show_rounds"),
+        button("查看/切换场次", "show_rounds"),
         button("发布粗略结果", "publish_rough", "primary"),
     ))
     if public_url:
@@ -93,9 +134,10 @@ def build_control_card(
             "tag": "action",
             "actions": [{"tag": "button", "text": plain_text("打开公开结果页"), "type": "default", "url": public_url}],
         })
+    elements.append({"tag": "note", "elements": [plain_text("按钮需要飞书企业自建应用已配置 card.action.trigger 卡片回调；若按钮提示未配置，请联系管理员。")]})
     return {
         "config": {"wide_screen_mode": True, "enable_forward": False},
-        "header": {"template": template, "title": plain_text("直播弹幕人气运营")},
+        "header": {"template": template, "title": plain_text("直播弹幕人气控制台")},
         "elements": elements,
     }
 
@@ -110,8 +152,13 @@ def build_round_list_card(
     if notice:
         elements.append({"tag": "markdown", "content": notice})
     if not sessions:
-        elements.append({"tag": "markdown", "content": "暂无场次。"})
+        elements.append({"tag": "markdown", "content": "**暂无场次**\n回到控制台后可直接开始默认场次。"})
     else:
+        current = select_session(state, selected_round_id)
+        elements.append({
+            "tag": "markdown",
+            "content": f"**当前查看**\n{session_title(current)}\n\n从下拉列表选择场次后，卡片会自动回到控制台。",
+        })
         options = []
         for item in sessions[:50]:
             marker = "采集中" if item.get("status") == "running" else "已结束"
@@ -130,9 +177,9 @@ def build_round_list_card(
         if selected_round_id and any(item.get("value") == selected_round_id for item in options):
             selector["initial_option"] = selected_round_id
         elements.append({"tag": "action", "actions": [selector]})
-    elements.append(action_row(button("返回控制台", "control", "primary")))
+    elements.append(action_row(button("返回控制台", "control", "primary"), button("刷新状态", "refresh")))
     return {
         "config": {"wide_screen_mode": True, "enable_forward": False},
-        "header": {"template": "blue", "title": plain_text("活动与场次")},
+        "header": {"template": "blue", "title": plain_text("场次管理")},
         "elements": elements,
     }

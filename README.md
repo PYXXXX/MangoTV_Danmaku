@@ -130,7 +130,9 @@ python tools/setup_operator_password.py
 
 推荐路径：打开运营 WebUI → “系统配置” → “飞书 Bot” → “一键绑定飞书”，点击授权链接并按飞书页面完成授权/安装。绑定成功后系统会自动保存 `app_id` / `app_secret`、启用 WebSocket 长连接并热重载；`app_secret` 不会回显到页面。授权人的 `open_id` 会自动加入白名单，便于立即私聊 Bot 测试。
 
-随后把 Bot 加入运营群，在群里发送“我的ID”获取 `chat_id`，填入 WebUI 的 `allowed_chat_ids` 后保存。向 Bot 发送“菜单”即可获得交互卡片，可点击开始默认场次、结束、刷新、查看/切换场次和发布粗略结果。自定义活动名、场次名仍使用文本指令；精确结果文件仍在运营 WebUI 上传。
+完整卡片按钮交互需要企业自建应用已配置 `card.action.trigger` 卡片回调。如果飞书提示“尚未配置卡片回调”，点击“去配置”又提示“该应用不存在”，通常表示一键绑定拿到的是 CLI/PersonalAgent 风格应用，不是企业开放平台里可管理的自建应用；请改用企业自建应用的 `app_id/app_secret` 手动填入 WebUI。
+
+随后把 Bot 加入运营群，在群里发送“我的ID”获取 `chat_id`，填入 WebUI 的 `allowed_chat_ids` 后保存。向 Bot 发送任意消息即可刷新运营控制台卡片，可点击开始默认场次、结束、刷新、查看/切换场次和发布粗略结果。自定义活动名、候选人与直播源建议在 WebUI 配置；精确结果文件仍在运营 WebUI 上传。
 
 手动兜底：本地运行 `python tools/setup_feishu_bot.py` 可交互式生成 `server/config.json`：向导会说明每个 ID 去哪里找，并支持首次联调临时写入 `*`。连通后向 Bot 发送“我的ID”，拿到 `open_id` / `chat_id` 后再重跑向导切换为正式白名单。
 
