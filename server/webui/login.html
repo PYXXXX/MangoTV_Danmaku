@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>运营端登录 · 直播弹幕人气</title>
+    <link rel="stylesheet" href="/webui/styles.css" />
+  </head>
+  <body class="login-page">
+    <main class="login-shell">
+      <section class="login-card" aria-labelledby="loginTitle">
+        <p class="kicker">OPERATOR ACCESS</p>
+        <h1 id="loginTitle">运营端登录</h1>
+        <p class="login-copy">请输入运营密码以访问场次控制、弹幕切片和结果发布功能。</p>
+        {{ERROR_BLOCK}}
+        <form class="login-form" action="/auth/login" method="post">
+          <input type="hidden" name="next" value="{{NEXT_URL}}" />
+          <label for="password">运营密码</label>
+          <input
+            id="password"
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            required
+            autofocus
+          />
+          <button class="primary" type="submit">进入运营端</button>
+        </form>
+        <p class="login-note">会话仅保存在当前浏览器；退出或过期后需要重新登录。</p>
+      </section>
+    </main>
+  </body>
+</html>

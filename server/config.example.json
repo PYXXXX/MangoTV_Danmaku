@@ -36,6 +36,15 @@
     "path": "site/data/results.json",
     "token": "github_pat_xxx"
   },
+  "operator_auth": {
+    "enabled": false,
+    "password_hash": "",
+    "session_secret": "",
+    "session_hours": 12,
+    "secure_cookie": false,
+    "max_failures": 5,
+    "failure_window_seconds": 300
+  },
   "feishu": {
     "enabled": false,
     "connection_mode": "websocket",

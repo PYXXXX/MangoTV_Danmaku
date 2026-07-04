@@ -56,12 +56,22 @@ function addLog(text) {
   el.log.textContent = logs.join("\n\n");
 }
 
+function requireLogin(response) {
+  if (response.status === 401) {
+    const next = window.location.pathname + window.location.search;
+    window.location.assign("/login?next=" + encodeURIComponent(next));
+    throw new Error("登录已过期，正在跳转");
+  }
+  return response;
+}
+
 async function sendCommand(text) {
   const response = await fetch("/api/command", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text })
   });
+  requireLogin(response);
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.error || "HTTP " + response.status);
   addLog(payload.reply || "操作完成");
@@ -196,6 +206,7 @@ function render() {
 
 async function load() {
   const resultsResponse = await fetch("/api/results.json?t=" + Date.now(), { cache: "no-store" });
+  requireLogin(resultsResponse);
   if (!resultsResponse.ok) throw new Error("结果读取失败：HTTP " + resultsResponse.status);
   state = await resultsResponse.json();
   try {
@@ -231,6 +242,7 @@ el.preciseForm.addEventListener("submit", async (event) => {
   body.append("file", file);
   try {
     const response = await fetch("/api/rounds/" + encodeURIComponent(round.id) + "/precise-result", { method: "POST", body });
+    requireLogin(response);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "HTTP " + response.status);
     selectedResultByRound[round.id] = "precise";

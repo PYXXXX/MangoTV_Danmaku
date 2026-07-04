@@ -4,6 +4,8 @@
 
 一个面向直播运营的双模式工具：
 
+生产环境请从 [完整部署手册](docs/DEPLOYMENT.md) 开始；该文档统一包含服务器、运营端密码、GitHub Pages、飞书 Bot、systemd、HTTPS、备份升级和排障步骤。
+
 1. **实时模式**：Chrome 扩展观察直播页热聊节点，艺人名或别名命中后立即计票，并展示实时排名。
 2. **离线语义模式**：弹幕先落成 JSONL；本地规则完成绝大多数明确票，只把否定、比较、多人、泛称等歧义样本交给 Codex，最后合并票数。
 3. **服务器模式**：Python 服务端直接调用客户端同款弹幕历史接口，可由飞书 Bot 遥控开始/结束/发布，不依赖前端电脑或 Chrome。
@@ -62,6 +64,8 @@ Chrome 扩展模式依赖 DOM；服务器模式默认直接调用客户端接口
 
 ### 安装与启动
 
+以下命令仅用于本地快速验证。正式部署请按 [完整部署手册](docs/DEPLOYMENT.md) 执行。
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -71,6 +75,14 @@ python server/vote_server.py --config server/config.json
 ```
 
 如果要启用飞书 Bot 遥控，再运行 `python tools/setup_feishu_bot.py` 交互式更新本机配置。
+
+建议同时为运营 WebUI 设置登录密码：
+
+```bash
+python tools/setup_operator_password.py
+```
+
+向导不会保存明文密码；它会写入 PBKDF2 哈希与随机会话密钥。改密会让旧会话立即失效，配置完成后需要重启服务。
 
 启动后打开 `http://服务器地址:8080/` 即可进入管理 WebUI，风格与公开结果页一致，可开始/结束场次、重命名、发布粗略结果、查看排名、导出切片，以及上传并发布清洗后的精确结果。
 
@@ -82,6 +94,14 @@ python server/vote_server.py --config server/config.json
 - `POST /api/rounds/{round_id}/precise-result`：通过 multipart 的 `file` 字段上传并发布 `.json` 或 `.xml` 精确结果。
 - `POST /api/command`：本地调试指令，例如 `{"text":"开始 第一轮"}`。
 - `POST /feishu/events`：飞书事件订阅回调地址。
+
+启用 `operator_auth` 后，运营页面、清洗规范和 `/api/*` 均要求登录；`/healthz`、登录入口与飞书回调保持可访问。
+
+### 运营端密码保护
+
+运行 `python tools/setup_operator_password.py` 后按提示输入并确认密码。默认会话时长为 12 小时，连续 5 次输错后同一来源会被限制 5 分钟。
+
+本地 HTTP 调试时对“仅通过 HTTPS 提交登录 Cookie”回答 `n`；部署到 HTTPS 域名时回答 `y`。详细配置与排障见 [完整部署手册的运营端密码章节](docs/DEPLOYMENT.md#4-启用运营端密码)。
 
 ### 关键配置
 
@@ -96,6 +116,7 @@ python server/vote_server.py --config server/config.json
 - `vote.activity`：默认活动名，例如 `歌手 2026`。
 - `vote.candidates`：候选人与别名。
 - `github`：与扩展版相同，用于发布聚合结果到 `site/data/results.json`。
+- `operator_auth`：运营端密码哈希、会话有效期、HTTPS Cookie 和登录失败限速。
 
 ### 飞书 Bot 遥控
 
@@ -111,7 +132,7 @@ python server/vote_server.py --config server/config.json
 
 向 Bot 发送“菜单”即可获得交互卡片，可点击开始默认场次、结束、刷新、查看/切换场次和发布粗略结果。自定义活动名、场次名仍使用文本指令；精确结果文件仍在运营 WebUI 上传。
 
-完整权限、配置、systemd 常驻和 HTTP 回调兼容方案见 [飞书交互卡片 Bot 部署文档](docs/FEISHU_BOT_DEPLOYMENT.md)。
+完整权限、白名单、systemd 常驻和 HTTP 回调兼容方案见 [完整部署手册的飞书章节](docs/DEPLOYMENT.md#6-配置飞书交互卡片-bot)。
 
 支持指令：
 
@@ -147,6 +168,8 @@ python3 tools/export_round_slice.py --data-dir server/data --round "第一轮" -
 ```
 
 ## 三、发布 github.io 公开结果页
+
+生产环境的 Token、Pages 与服务端发布配置统一见 [完整部署手册的 GitHub Pages 章节](docs/DEPLOYMENT.md#5-配置-github-pages-公开结果页)。
 
 公开仓库：[PYXXXX/MangoTV_Danmaku](https://github.com/PYXXXX/MangoTV_Danmaku)
 
@@ -257,6 +280,7 @@ node --check extension/dashboard.js
 node --check site/app.js
 node --check server/webui/app.js
 python3 -m py_compile server/vote_server.py
-python3 -m py_compile server/feishu_cards.py server/feishu_ws.py
+python3 -m py_compile server/feishu_cards.py server/feishu_ws.py server/operator_auth.py
+python3 -m py_compile tools/setup_feishu_bot.py tools/setup_operator_password.py
 python3 -m unittest discover -s tests -v
 ```
