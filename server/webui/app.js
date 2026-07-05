@@ -20,6 +20,8 @@ const el = {
   refresh: $("#refresh"),
   downloadSlice: $("#downloadSlice"),
   downloadPng: $("#downloadPng"),
+  deleteRound: $("#deleteRound"),
+  deleteActivity: $("#deleteActivity"),
   messages: $("#messages"),
   votes: $("#votes"),
   reviews: $("#reviews"),
@@ -103,6 +105,14 @@ async function sendCommand(text) {
   addLog(payload.reply || "操作完成");
   await load();
   return payload.reply;
+}
+
+async function deleteJson(url) {
+  const response = await fetch(url, { method: "DELETE" });
+  requireLogin(response);
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || "HTTP " + response.status);
+  return payload;
 }
 
 function selectedRound() {
@@ -239,11 +249,15 @@ function render() {
     el.downloadSlice.classList.remove("disabled");
     el.downloadPng.href = "/api/rounds/" + encodeURIComponent(round.id) + "/result.png?result=" + encodeURIComponent(current.type);
     el.downloadPng.classList.remove("disabled");
+    el.deleteRound.disabled = round.status === "running";
+    el.deleteActivity.disabled = !selectedActivity;
   } else {
     el.downloadSlice.href = "#";
     el.downloadSlice.classList.add("disabled");
     el.downloadPng.href = "#";
     el.downloadPng.classList.add("disabled");
+    el.deleteRound.disabled = true;
+    el.deleteActivity.disabled = true;
   }
   applyStartDefaults();
 }
@@ -307,6 +321,39 @@ el.rename.addEventListener("click", async () => {
     await sendCommand("命名 " + name);
   } catch (error) {
     addLog(error.message);
+  }
+});
+el.deleteRound.addEventListener("click", async () => {
+  const round = selectedRound();
+  if (!round) return addLog("请先选择要删除的场次");
+  if (round.status === "running") return addLog("场次正在采集中，请先结束本轮再删除");
+  const label = (round.activity || "未分类活动") + " / " + roundDisplayName(round);
+  if (!window.confirm("确认删除场次「" + label + "」？\n删除后会从运营端、飞书和公开结果中移除。")) return;
+  try {
+    const payload = await deleteJson("/api/rounds/" + encodeURIComponent(round.id));
+    selectedRoundId = null;
+    addLog("已删除场次：" + (payload.deletedRoundName || roundDisplayName(round)));
+    await load();
+  } catch (error) {
+    addLog("删除场次失败：" + error.message);
+  }
+});
+el.deleteActivity.addEventListener("click", async () => {
+  const activity = selectedActivity;
+  if (!activity) return addLog("请先选择要删除的活动");
+  const sessions = (state && state.sessions) || [];
+  const rounds = sessions.filter((item) => (item.activity || "未分类活动") === activity);
+  const running = rounds.filter((item) => item.status === "running");
+  if (running.length) return addLog("活动中仍有场次正在采集，请先结束后再删除");
+  if (!window.confirm("确认删除活动「" + activity + "」下的 " + rounds.length + " 个场次？\n删除后会从运营端、飞书和公开结果中移除。")) return;
+  try {
+    const payload = await deleteJson("/api/activities/" + encodeURIComponent(activity));
+    selectedActivity = null;
+    selectedRoundId = null;
+    addLog("已删除活动：" + (payload.deletedActivity || activity) + "（" + (payload.deletedRoundCount || 0) + " 个场次）");
+    await load();
+  } catch (error) {
+    addLog("删除活动失败：" + error.message);
   }
 });
 el.roundSelect.addEventListener("change", () => {

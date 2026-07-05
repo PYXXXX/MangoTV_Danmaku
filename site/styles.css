@@ -22,6 +22,9 @@ h1 { margin: 0; font-size: clamp(34px, 5vw, 64px); line-height: .95; letter-spac
 .result-toggle button:focus-visible { outline: 2px solid #ff7a1a; outline-offset: 2px; }
 .result-toggle button:active:not(:disabled) { transform: translateY(1px); }
 .result-toggle button:disabled:not(.active) { opacity: .38; cursor: not-allowed; }
+.export-button { min-height: 39px; border: 1px solid #3b3d42; border-radius: 9px; background: #25262a; color: #f1f1ef; font: 650 13px/1 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; cursor: pointer; }
+.export-button:hover:not(:disabled) { border-color: #ff7a1a; color: #ff9a50; }
+.export-button:disabled { opacity: .42; cursor: not-allowed; }
 .live-state { display: flex; align-items: center; gap: 8px; margin-top: 6px; color: #777a81; font-size: 12px; }
 .live-state i { width: 8px; height: 8px; border-radius: 50%; background: #55585f; }
 .live-state.active i { background: #ff7a1a; box-shadow: 0 0 0 6px rgba(255,122,26,.1); }

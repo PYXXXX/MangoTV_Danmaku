@@ -23,6 +23,18 @@ class WebuiSettingsJsTest(unittest.TestCase):
         self.assertIn("const activity = el.activityName.value.trim() || defaultActivityName()", source)
         self.assertIn("downloadPng", source)
         self.assertIn("/result.png?result=", source)
+        self.assertIn("deleteRound", source)
+        self.assertIn("/api/rounds/", source)
+        self.assertIn("deleteActivity", source)
+        self.assertIn("/api/activities/", source)
+
+    def test_public_page_can_export_png_with_source_credit(self):
+        html = (ROOT / "site" / "index.html").read_text(encoding="utf-8")
+        source = (ROOT / "site" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("exportPng", html)
+        self.assertIn("renderCurrentPng", source)
+        self.assertIn("canvas.toDataURL(\"image/png\")", source)
+        self.assertIn("https://pyxxxx.github.io/MangoTV_Danmaku/", source)
 
     def test_feishu_binding_button_click_posts_start_endpoint(self):
         script = textwrap.dedent(

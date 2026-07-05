@@ -45,6 +45,11 @@ button:active, .link-button:active { transform: translateY(1px); }
 .button-row { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 .button-row.lower { grid-template-columns: repeat(3, 1fr); margin-top: 12px; }
 .inline-row { display: grid; grid-template-columns: 1fr 92px; gap: 9px; }
+.danger-zone { display: grid; gap: 10px; margin-top: 16px; padding: 12px; border: 1px solid rgba(165, 62, 52, .42); border-radius: 12px; background: rgba(74, 33, 31, .18); }
+.danger-zone strong { display: block; color: #ffd4ce; font-size: 12px; }
+.danger-zone span { display: block; margin-top: 4px; color: #a7a2a0; font-size: 11px; line-height: 1.55; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button:disabled:active { transform: none; }
 .settings-panel { margin: 24px 0 0; padding: 22px; border: 1px solid #34363b; border-radius: 18px; background: rgba(15, 16, 18, .96); box-shadow: 0 26px 70px rgba(0, 0, 0, .28); }
 .settings-panel[hidden] { display: none; }
 .settings-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding-bottom: 18px; border-bottom: 1px solid #292b30; }

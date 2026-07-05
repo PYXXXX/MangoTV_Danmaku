@@ -61,6 +61,21 @@ class FeishuCardTest(unittest.TestCase):
         self.assertIn("发送当前场次 PNG", rendered)
         self.assertIn("send_png", actions)
 
+    def test_control_card_contains_confirmed_delete_actions_for_stopped_round(self):
+        card = build_control_card(self.state, "r0", "状态已刷新", "https://example.com/results")
+        rendered = str(card)
+        actions = [
+            action["value"]["action"]
+            for element in card["elements"]
+            for action in element.get("actions", [])
+            if action.get("tag") == "button" and action.get("value")
+        ]
+        self.assertIn("delete_round", actions)
+        self.assertIn("delete_activity", actions)
+        self.assertIn("确认删除", rendered)
+        self.assertIn("删除所选场次", rendered)
+        self.assertIn("删除当前活动", rendered)
+
     def test_control_card_renders_start_form_with_runtime_defaults(self):
         state = {
             "activeSessionId": None,

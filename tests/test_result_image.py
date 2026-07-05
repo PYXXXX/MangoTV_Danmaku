@@ -1,6 +1,6 @@
 import unittest
 
-from server.result_image import render_result_png
+from server.result_image import DATA_SOURCE_URL, render_result_png
 
 
 class ResultImageTest(unittest.TestCase):
@@ -36,6 +36,7 @@ class ResultImageTest(unittest.TestCase):
         self.assertTrue(body.startswith(b"\x89PNG\r\n\x1a\n"))
         self.assertGreater(len(body), 10_000)
         self.assertEqual(filename, "mgtv-result-round-1-rough.png")
+        self.assertEqual(DATA_SOURCE_URL, "https://pyxxxx.github.io/MangoTV_Danmaku/")
 
     def test_render_result_png_prefers_precise_when_requested(self):
         state = {

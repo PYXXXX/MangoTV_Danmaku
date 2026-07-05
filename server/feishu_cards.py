@@ -9,13 +9,31 @@ def plain_text(content: str) -> dict[str, str]:
     return {"tag": "plain_text", "content": content}
 
 
-def button(text: str, action: str, button_type: str = "default", **extra: str) -> dict[str, Any]:
+def button(
+    text: str,
+    action: str,
+    button_type: str = "default",
+    confirm: dict[str, Any] | None = None,
+    **extra: str,
+) -> dict[str, Any]:
     value = {"action": action, **extra}
-    return {"tag": "button", "text": plain_text(text), "type": button_type, "value": value}
+    payload = {"tag": "button", "text": plain_text(text), "type": button_type, "value": value}
+    if confirm:
+        payload["confirm"] = confirm
+    return payload
 
 
 def action_row(*buttons: dict[str, Any]) -> dict[str, Any]:
     return {"tag": "action", "actions": list(buttons)}
+
+
+def danger_confirm(title: str, text: str) -> dict[str, Any]:
+    return {
+        "title": plain_text(title),
+        "text": plain_text(text),
+        "confirm": plain_text("确认删除"),
+        "cancel": plain_text("取消"),
+    }
 
 
 def text_input(name: str, placeholder: str, default_value: str = "") -> dict[str, Any]:
@@ -206,6 +224,21 @@ def build_control_card(
     ))
     if session:
         elements.append(action_row(button("发送当前场次 PNG", "send_png", "default")))
+        if session.get("status") != "running":
+            elements.append(action_row(
+                button(
+                    "删除所选场次",
+                    "delete_round",
+                    "danger",
+                    confirm=danger_confirm("删除所选场次？", "删除后该场次会从运营端、飞书和公开结果中移除，不能在面板内恢复。"),
+                ),
+                button(
+                    "删除当前活动",
+                    "delete_activity",
+                    "danger",
+                    confirm=danger_confirm("删除当前活动？", "会删除当前活动下全部已结束场次；若仍有采集中场次，系统会拒绝删除。"),
+                ),
+            ))
     if public_url:
         elements.append({
             "tag": "action",

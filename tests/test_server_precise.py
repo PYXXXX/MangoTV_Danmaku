@@ -188,6 +188,96 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 service.collector.fingerprints.close()
 
+    async def test_delete_round_and_activity_remove_stopped_sessions(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "mgtv": {"dedup_db_path": str(Path(temp) / "fingerprints.sqlite3")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {"enabled": False},
+            }
+            service = VoteService(config)
+            try:
+                first = await service.store.create_round("歌手 2026", "第一轮", "", service.default_candidates, "all")
+                await service.store.stop_active()
+                second = await service.store.create_round("歌手 2026", "第二轮", "", service.default_candidates, "all")
+                await service.store.stop_active()
+                other = await service.store.create_round("另一活动", "第一轮", "", service.default_candidates, "all")
+                await service.store.stop_active()
+
+                deleted, publish_url = await service.delete_round(first.id)
+                self.assertEqual(deleted.id, first.id)
+                self.assertEqual(publish_url, "GitHub 同步未启用")
+                self.assertNotIn(first.id, service.store.rounds)
+                self.assertFalse((Path(temp) / "data" / "rounds" / f"{first.id}.jsonl").exists())
+
+                metas, publish_url = await service.delete_activity("歌手 2026")
+                self.assertEqual([meta.id for meta in metas], [second.id])
+                self.assertEqual(publish_url, "GitHub 同步未启用")
+                self.assertNotIn(second.id, service.store.rounds)
+                self.assertIn(other.id, service.store.rounds)
+                self.assertEqual([item["activity"] for item in service.public_state()["sessions"]], ["另一活动"])
+            finally:
+                service.collector.fingerprints.close()
+
+    async def test_delete_running_round_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "mgtv": {"dedup_db_path": str(Path(temp) / "fingerprints.sqlite3")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {"enabled": False},
+            }
+            service = VoteService(config)
+            try:
+                meta = await service.store.create_round("歌手 2026", "第一轮", "", service.default_candidates, "all")
+                with self.assertRaisesRegex(ValueError, "正在采集"):
+                    await service.delete_round(meta.id)
+                with self.assertRaisesRegex(ValueError, "仍有场次正在采集"):
+                    await service.delete_activity("歌手 2026")
+                self.assertIn(meta.id, service.store.rounds)
+            finally:
+                service.collector.fingerprints.close()
+
+    async def test_feishu_delete_round_action_removes_selected_round(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "mgtv": {"dedup_db_path": str(Path(temp) / "fingerprints.sqlite3")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {
+                    "enabled": True,
+                    "allowed_open_ids": ["ou_operator"],
+                    "allowed_chat_ids": ["oc_control_room"],
+                },
+            }
+            service = VoteService(config)
+            try:
+                meta = await service.store.create_round("歌手 2026", "第一轮", "", service.default_candidates, "all")
+                await service.store.stop_active()
+                service.user_selection["ou_operator"] = meta.id
+                card = await service.handle_feishu_card_action("delete_round", "ou_operator", "oc_control_room")
+                self.assertNotIn(meta.id, service.store.rounds)
+                self.assertNotIn("ou_operator", service.user_selection)
+                self.assertIn("已删除场次：歌手 2026 / 第一轮", str(card))
+            finally:
+                service.collector.fingerprints.close()
+
     async def test_stopped_round_keeps_clean_name_and_exposes_time_range(self):
         with tempfile.TemporaryDirectory() as temp:
             config = {

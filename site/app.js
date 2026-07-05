@@ -5,6 +5,7 @@ const elements = {
   liveState: document.querySelector("#liveState"),
   liveText: document.querySelector("#liveState span"),
   program: document.querySelector("#program"),
+  exportPng: document.querySelector("#exportPng"),
   messages: document.querySelector("#messages"),
   votes: document.querySelector("#votes"),
   reviews: document.querySelector("#reviews"),
@@ -16,6 +17,8 @@ let publicState = null;
 let selectedActivity = null;
 let selectedSessionId = null;
 const selectedResultBySession = {};
+let currentView = null;
+const DATA_SOURCE_URL = "https://pyxxxx.github.io/MangoTV_Danmaku/";
 
 function formatCount(value) {
   const number = Number(value || 0);
@@ -41,6 +44,21 @@ function selectedResult(session) {
   };
 }
 
+function selectedSession() {
+  const sessions = publicState?.sessions || [];
+  if (!sessions.length) return null;
+  const activities = Array.from(new Set(sessions.map((item) => item.activity || "未分类活动")));
+  if (!selectedActivity || !activities.includes(selectedActivity)) {
+    const active = sessions.find((item) => item.id === publicState.activeSessionId);
+    selectedActivity = active?.activity || activities[0];
+  }
+  const filtered = sessions.filter((item) => (item.activity || "未分类活动") === selectedActivity);
+  return filtered.find((item) => item.id === selectedSessionId)
+    || filtered.find((item) => item.id === publicState.activeSessionId)
+    || filtered[0]
+    || null;
+}
+
 function renderRanking(session, result) {
   const rows = (session.candidates || [])
     .map((candidate) => ({ ...candidate, count: result?.voteCounts?.[candidate.id] || 0 }))
@@ -60,12 +78,192 @@ function renderRanking(session, result) {
   return total;
 }
 
+function sortedRows(session, result) {
+  return (session.candidates || [])
+    .map((candidate) => ({ ...candidate, count: result?.voteCounts?.[candidate.id] || 0 }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "zh-CN"));
+}
+
 function sessionDisplayName(session) {
   return session.displayName || session.baseName || session.name || "未命名场次";
 }
 
 function sessionTimeRange(session) {
   return session.timeRange || "";
+}
+
+function formatDateTime(value) {
+  if (!value) return new Date().toLocaleString("zh-CN", { hour12: false });
+  return new Date(value).toLocaleString("zh-CN", { hour12: false });
+}
+
+function fitText(ctx, text, maxWidth) {
+  text = String(text || "");
+  if (ctx.measureText(text).width <= maxWidth) return text;
+  while (text && ctx.measureText(text + "…").width > maxWidth) text = text.slice(0, -1);
+  return text ? text + "…" : "…";
+}
+
+function drawRoundRect(ctx, x, y, width, height, radius) {
+  const r = Math.min(radius, width / 2, height / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + width, y, x + width, y + height, r);
+  ctx.arcTo(x + width, y + height, x, y + height, r);
+  ctx.arcTo(x, y + height, x, y, r);
+  ctx.arcTo(x, y, x + width, y, r);
+  ctx.closePath();
+}
+
+function renderCurrentPng() {
+  if (!currentView) return;
+  const { session, result, resultType, rows, total } = currentView;
+  const width = 1200;
+  const rowHeight = 82;
+  const visibleRows = Math.max(1, Math.min(rows.length, 12));
+  const height = Math.max(900, 510 + visibleRows * rowHeight);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  const left = 68;
+  const right = width - 68;
+  const orange = "#ff7a1a";
+  const muted = "#777a81";
+  const line = "#2a2c30";
+  const text = "#f5f5f3";
+  const fontStack = '"PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif';
+  ctx.fillStyle = "#0d0e10";
+  ctx.fillRect(0, 0, width, height);
+  const glow = ctx.createRadialGradient(width - 70, 40, 20, width - 70, 40, 520);
+  glow.addColorStop(0, "rgba(255,122,26,.26)");
+  glow.addColorStop(1, "rgba(255,122,26,0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, width, 520);
+
+  ctx.fillStyle = orange;
+  ctx.font = `700 18px ui-monospace, monospace`;
+  ctx.fillText("LIVE AUDIENCE VOTE", left, 76);
+  ctx.fillStyle = text;
+  ctx.font = `700 58px ${fontStack}`;
+  ctx.fillText("直播弹幕人气统计", left, 138);
+
+  const status = resultType === "precise" ? "精确结果 · 已清洗" : (session.status === "running" ? "LIVE · 粗略统计中" : "粗略结果 · 本轮已结束");
+  const displayName = sessionDisplayName(session);
+  const program = `${session.activity || "未分类活动"} / ${displayName}${session.pageTitle ? ` · ${session.pageTitle}` : ""}`;
+  ctx.fillStyle = muted;
+  ctx.font = `22px ${fontStack}`;
+  ctx.fillText(fitText(ctx, program, right - left - 190), left, 184);
+  if (sessionTimeRange(session)) {
+    ctx.font = `18px ${fontStack}`;
+    ctx.fillText(fitText(ctx, `采集时间：${sessionTimeRange(session)}`, right - left - 190), left, 214);
+  }
+  ctx.font = `18px ${fontStack}`;
+  const badgeWidth = ctx.measureText(status).width + 34;
+  ctx.fillStyle = "#2a211b";
+  drawRoundRect(ctx, right - badgeWidth, 70, badgeWidth, 42, 21);
+  ctx.fill();
+  ctx.strokeStyle = "#5d3c24";
+  ctx.stroke();
+  ctx.fillStyle = "#ff9a50";
+  ctx.fillText(status, right - badgeWidth + 17, 97);
+  ctx.strokeStyle = line;
+  ctx.beginPath();
+  ctx.moveTo(left, 220);
+  ctx.lineTo(right, 220);
+  ctx.stroke();
+
+  const messageCount = resultType === "precise" ? result?.audit?.inputMessages : result?.messageCount;
+  const reviewCount = resultType === "precise" ? result?.audit?.unresolvedReviewMessages : result?.reviewCount;
+  const metrics = [["弹幕样本", formatCount(messageCount)], ["有效计票", formatCount(total)], ["语义待审", formatCount(reviewCount)]];
+  const metricY = 256;
+  const metricWidth = (right - left) / 3;
+  metrics.forEach(([label, value], index) => {
+    const x = left + index * metricWidth;
+    if (index) {
+      ctx.strokeStyle = line;
+      ctx.beginPath();
+      ctx.moveTo(x - 24, metricY - 12);
+      ctx.lineTo(x - 24, metricY + 80);
+      ctx.stroke();
+    }
+    ctx.fillStyle = muted;
+    ctx.font = `18px ${fontStack}`;
+    ctx.fillText(label, x, metricY + 18);
+    ctx.fillStyle = text;
+    ctx.font = `700 38px ui-monospace, monospace`;
+    ctx.fillText(value, x, metricY + 65);
+  });
+
+  const rankingY = 390;
+  ctx.fillStyle = text;
+  ctx.font = `30px ${fontStack}`;
+  ctx.fillText("结果排行", left, rankingY - 30);
+  ctx.fillStyle = muted;
+  ctx.font = `18px ${fontStack}`;
+  ctx.fillText("票数", right - 160, rankingY - 28);
+  const maxVotes = Math.max(1, ...rows.map((item) => item.count));
+  if (!rows.length) {
+    ctx.fillStyle = muted;
+    ctx.font = `30px ${fontStack}`;
+    ctx.fillText("暂无候选人。", left, rankingY + 60);
+  }
+  rows.slice(0, 12).forEach((item, index) => {
+    const y = rankingY + index * rowHeight;
+    ctx.strokeStyle = "#222428";
+    ctx.beginPath();
+    ctx.moveTo(left, y + rowHeight - 10);
+    ctx.lineTo(right, y + rowHeight - 10);
+    ctx.stroke();
+    ctx.fillStyle = "#686b72";
+    ctx.font = `18px ui-monospace, monospace`;
+    ctx.fillText(String(index + 1).padStart(2, "0"), left, y + 38);
+    ctx.fillStyle = text;
+    ctx.font = `30px ${fontStack}`;
+    ctx.fillText(fitText(ctx, item.name, 280), left + 70, y + 38);
+    const barX = left + 365;
+    const barY = y + 35;
+    const barW = 445;
+    ctx.fillStyle = "#24262a";
+    drawRoundRect(ctx, barX, barY, barW, 12, 6);
+    ctx.fill();
+    const fillW = item.count ? Math.max(4, Math.round(barW * item.count / maxVotes)) : 4;
+    ctx.fillStyle = orange;
+    drawRoundRect(ctx, barX, barY, fillW, 12, 6);
+    ctx.fill();
+    const count = formatCount(item.count);
+    ctx.font = `700 38px ui-monospace, monospace`;
+    ctx.fillStyle = text;
+    ctx.fillText(count, right - ctx.measureText(count).width, y + 42);
+  });
+
+  const footerY = height - 118;
+  ctx.fillStyle = "#17181b";
+  drawRoundRect(ctx, left, footerY, right - left, 54, 14);
+  ctx.fill();
+  ctx.strokeStyle = "#2c2e33";
+  ctx.stroke();
+  ctx.fillStyle = "#b9bbc1";
+  ctx.font = `18px ${fontStack}`;
+  ctx.fillText("统计数据不代表湖南卫视 & 芒果 TV 立场，仅供娱乐参考。", left + 18, footerY + 34);
+  ctx.strokeStyle = "#222428";
+  ctx.beginPath();
+  ctx.moveTo(left, height - 44);
+  ctx.lineTo(right, height - 44);
+  ctx.stroke();
+  ctx.fillStyle = "#858890";
+  ctx.fillText(`数据来源：${DATA_SOURCE_URL}`, left, height - 58);
+  ctx.fillStyle = "#666970";
+  ctx.fillText("页面仅展示聚合票数，不包含观众昵称与原始弹幕", left, height - 30);
+  const publishText = `数据发布于 ${formatDateTime(publicState?.publishedAt)}`;
+  const exportText = `导出时间 ${formatDateTime()}`;
+  ctx.fillText(publishText, right - ctx.measureText(publishText).width, height - 58);
+  ctx.fillText(exportText, right - ctx.measureText(exportText).width, height - 30);
+
+  const link = document.createElement("a");
+  link.download = `mgtv-result-${session.id}-${resultType}.png`;
+  link.href = canvas.toDataURL("image/png");
+  link.click();
 }
 
 function render() {
@@ -85,9 +283,7 @@ function render() {
     return option;
   }));
   const filtered = sessions.filter((item) => (item.activity || "未分类活动") === selectedActivity);
-  const session = filtered.find((item) => item.id === selectedSessionId)
-    || filtered.find((item) => item.id === publicState.activeSessionId)
-    || filtered[0];
+  const session = selectedSession();
   if (!session) return;
   selectedSessionId = session.id;
   elements.sessionSelect.disabled = false;
@@ -99,7 +295,10 @@ function render() {
     return option;
   }));
   const current = selectedResult(session);
+  const rows = sortedRows(session, current.data);
   const total = renderRanking(session, current.data);
+  currentView = { session, result: current.data, resultType: current.type, rows, total };
+  elements.exportPng.disabled = false;
   const active = session.status === "running";
   elements.liveState.classList.toggle("active", active);
   elements.liveText.textContent = current.type === "precise" ? "精确结果 · 已清洗" : (active ? "LIVE · 粗略统计中" : "粗略结果 · 本轮已结束");
@@ -134,6 +333,7 @@ async function load() {
   } catch (error) {
     elements.liveText.textContent = "数据暂不可用";
     elements.updated.textContent = `读取失败：${error.message}`;
+    elements.exportPng.disabled = true;
   }
 }
 
@@ -150,6 +350,7 @@ elements.resultButtons.forEach((button) => button.addEventListener("click", () =
   if (selectedSessionId && !button.disabled) selectedResultBySession[selectedSessionId] = button.dataset.resultType;
   render();
 }));
+elements.exportPng.addEventListener("click", renderCurrentPng);
 
 load();
 setInterval(load, 30000);

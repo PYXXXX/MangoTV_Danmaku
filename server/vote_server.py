@@ -403,6 +403,45 @@ class StateStore:
             await self.save()
             return meta
 
+    async def delete_round(self, round_id: str) -> RoundMeta:
+        async with self.lock:
+            meta = self.require_round(round_id)
+            if meta.status == "running" or self.active_round_id == round_id:
+                raise ValueError("场次正在采集中，请先结束本轮再删除")
+            self.rounds.pop(round_id, None)
+            self.round_order = [item for item in self.round_order if item != round_id]
+            await self.save()
+            round_file = self.rounds_dir / f"{round_id}.jsonl"
+            try:
+                round_file.unlink()
+            except FileNotFoundError:
+                pass
+            return meta
+
+    async def delete_activity(self, activity: str) -> list[RoundMeta]:
+        target = normalize(activity) or "未分类活动"
+        async with self.lock:
+            matches = [
+                self.rounds[round_id]
+                for round_id in self.round_order
+                if (self.rounds[round_id].activity or "未分类活动") == target
+            ]
+            if not matches:
+                raise KeyError(f"找不到活动：{target}")
+            running = [meta.name for meta in matches if meta.status == "running" or self.active_round_id == meta.id]
+            if running:
+                raise ValueError(f"活动中仍有场次正在采集，请先结束：{', '.join(running)}")
+            match_ids = {meta.id for meta in matches}
+            self.rounds = {round_id: meta for round_id, meta in self.rounds.items() if round_id not in match_ids}
+            self.round_order = [round_id for round_id in self.round_order if round_id not in match_ids]
+            await self.save()
+            for round_id in match_ids:
+                try:
+                    (self.rounds_dir / f"{round_id}.jsonl").unlink()
+                except FileNotFoundError:
+                    pass
+            return matches
+
     async def set_precise_result(self, round_id: str, result: dict[str, Any]) -> RoundMeta:
         async with self.lock:
             meta = self.require_round(round_id)
@@ -1379,6 +1418,29 @@ class VoteService:
                     self.user_selection[open_id] = target.id
                     label = "精确结果" if result_type == "precise" else "粗略结果"
                     notice = f"已发送 {target.name} 的{label} PNG 到当前会话。"
+            elif action == "delete_round":
+                target = self.store.find_round(self.user_selection.get(open_id))
+                if target is None:
+                    target = self.store.find_round(None)
+                if target is None:
+                    notice = "暂无可删除的场次。"
+                else:
+                    meta, url = await self.delete_round(target.id, publish=True)
+                    if self.user_selection.get(open_id) == meta.id:
+                        self.user_selection.pop(open_id, None)
+                    notice = f"已删除场次：{meta.activity} / {meta.name}。公开结果状态：{url}"
+            elif action == "delete_activity":
+                target = self.store.find_round(self.user_selection.get(open_id))
+                if target is None:
+                    target = self.store.find_round(None)
+                if target is None:
+                    notice = "暂无可删除的活动。"
+                else:
+                    activity = target.activity or "未分类活动"
+                    metas, url = await self.delete_activity(activity, publish=True)
+                    if self.user_selection.get(open_id) in {meta.id for meta in metas}:
+                        self.user_selection.pop(open_id, None)
+                    notice = f"已删除活动：{activity}，共 {len(metas)} 个场次。公开结果状态：{url}"
             elif action != "refresh":
                 notice = "未识别的卡片操作。"
         except Exception as exc:
@@ -1400,6 +1462,26 @@ class VoteService:
         if publish and meta:
             await self.publisher.publish(force=True, result_kind="rough")
         return meta
+
+    async def delete_round(self, round_id: str, publish: bool = True) -> tuple[RoundMeta, str]:
+        meta = await self.store.delete_round(round_id)
+        publish_url = ""
+        if publish:
+            try:
+                publish_url = await self.publisher.publish(force=True, result_kind="rough")
+            except RuntimeError as exc:
+                publish_url = f"公开结果同步失败：{exc}"
+        return meta, publish_url
+
+    async def delete_activity(self, activity: str, publish: bool = True) -> tuple[list[RoundMeta], str]:
+        metas = await self.store.delete_activity(activity)
+        publish_url = ""
+        if publish:
+            try:
+                publish_url = await self.publisher.publish(force=True, result_kind="rough")
+            except RuntimeError as exc:
+                publish_url = f"公开结果同步失败：{exc}"
+        return metas, publish_url
 
     async def publish_precise_file(self, round_id: str, filename: str, content: bytes) -> tuple[RoundMeta, str]:
         if not content:
@@ -1814,6 +1896,42 @@ def create_app(service: VoteService) -> web.Application:
             dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
         )
 
+    async def delete_round(request: web.Request) -> web.Response:
+        round_id = request.match_info["round_id"]
+        try:
+            meta, url = await service.delete_round(round_id, publish=True)
+        except KeyError as exc:
+            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=409, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except RuntimeError as exc:
+            return web.json_response({"error": f"场次已删除，但公开结果同步失败：{exc}"}, status=502, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response(
+            {"ok": True, "deletedRoundId": meta.id, "deletedRoundName": meta.name, "publishUrl": url},
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+        )
+
+    async def delete_activity(request: web.Request) -> web.Response:
+        activity = request.match_info["activity"]
+        try:
+            metas, url = await service.delete_activity(activity, publish=True)
+        except KeyError as exc:
+            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=409, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except RuntimeError as exc:
+            return web.json_response({"error": f"活动已删除，但公开结果同步失败：{exc}"}, status=502, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response(
+            {
+                "ok": True,
+                "deletedActivity": normalize(activity) or "未分类活动",
+                "deletedRoundIds": [meta.id for meta in metas],
+                "deletedRoundCount": len(metas),
+                "publishUrl": url,
+            },
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+        )
+
     async def feishu_events(request: web.Request) -> web.Response:
         body = await request.json()
         token = service.config.get("feishu", {}).get("verification_token")
@@ -1877,6 +1995,8 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_get("/api/rounds/{round_id}/result.png", round_result_png)
     app.router.add_get("/exports/rounds/{round_id}/result.png", round_result_png)
     app.router.add_post("/api/rounds/{round_id}/precise-result", precise_upload)
+    app.router.add_delete("/api/rounds/{round_id}", delete_round)
+    app.router.add_delete("/api/activities/{activity}", delete_activity)
     app.router.add_post("/api/command", command)
     app.router.add_post("/feishu/events", feishu_events)
     return app
