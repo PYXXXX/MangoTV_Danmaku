@@ -60,6 +60,14 @@ function renderRanking(session, result) {
   return total;
 }
 
+function sessionDisplayName(session) {
+  return session.displayName || session.baseName || session.name || "未命名场次";
+}
+
+function sessionTimeRange(session) {
+  return session.timeRange || "";
+}
+
 function render() {
   const sessions = publicState?.sessions || [];
   if (!sessions.length) return;
@@ -86,7 +94,7 @@ function render() {
   elements.sessionSelect.replaceChildren(...filtered.map((item) => {
     const option = document.createElement("option");
     option.value = item.id;
-    option.textContent = `${item.status === "running" ? "● " : ""}${item.name}`;
+    option.textContent = `${item.status === "running" ? "● " : ""}${sessionDisplayName(item)}`;
     option.selected = item.id === selectedSessionId;
     return option;
   }));
@@ -104,7 +112,8 @@ function render() {
     button.setAttribute("aria-pressed", String(selected));
     button.title = type === "precise" && !hasPrecise ? "精确结果尚未发布" : "";
   });
-  elements.program.textContent = `${session.activity || "未分类活动"} / ${session.name}${session.pageTitle ? ` · ${session.pageTitle}` : ""}`;
+  const range = sessionTimeRange(session);
+  elements.program.textContent = `${session.activity || "未分类活动"} / ${sessionDisplayName(session)}${session.pageTitle ? ` · ${session.pageTitle}` : ""}${range ? ` · 采集时间：${range}` : ""}`;
   const messageCount = current.type === "precise" ? current.data?.audit?.inputMessages : current.data?.messageCount;
   const reviewCount = current.type === "precise" ? current.data?.audit?.unresolvedReviewMessages : current.data?.reviewCount;
   elements.messages.textContent = formatCount(messageCount);

@@ -64,7 +64,7 @@ JSON 顶层字段固定为：
   "resultType": "precise",
   "sessionId": "场次 ID",
   "activity": "活动名",
-  "sessionName": "含北京时间切片范围的场次名",
+  "sessionName": "场次名，必须与 JSONL meta.name 一致",
   "generatedAt": "UTC ISO-8601 时间",
   "counts": [
     {"candidateId": "c1", "name": "候选人正式姓名", "votes": 123}

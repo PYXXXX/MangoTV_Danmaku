@@ -148,6 +148,14 @@ function renderRanking(round, result) {
   return total;
 }
 
+function roundDisplayName(round) {
+  return round && (round.displayName || round.baseName || round.name) || "未命名场次";
+}
+
+function roundTimeRange(round) {
+  return round && round.timeRange ? round.timeRange : "";
+}
+
 function renderRounds(round) {
   const sessions = (state && state.sessions) || [];
   const activities = Array.from(new Set(sessions.map((item) => item.activity || "未分类活动")));
@@ -168,7 +176,7 @@ function renderRounds(round) {
     const option = document.createElement("option");
     option.value = item.id;
     option.selected = item.id === (round && round.id);
-    option.textContent = (item.status === "running" ? "● " : "") + item.name;
+    option.textContent = (item.status === "running" ? "● " : "") + roundDisplayName(item);
     return option;
   }) : [new Option("暂无场次", "")]));
   el.roundList.replaceChildren(...filtered.map((item) => {
@@ -177,9 +185,12 @@ function renderRounds(round) {
     button.className = "round-item " + (item.id === (round && round.id) ? "active" : "");
     button.dataset.id = item.id;
     const title = document.createElement("strong");
-    title.textContent = (item.status === "running" ? "● " : "") + item.name;
+    title.textContent = (item.status === "running" ? "● " : "") + roundDisplayName(item);
     const meta = document.createElement("span");
-    meta.textContent = (item.activity || "未分类活动") + " · " + formatCount(item.messageCount) + " 样本" + (item.results && item.results.precise ? " · 精确已发布" : " · 仅粗略");
+    meta.textContent = (item.activity || "未分类活动")
+      + (roundTimeRange(item) ? (" · " + roundTimeRange(item)) : "")
+      + " · " + formatCount(item.messageCount) + " 样本"
+      + (item.results && item.results.precise ? " · 精确已发布" : " · 仅粗略");
     button.append(title, meta);
     button.addEventListener("click", () => {
       selectedRoundId = item.id;
@@ -210,7 +221,9 @@ function render() {
     button.setAttribute("aria-pressed", String(selected));
     button.title = type === "precise" && !hasPrecise ? "精确结果尚未发布" : "";
   });
-  el.subtitle.textContent = round ? ((round.activity || "未分类活动") + " / " + round.name + " · " + round.status) : "等待开始场次";
+  el.subtitle.textContent = round
+    ? ((round.activity || "未分类活动") + " / " + roundDisplayName(round) + (roundTimeRange(round) ? (" · 采集时间：" + roundTimeRange(round)) : "") + " · " + round.status)
+    : "等待开始场次";
   const messageCount = current.type === "precise" ? current.data?.audit?.inputMessages : current.data?.messageCount;
   const reviewCount = current.type === "precise" ? current.data?.audit?.unresolvedReviewMessages : current.data?.reviewCount;
   el.messages.textContent = formatCount(messageCount);
@@ -220,7 +233,7 @@ function render() {
   el.reviews.textContent = formatCount(reviewCount);
   el.reviews.title = Number(reviewCount || 0).toLocaleString("zh-CN");
   el.updated.textContent = state && state.publishedAt ? ("数据更新于 " + new Date(state.publishedAt).toLocaleString("zh-CN", { hour12: false })) : "尚未同步";
-  if (document.activeElement !== el.renameInput) el.renameInput.value = (round && round.name) || "";
+  if (document.activeElement !== el.renameInput) el.renameInput.value = (round && roundDisplayName(round)) || "";
   if (round) {
     el.downloadSlice.href = "/api/rounds/" + encodeURIComponent(round.id) + ".jsonl";
     el.downloadSlice.classList.remove("disabled");

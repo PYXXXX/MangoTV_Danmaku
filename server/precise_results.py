@@ -26,6 +26,14 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def legacy_session_name_matches(value: str, meta: Any) -> bool:
+    base_name = normalize(getattr(meta, "baseName", "")) or normalize(getattr(meta, "name", ""))
+    if not base_name or not value.startswith(base_name + " · "):
+        return False
+    suffix = value[len(base_name) + 3 :]
+    return bool(re.fullmatch(r"\d{8} \d{2}:\d{2}:\d{2}-\d{8} \d{2}:\d{2}:\d{2}", suffix))
+
+
 def parse_precise_result(filename: str, content: bytes) -> dict[str, Any]:
     suffix = Path(filename or "").suffix.lower()
     if suffix == ".json":
@@ -74,7 +82,8 @@ def validate_precise_result(payload: dict[str, Any], meta: Any, content: bytes, 
         raise ValueError(f"sessionId 与所选场次不一致，应为 {meta.id}")
     if normalize(payload.get("activity")) != meta.activity:
         raise ValueError(f"activity 与所选活动不一致，应为 {meta.activity}")
-    if normalize(payload.get("sessionName")) != meta.name:
+    session_name = normalize(payload.get("sessionName"))
+    if session_name != meta.name and not legacy_session_name_matches(session_name, meta):
         raise ValueError("sessionName 与所选场次名称不一致")
     counts, audit = payload.get("counts"), payload.get("audit")
     if not isinstance(counts, list) or not isinstance(audit, dict):

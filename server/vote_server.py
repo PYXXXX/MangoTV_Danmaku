@@ -83,6 +83,29 @@ def format_beijing_range(start: str, end: str) -> str:
     return f"{start_dt:%Y%m%d %H:%M:%S}-{end_dt:%Y%m%d %H:%M:%S}"
 
 
+def format_beijing_display_range(start: str | None, end: str | None = None) -> str:
+    if not start:
+        return ""
+    start_dt = parse_iso(start).astimezone(BEIJING_TZ)
+    if not end:
+        return f"{start_dt:%Y/%m/%d %H:%M:%S} 起"
+    end_dt = parse_iso(end).astimezone(BEIJING_TZ)
+    if start_dt.date() == end_dt.date():
+        return f"{start_dt:%Y/%m/%d %H:%M:%S} – {end_dt:%H:%M:%S}"
+    return f"{start_dt:%Y/%m/%d %H:%M:%S} – {end_dt:%Y/%m/%d %H:%M:%S}"
+
+
+def strip_embedded_time_range(name: str, base_name: str) -> str:
+    base = normalize(base_name)
+    value = normalize(name)
+    if not base or not value.startswith(base + " · "):
+        return value
+    suffix = value[len(base) + 3 :]
+    if re.fullmatch(r"\d{8} \d{2}:\d{2}:\d{2}-\d{8} \d{2}:\d{2}:\d{2}", suffix):
+        return base
+    return value
+
+
 class FingerprintCache:
     """Small in-memory LRU cache for hot duplicate checks.
 
@@ -290,6 +313,7 @@ class StateStore:
             item.setdefault("sliceEndTime", item.get("stoppedAt"))
             item.setdefault("preciseResult", None)
             item.setdefault("precisePublishedAt", None)
+            item["name"] = strip_embedded_time_range(item.get("name", ""), item.get("baseName", ""))
             payload = {**item, "candidates": candidates}
             self.rounds[item["id"]] = RoundMeta(**payload)
 
@@ -363,7 +387,7 @@ class StateStore:
             meta.updatedAt = meta.stoppedAt
             meta.sliceEndSeq = self.global_seq
             meta.sliceEndTime = meta.stoppedAt
-            meta.name = f"{meta.baseName} · {format_beijing_range(meta.sliceStartTime, meta.sliceEndTime)}"
+            meta.name = meta.baseName
             self.active_round_id = None
             await self.save()
             return meta
@@ -372,11 +396,7 @@ class StateStore:
         async with self.lock:
             meta = self.require_round(round_id)
             meta.baseName = normalize(name) or meta.baseName
-            meta.name = (
-                f"{meta.baseName} · {format_beijing_range(meta.sliceStartTime, meta.sliceEndTime)}"
-                if meta.sliceEndTime
-                else meta.baseName
-            )
+            meta.name = meta.baseName
             if meta.preciseResult:
                 meta.preciseResult["sessionName"] = meta.name
             meta.updatedAt = now_iso()
@@ -452,7 +472,13 @@ class StateStore:
 
     def export_round_jsonl(self, round_id: str) -> str:
         meta = self.require_round(round_id)
-        lines = [json.dumps({"type": "meta", **asdict(meta)}, ensure_ascii=False, separators=(",", ":"))]
+        lines = [json.dumps({
+            "type": "meta",
+            **asdict(meta),
+            "displayName": meta.baseName,
+            "timeRange": format_beijing_display_range(meta.sliceStartTime, meta.sliceEndTime),
+            "compactTimeRange": format_beijing_range(meta.sliceStartTime, meta.sliceEndTime) if meta.sliceEndTime else "",
+        }, ensure_ascii=False, separators=(",", ":"))]
         lines.extend(json.dumps(record, ensure_ascii=False, separators=(",", ":")) for record in self.iter_slice_records(round_id))
         return "\n".join(lines) + "\n"
 
@@ -473,6 +499,9 @@ class StateStore:
                 "activity": meta.activity,
                 "baseName": meta.baseName,
                 "name": meta.name,
+                "displayName": meta.baseName,
+                "timeRange": format_beijing_display_range(meta.sliceStartTime, meta.sliceEndTime),
+                "compactTimeRange": format_beijing_range(meta.sliceStartTime, meta.sliceEndTime) if meta.sliceEndTime else "",
                 "status": meta.status,
                 "startedAt": meta.startedAt,
                 "updatedAt": meta.updatedAt,
@@ -1361,7 +1390,10 @@ class VoteService:
             ((candidate.name, counts.get(candidate.id, 0)) for candidate in meta.candidates),
             key=lambda row: (-row[1], row[0]),
         )
-        lines = [f"【{meta.activity} / {meta.name}】{meta.status} · {result_label}", f"弹幕样本：{meta.messageCount}，语义待审：{meta.reviewCount}"]
+        lines = [f"【{meta.activity} / {meta.name}】{meta.status} · {result_label}"]
+        if meta.sliceStartTime:
+            lines.append(f"采集时间：{format_beijing_display_range(meta.sliceStartTime, meta.sliceEndTime)}")
+        lines.append(f"弹幕样本：{meta.messageCount}，语义待审：{meta.reviewCount}")
         lines.extend(f"{index}. {name}：{count}" for index, (name, count) in enumerate(rows, 1))
         return "\n".join(lines)
 
@@ -1372,7 +1404,8 @@ class VoteService:
         for index, round_id in enumerate(self.store.round_order, 1):
             meta = self.store.rounds[round_id]
             marker = "●" if meta.status == "running" else " "
-            lines.append(f"{index}. {marker} {meta.activity} / {meta.name}｜{meta.id}｜样本 {meta.messageCount}")
+            time_range = format_beijing_display_range(meta.sliceStartTime, meta.sliceEndTime)
+            lines.append(f"{index}. {marker} {meta.activity} / {meta.name}｜{meta.id}｜{time_range}｜样本 {meta.messageCount}")
         return "\n".join(lines)
 
     async def handle_command(self, text: str, open_id: str = "") -> str:

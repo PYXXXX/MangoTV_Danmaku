@@ -145,3 +145,93 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                 )
             finally:
                 service.collector.fingerprints.close()
+
+    async def test_stopped_round_keeps_clean_name_and_exposes_time_range(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "mgtv": {"dedup_db_path": str(Path(temp) / "fingerprints.sqlite3")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {"enabled": False},
+            }
+            service = VoteService(config)
+            try:
+                meta = await service.store.create_round("歌手 2026", "第一轮", "", service.default_candidates, "all")
+                stopped = await service.store.stop_active()
+                self.assertEqual(stopped.name, "第一轮")
+                self.assertEqual(stopped.baseName, "第一轮")
+                public = service.public_state()["sessions"][0]
+                self.assertEqual(public["displayName"], "第一轮")
+                self.assertIn("timeRange", public)
+                self.assertIn(" – ", public["timeRange"])
+                exported = service.store.export_round_jsonl(meta.id).splitlines()[0]
+                exported_meta = json.loads(exported)
+                self.assertEqual(exported_meta["name"], "第一轮")
+                self.assertEqual(exported_meta["displayName"], "第一轮")
+                self.assertIn("compactTimeRange", exported_meta)
+            finally:
+                service.collector.fingerprints.close()
+
+    async def test_legacy_embedded_time_range_name_is_cleaned_on_load(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            data_dir = root / "data"
+            data_dir.mkdir()
+            state = {
+                "schemaVersion": 1,
+                "updatedAt": "2026-07-05T03:32:40.783Z",
+                "activeRoundId": None,
+                "globalSeq": 0,
+                "roundOrder": ["round-1"],
+                "rounds": [
+                    {
+                        "id": "round-1",
+                        "activity": "歌手 2026",
+                        "baseName": "第 1 轮",
+                        "name": "第 1 轮 · 20260705 11:32:26-20260705 11:32:40",
+                        "status": "stopped",
+                        "startedAt": "2026-07-05T03:32:26.324Z",
+                        "updatedAt": "2026-07-05T03:32:40.783Z",
+                        "stoppedAt": "2026-07-05T03:32:40.783Z",
+                        "pageUrl": "",
+                        "pageTitle": "",
+                        "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                        "multiCandidatePolicy": "all",
+                        "voteCounts": {"c1": 0},
+                        "messageCount": 0,
+                        "reviewCount": 0,
+                        "preciseResult": None,
+                        "precisePublishedAt": None,
+                        "sliceStartSeq": 1,
+                        "sliceEndSeq": 0,
+                        "sliceStartTime": "2026-07-05T03:32:26.324Z",
+                        "sliceEndTime": "2026-07-05T03:32:40.783Z",
+                    }
+                ],
+            }
+            (data_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+            config = {
+                "storage": {"directory": str(data_dir)},
+                "mgtv": {"dedup_db_path": str(root / "fingerprints.sqlite3")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {"enabled": False},
+            }
+            service = VoteService(config)
+            try:
+                meta = service.store.require_round("round-1")
+                self.assertEqual(meta.name, "第 1 轮")
+                public = service.public_state()["sessions"][0]
+                self.assertEqual(public["displayName"], "第 1 轮")
+                self.assertEqual(public["timeRange"], "2026/07/05 11:32:26 – 11:32:40")
+            finally:
+                service.collector.fingerprints.close()

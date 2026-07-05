@@ -115,7 +115,14 @@ def top_status(state: dict[str, Any], session: dict[str, Any] | None) -> tuple[s
 def session_title(session: dict[str, Any] | None) -> str:
     if not session:
         return "尚未创建场次"
-    return f"{session.get('activity', '未分类活动')} / {session.get('name', '未命名场次')}"
+    name = session.get("displayName") or session.get("baseName") or session.get("name") or "未命名场次"
+    return f"{session.get('activity', '未分类活动')} / {name}"
+
+
+def session_time_range(session: dict[str, Any] | None) -> str:
+    if not session:
+        return ""
+    return str(session.get("timeRange") or "")
 
 
 def ranking_markdown(session: dict[str, Any]) -> str:
@@ -157,6 +164,7 @@ def build_control_card(
         "content": (
             f"**{status_text}｜{session_title(session)}**\n"
             f"{status_hint}\n"
+            f"{'采集时间：' + session_time_range(session) if session_time_range(session) else ''}\n"
             f"最近更新时间：{state.get('updatedAt') or '等待同步'}"
         ),
     })
@@ -231,14 +239,15 @@ def build_round_list_card(
         current = select_session(state, selected_round_id)
         elements.append({
             "tag": "markdown",
-            "content": f"**当前查看**\n{session_title(current)}\n\n从下拉列表选择场次后，卡片会自动回到控制台。",
+            "content": f"**当前查看**\n{session_title(current)}{chr(10) + '采集时间：' + session_time_range(current) if session_time_range(current) else ''}\n\n从下拉列表选择场次后，卡片会自动回到控制台。",
         })
         options = []
         for item in sessions[:50]:
             marker = "采集中" if item.get("status") == "running" else "已结束"
             precise = " / 精确" if (item.get("results") or {}).get("precise") else " / 粗略"
+            name = item.get("displayName") or item.get("baseName") or item.get("name") or "未命名场次"
             options.append({
-                "text": plain_text(f"{item.get('activity', '未分类活动')} / {item.get('name', '未命名场次')} ({marker}{precise})"),
+                "text": plain_text(f"{item.get('activity', '未分类活动')} / {name} ({marker}{precise})"),
                 "value": item.get("id", ""),
             })
         selector: dict[str, Any] = {

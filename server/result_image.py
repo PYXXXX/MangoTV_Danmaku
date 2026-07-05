@@ -166,10 +166,13 @@ def render_result_png(state: dict[str, Any], round_id: str, requested_result: st
     draw.text((left, 58), "LIVE AUDIENCE VOTE", fill=orange, font=fonts.small)
     draw.text((left, 88), "直播弹幕人气统计", fill=text, font=fonts.title)
     status = "精确结果 · 已清洗" if result_type == "precise" else ("LIVE · 粗略统计中" if session.get("status") == "running" else "粗略结果 · 本轮已结束")
-    program = f"{session.get('activity') or '未分类活动'} / {session.get('name') or '未命名场次'}"
+    display_name = session.get("displayName") or session.get("baseName") or session.get("name") or "未命名场次"
+    program = f"{session.get('activity') or '未分类活动'} / {display_name}"
     if session.get("pageTitle"):
         program += f" · {session.get('pageTitle')}"
     draw.text((left, 166), _fit_text(draw, program, fonts.subtitle, right - left - 190), fill=muted, font=fonts.subtitle)
+    if session.get("timeRange"):
+        draw.text((left, 196), _fit_text(draw, f"采集时间：{session.get('timeRange')}", fonts.small, right - left - 190), fill=muted, font=fonts.small)
     badge_w = _text_width(draw, status, fonts.small) + 34
     draw.rounded_rectangle((right - badge_w, 70, right, 112), radius=21, fill="#2a211b", outline="#5d3c24")
     draw.text((right - badge_w + 17, 82), status, fill="#ff9a50", font=fonts.small)
