@@ -1,7 +1,58 @@
 {
   "schemaVersion": 1,
-  "publishedAt": "2026-07-03T00:00:00.000Z",
-  "activeSessionId": null,
-  "sessions": []
+  "publishedAt": "2026-07-05T03:32:41.125Z",
+  "activeSessionId": "20260705-113226-c27406",
+  "sessions": [
+    {
+      "id": "20260705-113226-c27406",
+      "activity": "歌手 2026",
+      "baseName": "第 1 轮",
+      "name": "第 1 轮 · 20260705 11:32:26-20260705 11:32:40",
+      "status": "stopped",
+      "startedAt": "2026-07-05T03:32:26.324Z",
+      "updatedAt": "2026-07-05T03:32:40.783Z",
+      "stoppedAt": "2026-07-05T03:32:40.783Z",
+      "pageTitle": "",
+      "candidates": [
+        {
+          "id": "c1",
+          "name": "待配置候选人一",
+          "aliases": [
+            "待配置候选人一"
+          ]
+        },
+        {
+          "id": "c2",
+          "name": "待配置候选人二",
+          "aliases": [
+            "待配置候选人二"
+          ]
+        }
+      ],
+      "messageCount": 0,
+      "reviewCount": 0,
+      "voteCounts": {
+        "c1": 0,
+        "c2": 0
+      },
+      "defaultResultType": "rough",
+      "results": {
+        "rough": {
+          "resultType": "rough",
+          "voteCounts": {
+            "c1": 0,
+            "c2": 0
+          },
+          "messageCount": 0,
+          "reviewCount": 0,
+          "generatedAt": "2026-07-05T03:32:40.783Z"
+        },
+        "precise": null
+      },
+      "sliceStartSeq": 1,
+      "sliceEndSeq": 0,
+      "sliceStartTime": "2026-07-05T03:32:26.324Z",
+      "sliceEndTime": "2026-07-05T03:32:40.783Z"
+    }
+  ]
 }
-
