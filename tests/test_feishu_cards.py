@@ -39,7 +39,7 @@ class FeishuCardTest(unittest.TestCase):
         }
 
     def test_control_card_contains_safe_operations(self):
-        card = build_control_card(self.state, "r1", "状态已刷新", "https://example.com/results", "https://example.com/result.png")
+        card = build_control_card(self.state, "r1", "状态已刷新", "https://example.com/results")
         self.assertEqual(card["header"]["template"], "orange")
         self.assertEqual(card["header"]["title"]["content"], "直播弹幕人气控制台")
         actions = [
@@ -58,8 +58,8 @@ class FeishuCardTest(unittest.TestCase):
         self.assertIn("card.action.trigger", rendered)
         self.assertIn("120", rendered)
         self.assertIn("打开公开结果页", rendered)
-        self.assertIn("导出当前场次 PNG", rendered)
-        self.assertIn("https://example.com/result.png", rendered)
+        self.assertIn("发送当前场次 PNG", rendered)
+        self.assertIn("send_png", actions)
 
     def test_control_card_renders_start_form_with_runtime_defaults(self):
         state = {

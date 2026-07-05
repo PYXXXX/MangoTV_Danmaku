@@ -18,10 +18,6 @@ def action_row(*buttons: dict[str, Any]) -> dict[str, Any]:
     return {"tag": "action", "actions": list(buttons)}
 
 
-def url_button(text: str, url: str, button_type: str = "default") -> dict[str, Any]:
-    return {"tag": "button", "text": plain_text(text), "type": button_type, "url": url}
-
-
 def text_input(name: str, placeholder: str, default_value: str = "") -> dict[str, Any]:
     field: dict[str, Any] = {
         "tag": "input",
@@ -147,7 +143,6 @@ def build_control_card(
     selected_round_id: str | None = None,
     notice: str = "",
     public_url: str = "",
-    export_png_url: str = "",
 ) -> dict[str, Any]:
     session = select_session(state, selected_round_id)
     defaults = state.get("defaults") if isinstance(state.get("defaults"), dict) else {}
@@ -209,8 +204,8 @@ def build_control_card(
         button("查看/切换场次", "show_rounds"),
         button("发布粗略结果", "publish_rough", "primary"),
     ))
-    if session and export_png_url:
-        elements.append(action_row(url_button("导出当前场次 PNG", export_png_url, "default")))
+    if session:
+        elements.append(action_row(button("发送当前场次 PNG", "send_png", "default")))
     if public_url:
         elements.append({
             "tag": "action",

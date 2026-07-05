@@ -146,6 +146,48 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 service.collector.fingerprints.close()
 
+    async def test_feishu_send_png_action_uploads_image_to_current_chat(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "mgtv": {"dedup_db_path": str(Path(temp) / "fingerprints.sqlite3")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {
+                    "enabled": True,
+                    "allowed_open_ids": ["ou_operator"],
+                    "allowed_chat_ids": ["oc_control_room"],
+                },
+            }
+            service = VoteService(config)
+            sent = []
+
+            async def fake_send_image(receive_id, receive_id_type, content, filename="result.png"):
+                sent.append({
+                    "receive_id": receive_id,
+                    "receive_id_type": receive_id_type,
+                    "content": content,
+                    "filename": filename,
+                })
+
+            service.feishu.send_image = fake_send_image
+            try:
+                meta = await service.store.create_round("歌手 2026", "第一轮", "", service.default_candidates, "all")
+                await service.store.stop_active()
+                card = await service.handle_feishu_card_action("send_png", "ou_operator", "oc_control_room")
+                self.assertEqual(len(sent), 1)
+                self.assertEqual(sent[0]["receive_id"], "oc_control_room")
+                self.assertEqual(sent[0]["receive_id_type"], "chat_id")
+                self.assertTrue(sent[0]["content"].startswith(b"\x89PNG\r\n\x1a\n"))
+                self.assertEqual(sent[0]["filename"], f"mgtv-result-{meta.id}-rough.png")
+                self.assertIn("已发送 第一轮 的粗略结果 PNG 到当前会话", str(card))
+            finally:
+                service.collector.fingerprints.close()
+
     async def test_stopped_round_keeps_clean_name_and_exposes_time_range(self):
         with tempfile.TemporaryDirectory() as temp:
             config = {

@@ -29,7 +29,7 @@ from typing import Any
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-from aiohttp import ClientError, ClientSession, ClientTimeout, web
+from aiohttp import ClientError, ClientSession, ClientTimeout, FormData, web
 
 try:
     from server import feishu_binding
@@ -806,6 +806,28 @@ class FeishuBot:
     async def send_card(self, receive_id: str, receive_id_type: str, card: dict[str, Any]) -> None:
         await self.send_message(receive_id, receive_id_type, "interactive", card)
 
+    async def upload_image(self, content: bytes, filename: str = "result.png") -> str:
+        if not self.enabled():
+            return ""
+        token = await self.tenant_token()
+        form = FormData()
+        form.add_field("image_type", "message")
+        form.add_field("image", content, filename=filename, content_type="image/png")
+        async with ClientSession(headers={"Authorization": f"Bearer {token}"}) as session:
+            async with session.post(f"{self.api_base}/open-apis/im/v1/images", data=form) as response:
+                data = await response.json(content_type=None)
+        if response.status not in (200, 201) or data.get("code") != 0:
+            raise RuntimeError(f"飞书图片上传失败：HTTP {response.status} {data}")
+        image_key = str(((data.get("data") or {}).get("image_key")) or "")
+        if not image_key:
+            raise RuntimeError(f"飞书图片上传失败：未返回 image_key")
+        return image_key
+
+    async def send_image(self, receive_id: str, receive_id_type: str, content: bytes, filename: str = "result.png") -> None:
+        image_key = await self.upload_image(content, filename)
+        if image_key:
+            await self.send_message(receive_id, receive_id_type, "image", {"image_key": image_key})
+
 
 class VoteService:
     def __init__(self, config: dict[str, Any], config_path: Path | None = None, repo_root: Path | None = None):
@@ -1259,11 +1281,7 @@ class VoteService:
     def feishu_card(self, open_id: str, notice: str = "") -> dict[str, Any]:
         public_url = str(self.config.get("feishu", {}).get("public_results_url") or "")
         selected_id = self.user_selection.get(open_id)
-        session = self.store.find_round(selected_id)
-        if session is None:
-            session = self.store.find_round(None)
-        export_url = self.round_result_png_url(session.id) if session else ""
-        return build_control_card(self.public_state(), selected_id, notice, public_url, export_url)
+        return build_control_card(self.public_state(), selected_id, notice, public_url)
 
     async def handle_feishu_text(
         self,
@@ -1346,6 +1364,21 @@ class VoteService:
             elif action == "publish_rough":
                 url = await self.publisher.publish(force=True, result_kind="rough")
                 notice = f"粗略结果发布完成：{url}"
+            elif action == "send_png":
+                target = self.store.find_round(self.user_selection.get(open_id))
+                if target is None:
+                    target = self.store.find_round(None)
+                if target is None:
+                    notice = "暂无可导出的场次。"
+                else:
+                    result_type = "precise" if target.preciseResult else "rough"
+                    content, filename = self.export_round_result_png(target.id, result_type)
+                    receive_id = chat_id or open_id
+                    receive_type = "chat_id" if chat_id else "open_id"
+                    await self.feishu.send_image(receive_id, receive_type, content, filename)
+                    self.user_selection[open_id] = target.id
+                    label = "精确结果" if result_type == "precise" else "粗略结果"
+                    notice = f"已发送 {target.name} 的{label} PNG 到当前会话。"
             elif action != "refresh":
                 notice = "未识别的卡片操作。"
         except Exception as exc:
