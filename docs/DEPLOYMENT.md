@@ -824,6 +824,8 @@ sudo systemctl restart mgtv-danmaku
 | GET | `/api/update/status` | 否 | 检查当前 commit、远端 commit 与升级进度 |
 | POST | `/api/update/apply` | 否 | 空闲时启动后台快进升级、更新依赖并自动重启 |
 | GET | `/api/rounds/{id}.jsonl` | 否 | 导出场次切片 |
+| GET | `/api/rounds/{id}/result.png` | 否 | 导出指定场次结果 PNG |
+| GET | `/exports/rounds/{id}/result.png` | 是 | 飞书/外部打开的公开 PNG 导出，只包含聚合结果 |
 | POST | `/api/rounds/{id}/precise-result` | 否 | 上传精确结果 |
 | POST | `/api/command` | 否 | 执行运营指令 |
 | GET | `/docs/precise-result-agent` | 否 | 清洗规范 |

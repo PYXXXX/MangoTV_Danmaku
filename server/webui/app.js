@@ -19,6 +19,7 @@ const el = {
   rename: $("#rename"),
   refresh: $("#refresh"),
   downloadSlice: $("#downloadSlice"),
+  downloadPng: $("#downloadPng"),
   messages: $("#messages"),
   votes: $("#votes"),
   reviews: $("#reviews"),
@@ -223,9 +224,13 @@ function render() {
   if (round) {
     el.downloadSlice.href = "/api/rounds/" + encodeURIComponent(round.id) + ".jsonl";
     el.downloadSlice.classList.remove("disabled");
+    el.downloadPng.href = "/api/rounds/" + encodeURIComponent(round.id) + "/result.png?result=" + encodeURIComponent(current.type);
+    el.downloadPng.classList.remove("disabled");
   } else {
     el.downloadSlice.href = "#";
     el.downloadSlice.classList.add("disabled");
+    el.downloadPng.href = "#";
+    el.downloadPng.classList.add("disabled");
   }
   applyStartDefaults();
 }

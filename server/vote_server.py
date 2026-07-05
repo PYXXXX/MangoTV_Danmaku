@@ -34,6 +34,7 @@ from aiohttp import ClientError, ClientSession, ClientTimeout, web
 try:
     from server import feishu_binding
     from server.precise_results import parse_precise_result, validate_precise_result
+    from server.result_image import render_result_png
     from server.feishu_cards import build_control_card, build_round_list_card
     from server.operator_auth import OperatorAuth, safe_next_url
     from server.runtime_settings import (
@@ -47,6 +48,7 @@ try:
 except ModuleNotFoundError:  # Support `python server/vote_server.py`.
     import feishu_binding
     from precise_results import parse_precise_result, validate_precise_result
+    from result_image import render_result_png
     from feishu_cards import build_control_card, build_round_list_card
     from operator_auth import OperatorAuth, safe_next_url
     from runtime_settings import SettingsValidationError, build_settings_update, has_real_value, public_settings, save_config_atomic
@@ -914,6 +916,21 @@ class VoteService:
         }
         return state
 
+    def public_base_url(self) -> str:
+        return str((self.config.get("listen") or {}).get("public_base_url") or "").rstrip("/")
+
+    def round_result_png_url(self, round_id: str, result_type: str | None = None) -> str:
+        base = self.public_base_url()
+        if not base or not round_id:
+            return ""
+        url = f"{base}/exports/rounds/{quote(round_id, safe='')}/result.png"
+        if result_type in {"rough", "precise"}:
+            url += f"?result={result_type}"
+        return url
+
+    def export_round_result_png(self, round_id: str, result_type: str | None = None) -> tuple[bytes, str]:
+        return render_result_png(self.public_state(), round_id, result_type)
+
     async def start_feishu_binding(self, loop: asyncio.AbstractEventLoop) -> dict[str, Any]:
         if self.config_path is None:
             raise RuntimeError("当前服务未指定可写配置文件，无法保存飞书绑定结果")
@@ -1212,7 +1229,12 @@ class VoteService:
 
     def feishu_card(self, open_id: str, notice: str = "") -> dict[str, Any]:
         public_url = str(self.config.get("feishu", {}).get("public_results_url") or "")
-        return build_control_card(self.public_state(), self.user_selection.get(open_id), notice, public_url)
+        selected_id = self.user_selection.get(open_id)
+        session = self.store.find_round(selected_id)
+        if session is None:
+            session = self.store.find_round(None)
+        export_url = self.round_result_png_url(session.id) if session else ""
+        return build_control_card(self.public_state(), selected_id, notice, public_url, export_url)
 
     async def handle_feishu_text(
         self,
@@ -1498,7 +1520,8 @@ def create_app(service: VoteService) -> web.Application:
         if not auth.enabled:
             return await handler(request)
         public_paths = {"/login", "/auth/login", "/healthz", "/feishu/events", "/webui/styles.css"}
-        if request.path in public_paths or auth.request_is_authenticated(request):
+        public_export = request.path.startswith("/exports/rounds/") and request.path.endswith("/result.png")
+        if request.path in public_paths or public_export or auth.request_is_authenticated(request):
             return await handler(request)
         if request.path.startswith("/api/"):
             return web.json_response({"error": "登录已过期，请重新登录"}, status=401, headers={"Cache-Control": "no-store"})
@@ -1681,6 +1704,23 @@ def create_app(service: VoteService) -> web.Application:
             headers={"Content-Disposition": f'attachment; filename="mgtv-round-{round_id}.jsonl"'},
         )
 
+    async def round_result_png(request: web.Request) -> web.Response:
+        round_id = request.match_info["round_id"]
+        requested = str(request.query.get("result") or "")
+        result_type = requested if requested in {"rough", "precise"} else None
+        try:
+            body, filename = service.export_round_result_png(round_id, result_type)
+        except KeyError as exc:
+            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.Response(
+            body=body,
+            content_type="image/png",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
+
     async def command(request: web.Request) -> web.Response:
         data = await request.json()
         reply = await service.handle_command(data.get("text", ""))
@@ -1768,6 +1808,8 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_get("/api/update/status", update_status)
     app.router.add_post("/api/update/apply", apply_update)
     app.router.add_get("/api/rounds/{round_id}.jsonl", round_export)
+    app.router.add_get("/api/rounds/{round_id}/result.png", round_result_png)
+    app.router.add_get("/exports/rounds/{round_id}/result.png", round_result_png)
     app.router.add_post("/api/rounds/{round_id}/precise-result", precise_upload)
     app.router.add_post("/api/command", command)
     app.router.add_post("/feishu/events", feishu_events)

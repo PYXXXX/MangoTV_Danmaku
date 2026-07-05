@@ -43,7 +43,7 @@ button:active, .link-button:active { transform: translateY(1px); }
 .ghost { background: transparent; border: 1px solid #34363b; color: #b8bac0; }
 .disabled { opacity: .42; pointer-events: none; }
 .button-row { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
-.button-row.lower { margin-top: 12px; }
+.button-row.lower { grid-template-columns: repeat(3, 1fr); margin-top: 12px; }
 .inline-row { display: grid; grid-template-columns: 1fr 92px; gap: 9px; }
 .settings-panel { margin: 24px 0 0; padding: 22px; border: 1px solid #34363b; border-radius: 18px; background: rgba(15, 16, 18, .96); box-shadow: 0 26px 70px rgba(0, 0, 0, .28); }
 .settings-panel[hidden] { display: none; }

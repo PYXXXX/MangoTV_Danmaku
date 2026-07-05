@@ -118,3 +118,30 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("已开始：歌手 2026 / 突围赛", str(card))
             finally:
                 service.collector.fingerprints.close()
+
+    async def test_round_result_png_export_and_public_url(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "listen": {"public_base_url": "https://danmaku.example.com"},
+                "storage": {"directory": str(Path(temp) / "data")},
+                "mgtv": {"dedup_db_path": str(Path(temp) / "fingerprints.sqlite3")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {"enabled": False},
+            }
+            service = VoteService(config)
+            try:
+                meta = await service.store.create_round("歌手 2026", "第一轮", "", service.default_candidates, "all")
+                body, filename = service.export_round_result_png(meta.id, "rough")
+                self.assertTrue(body.startswith(b"\x89PNG\r\n\x1a\n"))
+                self.assertEqual(filename, f"mgtv-result-{meta.id}-rough.png")
+                self.assertEqual(
+                    service.round_result_png_url(meta.id, "rough"),
+                    f"https://danmaku.example.com/exports/rounds/{meta.id}/result.png?result=rough",
+                )
+            finally:
+                service.collector.fingerprints.close()

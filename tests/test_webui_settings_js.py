@@ -21,6 +21,8 @@ class WebuiSettingsJsTest(unittest.TestCase):
         self.assertIn("state.defaults", source)
         self.assertIn("el.activityName.value = defaultActivityName()", source)
         self.assertIn("const activity = el.activityName.value.trim() || defaultActivityName()", source)
+        self.assertIn("downloadPng", source)
+        self.assertIn("/result.png?result=", source)
 
     def test_feishu_binding_button_click_posts_start_endpoint(self):
         script = textwrap.dedent(
