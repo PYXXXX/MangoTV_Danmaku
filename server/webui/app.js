@@ -115,6 +115,23 @@ async function deleteJson(url) {
   return payload;
 }
 
+function confirmPublishAfterDelete(kind) {
+  return window.confirm(
+    "是否立即同步远端公开发布页？\n\n"
+    + "选择“确定”：删除" + kind + "后立刻发布粗略结果，公开页会同步移除。\n"
+    + "选择“取消”：只更新运营端，稍后可手动点击“发布粗略结果”同步。"
+  );
+}
+
+function deleteUrl(path, publish) {
+  return path + "?publish=" + (publish ? "1" : "0");
+}
+
+function publishStatusText(payload) {
+  if (!payload || !payload.publishRequested) return "未同步远端公开页";
+  return payload.publishUrl ? ("远端同步状态：" + payload.publishUrl) : "已请求同步远端公开页";
+}
+
 function selectedRound() {
   const sessions = (state && state.sessions) || [];
   const filtered = selectedActivity
@@ -328,11 +345,12 @@ el.deleteRound.addEventListener("click", async () => {
   if (!round) return addLog("请先选择要删除的场次");
   if (round.status === "running") return addLog("场次正在采集中，请先结束本轮再删除");
   const label = (round.activity || "未分类活动") + " / " + roundDisplayName(round);
-  if (!window.confirm("确认删除场次「" + label + "」？\n删除后会从运营端、飞书和公开结果中移除。")) return;
+  if (!window.confirm("确认删除场次「" + label + "」？\n删除后会立即从运营端和飞书管理中移除；同步远端发布页后，公开页也会移除。")) return;
+  const publish = confirmPublishAfterDelete("场次");
   try {
-    const payload = await deleteJson("/api/rounds/" + encodeURIComponent(round.id));
+    const payload = await deleteJson(deleteUrl("/api/rounds/" + encodeURIComponent(round.id), publish));
     selectedRoundId = null;
-    addLog("已删除场次：" + (payload.deletedRoundName || roundDisplayName(round)));
+    addLog("已删除场次：" + (payload.deletedRoundName || roundDisplayName(round)) + "\n" + publishStatusText(payload));
     await load();
   } catch (error) {
     addLog("删除场次失败：" + error.message);
@@ -345,12 +363,13 @@ el.deleteActivity.addEventListener("click", async () => {
   const rounds = sessions.filter((item) => (item.activity || "未分类活动") === activity);
   const running = rounds.filter((item) => item.status === "running");
   if (running.length) return addLog("活动中仍有场次正在采集，请先结束后再删除");
-  if (!window.confirm("确认删除活动「" + activity + "」下的 " + rounds.length + " 个场次？\n删除后会从运营端、飞书和公开结果中移除。")) return;
+  if (!window.confirm("确认删除活动「" + activity + "」下的 " + rounds.length + " 个场次？\n删除后会立即从运营端和飞书管理中移除；同步远端发布页后，公开页也会移除。")) return;
+  const publish = confirmPublishAfterDelete("活动");
   try {
-    const payload = await deleteJson("/api/activities/" + encodeURIComponent(activity));
+    const payload = await deleteJson(deleteUrl("/api/activities/" + encodeURIComponent(activity), publish));
     selectedActivity = null;
     selectedRoundId = null;
-    addLog("已删除活动：" + (payload.deletedActivity || activity) + "（" + (payload.deletedRoundCount || 0) + " 个场次）");
+    addLog("已删除活动：" + (payload.deletedActivity || activity) + "（" + (payload.deletedRoundCount || 0) + " 个场次）\n" + publishStatusText(payload));
     await load();
   } catch (error) {
     addLog("删除活动失败：" + error.message);

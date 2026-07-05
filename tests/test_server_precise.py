@@ -249,6 +249,37 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 service.collector.fingerprints.close()
 
+    async def test_delete_round_can_skip_public_publish(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "mgtv": {"dedup_db_path": str(Path(temp) / "fingerprints.sqlite3")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": True},
+                "feishu": {"enabled": False},
+            }
+            service = VoteService(config)
+            calls = []
+
+            async def fake_publish(force=False, result_kind="rough"):
+                calls.append({"force": force, "result_kind": result_kind})
+                return "published"
+
+            service.publisher.publish = fake_publish
+            try:
+                meta = await service.store.create_round("歌手 2026", "第一轮", "", service.default_candidates, "all")
+                await service.store.stop_active()
+                deleted, publish_url = await service.delete_round(meta.id, publish=False)
+                self.assertEqual(deleted.id, meta.id)
+                self.assertEqual(publish_url, "")
+                self.assertEqual(calls, [])
+            finally:
+                service.collector.fingerprints.close()
+
     async def test_feishu_delete_round_action_removes_selected_round(self):
         with tempfile.TemporaryDirectory() as temp:
             config = {

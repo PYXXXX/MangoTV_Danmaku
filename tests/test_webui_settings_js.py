@@ -27,6 +27,9 @@ class WebuiSettingsJsTest(unittest.TestCase):
         self.assertIn("/api/rounds/", source)
         self.assertIn("deleteActivity", source)
         self.assertIn("/api/activities/", source)
+        self.assertIn("confirmPublishAfterDelete", source)
+        self.assertIn("?publish=", source)
+        self.assertIn("是否立即同步远端公开发布页", source)
 
     def test_public_page_can_export_png_with_source_credit(self):
         html = (ROOT / "site" / "index.html").read_text(encoding="utf-8")

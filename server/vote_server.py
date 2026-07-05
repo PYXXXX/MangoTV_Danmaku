@@ -1896,10 +1896,15 @@ def create_app(service: VoteService) -> web.Application:
             dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
         )
 
+    def should_publish_after_delete(request: web.Request) -> bool:
+        value = str(request.query.get("publish", "1")).strip().lower()
+        return value not in {"0", "false", "no", "off"}
+
     async def delete_round(request: web.Request) -> web.Response:
         round_id = request.match_info["round_id"]
+        publish_requested = should_publish_after_delete(request)
         try:
-            meta, url = await service.delete_round(round_id, publish=True)
+            meta, url = await service.delete_round(round_id, publish=publish_requested)
         except KeyError as exc:
             return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
         except ValueError as exc:
@@ -1907,14 +1912,21 @@ def create_app(service: VoteService) -> web.Application:
         except RuntimeError as exc:
             return web.json_response({"error": f"场次已删除，但公开结果同步失败：{exc}"}, status=502, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
         return web.json_response(
-            {"ok": True, "deletedRoundId": meta.id, "deletedRoundName": meta.name, "publishUrl": url},
+            {
+                "ok": True,
+                "deletedRoundId": meta.id,
+                "deletedRoundName": meta.name,
+                "publishRequested": publish_requested,
+                "publishUrl": url,
+            },
             dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
         )
 
     async def delete_activity(request: web.Request) -> web.Response:
         activity = request.match_info["activity"]
+        publish_requested = should_publish_after_delete(request)
         try:
-            metas, url = await service.delete_activity(activity, publish=True)
+            metas, url = await service.delete_activity(activity, publish=publish_requested)
         except KeyError as exc:
             return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
         except ValueError as exc:
@@ -1927,6 +1939,7 @@ def create_app(service: VoteService) -> web.Application:
                 "deletedActivity": normalize(activity) or "未分类活动",
                 "deletedRoundIds": [meta.id for meta in metas],
                 "deletedRoundCount": len(metas),
+                "publishRequested": publish_requested,
                 "publishUrl": url,
             },
             dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
