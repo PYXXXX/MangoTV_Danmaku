@@ -280,6 +280,66 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 service.collector.fingerprints.close()
 
+    async def test_raw_danmaku_track_exports_observed_items(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "mgtv": {"dedup_db_path": str(Path(temp) / "fingerprints.sqlite3")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {"enabled": False},
+            }
+            service = VoteService(config)
+            try:
+                meta = await service.store.create_round("歌手 2026", "第一轮", "https://example.com/live", service.default_candidates, "all")
+                await service.store.append_raw_danmaku_batch(
+                    meta.id,
+                    poll_seq=1,
+                    observed_at="2026-07-05T01:00:00Z",
+                    room_id="liveshow-5366",
+                    url="https://example.com/live",
+                    items=[{"u": "user-1", "n": "观众", "c": "甲加油", "extra": {"x": 1}}],
+                )
+                exported = service.store.export_round_raw_jsonl(meta.id)
+                self.assertIn('"rawTrack":"observed_api_items"', exported)
+                self.assertIn('"pollSeq":1', exported)
+                self.assertIn('"roomId":"liveshow-5366"', exported)
+                self.assertIn('"c":"甲加油"', exported)
+                self.assertIn('"extra":{"x":1}', exported)
+            finally:
+                service.collector.fingerprints.close()
+
+    async def test_recording_manager_skips_when_enabled_without_stream_url_and_accepts_markers(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "recording": {"enabled": True, "stream_url": "", "directory": str(Path(temp) / "recordings")},
+                "mgtv": {"dedup_db_path": str(Path(temp) / "fingerprints.sqlite3")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {"enabled": False},
+            }
+            service = VoteService(config)
+            try:
+                meta = await service.store.create_round("歌手 2026", "第一轮", "", service.default_candidates, "all")
+                record = await service.recorder.start(meta, "")
+                self.assertEqual(record["status"], "skipped")
+                self.assertIn("未配置录制源", record["error"])
+                marker = service.recorder.add_marker(meta.id, "高能片段", 12.5)
+                self.assertEqual(marker["label"], "高能片段")
+                self.assertEqual(marker["atSeconds"], 12.5)
+                self.assertEqual(service.recorder.public_records()[0]["clipCount"], 0)
+            finally:
+                service.collector.fingerprints.close()
+
     async def test_feishu_delete_round_action_removes_selected_round(self):
         with tempfile.TemporaryDirectory() as temp:
             config = {

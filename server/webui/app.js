@@ -19,9 +19,20 @@ const el = {
   rename: $("#rename"),
   refresh: $("#refresh"),
   downloadSlice: $("#downloadSlice"),
+  downloadRaw: $("#downloadRaw"),
   downloadPng: $("#downloadPng"),
   deleteRound: $("#deleteRound"),
   deleteActivity: $("#deleteActivity"),
+  recordingStatus: $("#recordingStatus"),
+  recordingPlayer: $("#recordingPlayer"),
+  markerLabel: $("#markerLabel"),
+  addMarker: $("#addMarker"),
+  markerList: $("#markerList"),
+  clipStart: $("#clipStart"),
+  clipEnd: $("#clipEnd"),
+  clipLabel: $("#clipLabel"),
+  createClip: $("#createClip"),
+  clipList: $("#clipList"),
   messages: $("#messages"),
   votes: $("#votes"),
   reviews: $("#reviews"),
@@ -115,6 +126,18 @@ async function deleteJson(url) {
   return payload;
 }
 
+async function postJson(url, payload) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload || {})
+  });
+  requireLogin(response);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "HTTP " + response.status);
+  return data;
+}
+
 function confirmPublishAfterDelete(kind) {
   return window.confirm(
     "是否立即同步远端公开发布页？\n\n"
@@ -181,6 +204,64 @@ function roundDisplayName(round) {
 
 function roundTimeRange(round) {
   return round && round.timeRange ? round.timeRange : "";
+}
+
+function formatSeconds(value) {
+  const total = Math.max(0, Number(value || 0));
+  const minutes = Math.floor(total / 60);
+  const seconds = Math.floor(total % 60);
+  const tenths = Math.floor((total % 1) * 10);
+  return minutes + ":" + String(seconds).padStart(2, "0") + "." + tenths;
+}
+
+function renderRecording(round) {
+  const recording = round && round.recording;
+  const hasVideo = Boolean(recording && recording.hasVideo && recording.videoUrl);
+  el.addMarker.disabled = !hasVideo;
+  el.createClip.disabled = !hasVideo;
+  if (!round) {
+    el.recordingStatus.textContent = "选择场次后显示录屏状态。";
+    el.recordingPlayer.removeAttribute("src");
+    el.markerList.textContent = "暂无标记";
+    el.clipList.textContent = "暂无片段";
+    return;
+  }
+  if (!recording) {
+    el.recordingStatus.textContent = "该场次暂无录屏。请在系统配置中启用录制并配置可录制的直播流 URL。";
+    el.recordingPlayer.removeAttribute("src");
+    el.markerList.textContent = "暂无标记";
+    el.clipList.textContent = "暂无片段";
+    return;
+  }
+  el.recordingStatus.textContent = "录屏状态：" + (recording.status || "未知")
+    + (recording.error ? (" · " + recording.error) : "")
+    + (recording.sourceUrl ? " · 已配置录制源" : " · 未配置录制源");
+  const currentSrc = el.recordingPlayer.getAttribute("src") || "";
+  if (hasVideo && currentSrc !== recording.videoUrl) {
+    el.recordingPlayer.src = recording.videoUrl;
+  } else if (!hasVideo) {
+    el.recordingPlayer.removeAttribute("src");
+  }
+  const markers = recording.markers || [];
+  el.markerList.replaceChildren(...(markers.length ? markers.map((marker) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost";
+    button.textContent = formatSeconds(marker.atSeconds) + " · " + (marker.label || "未命名标记");
+    button.addEventListener("click", () => {
+      el.recordingPlayer.currentTime = Number(marker.atSeconds || 0);
+      el.recordingPlayer.play().catch(() => {});
+    });
+    return button;
+  }) : [document.createTextNode("暂无标记")]));
+  const clips = recording.clips || [];
+  el.clipList.replaceChildren(...(clips.length ? clips.map((clip) => {
+    const link = document.createElement("a");
+    link.href = clip.url || "#";
+    link.download = "";
+    link.textContent = formatSeconds(clip.startSeconds) + " – " + formatSeconds(clip.endSeconds) + " · " + (clip.label || "片段");
+    return link;
+  }) : [document.createTextNode("暂无片段")]));
 }
 
 function renderRounds(round) {
@@ -264,6 +345,8 @@ function render() {
   if (round) {
     el.downloadSlice.href = "/api/rounds/" + encodeURIComponent(round.id) + ".jsonl";
     el.downloadSlice.classList.remove("disabled");
+    el.downloadRaw.href = "/api/rounds/" + encodeURIComponent(round.id) + "/raw.jsonl";
+    el.downloadRaw.classList.remove("disabled");
     el.downloadPng.href = "/api/rounds/" + encodeURIComponent(round.id) + "/result.png?result=" + encodeURIComponent(current.type);
     el.downloadPng.classList.remove("disabled");
     el.deleteRound.disabled = round.status === "running";
@@ -271,11 +354,14 @@ function render() {
   } else {
     el.downloadSlice.href = "#";
     el.downloadSlice.classList.add("disabled");
+    el.downloadRaw.href = "#";
+    el.downloadRaw.classList.add("disabled");
     el.downloadPng.href = "#";
     el.downloadPng.classList.add("disabled");
     el.deleteRound.disabled = true;
     el.deleteActivity.disabled = true;
   }
+  renderRecording(round);
   applyStartDefaults();
 }
 
@@ -373,6 +459,40 @@ el.deleteActivity.addEventListener("click", async () => {
     await load();
   } catch (error) {
     addLog("删除活动失败：" + error.message);
+  }
+});
+el.addMarker.addEventListener("click", async () => {
+  const round = selectedRound();
+  if (!round) return addLog("请先选择场次");
+  const atSeconds = Number(el.recordingPlayer.currentTime || 0);
+  const label = el.markerLabel.value.trim() || ("标记 " + formatSeconds(atSeconds));
+  try {
+    await postJson("/api/rounds/" + encodeURIComponent(round.id) + "/recording/markers", { label, atSeconds });
+    el.markerLabel.value = "";
+    addLog("已添加录屏标记：" + label + " @ " + formatSeconds(atSeconds));
+    await load();
+  } catch (error) {
+    addLog("添加录屏标记失败：" + error.message);
+  }
+});
+el.createClip.addEventListener("click", async () => {
+  const round = selectedRound();
+  if (!round) return addLog("请先选择场次");
+  const startSeconds = Number(el.clipStart.value || 0);
+  const endSeconds = Number(el.clipEnd.value || 0);
+  if (!(endSeconds > startSeconds)) return addLog("截取结束时间必须大于开始时间");
+  const label = el.clipLabel.value.trim() || (formatSeconds(startSeconds) + "-" + formatSeconds(endSeconds));
+  try {
+    const payload = await postJson("/api/rounds/" + encodeURIComponent(round.id) + "/recording/clips", {
+      startSeconds,
+      endSeconds,
+      label
+    });
+    el.clipLabel.value = "";
+    addLog("已截取片段：" + (payload.clip && payload.clip.label ? payload.clip.label : label));
+    await load();
+  } catch (error) {
+    addLog("截取片段失败：" + error.message);
   }
 });
 el.roundSelect.addEventListener("change", () => {

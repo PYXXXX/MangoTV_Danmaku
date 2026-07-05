@@ -195,6 +195,21 @@ def build_settings_update(
             raise SettingsValidationError("room_id 前缀不能为空")
         updated["mgtv"] = target
 
+    if "recording" in payload:
+        source = payload.get("recording")
+        if not isinstance(source, dict):
+            raise SettingsValidationError("recording 配置格式无效")
+        target = dict(updated.get("recording") or {})
+        target.update({
+            "enabled": as_bool(source.get("enabled")),
+            "stream_url": as_url(source.get("stream_url"), "录屏直播流 URL", required=False),
+            "ffmpeg_path": str(source.get("ffmpeg_path") or "").strip(),
+            "directory": str(source.get("directory") or "").strip(),
+        })
+        if target["enabled"] and not target["stream_url"]:
+            warnings.append("已启用录屏但未配置直播流 URL；开始场次时会跳过录制")
+        updated["recording"] = target
+
     if "vote" in payload:
         source = payload.get("vote")
         if not isinstance(source, dict):
@@ -290,6 +305,7 @@ def build_settings_update(
         ("listen.port", ("listen", "port")),
         ("storage.directory", ("storage", "directory")),
         ("mgtv.dedup_db_path", ("mgtv", "dedup_db_path")),
+        ("recording.directory", ("recording", "directory")),
     ]
     restart_fields = [
         label
@@ -309,6 +325,8 @@ def build_settings_update(
         source_keys = {"url", "room_id", "camera_id", "flag", "count_initial_history"}
         if any(old_mgtv.get(key) != new_mgtv.get(key) for key in source_keys):
             warnings.append("直播源和首批历史策略只对下一场生效；当前采集连接不切换")
+        if (current.get("recording") or {}) != (updated.get("recording") or {}):
+            warnings.append("录屏配置只对下一场生效；当前录制进程不切换")
 
     return SettingsUpdate(updated, restart_fields, warnings, reauth_required)
 

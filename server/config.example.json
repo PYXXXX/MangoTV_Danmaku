@@ -28,6 +28,12 @@
   "storage": {
     "directory": "server/data"
   },
+  "recording": {
+    "enabled": false,
+    "stream_url": "",
+    "ffmpeg_path": "ffmpeg",
+    "directory": "server/data/recordings"
+  },
   "github": {
     "enabled": false,
     "owner": "your-github-owner",

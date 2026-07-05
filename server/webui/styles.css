@@ -35,6 +35,14 @@ select:focus, input:focus, textarea:focus { border-color: #ff7a1a; box-shadow: 0
 .doc-link { display: inline-block; margin-top: 12px; color: #ff9a50; font-size: 12px; text-decoration: none; }
 .doc-link:hover { text-decoration: underline; }
 .upload-form .primary { margin-top: 10px; }
+.recording-panel { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(320px, .85fr); gap: 24px; align-items: start; }
+.recording-player { display: block; width: 100%; min-height: 280px; margin-top: 14px; border: 1px solid #24262a; border-radius: 14px; background: #08090a; }
+.recording-tools { display: grid; gap: 12px; }
+.clip-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.clip-grid .wide { grid-column: 1 / -1; }
+.marker-list { min-height: 44px; max-height: 180px; overflow: auto; padding: 10px; border: 1px solid #24262a; border-radius: 10px; background: #101114; color: #8d9097; font-size: 12px; line-height: 1.6; }
+.marker-list a { color: #ff9a50; text-decoration: none; }
+.marker-list a:hover { text-decoration: underline; }
 button, .link-button { min-height: 41px; border: 0; border-radius: 10px; padding: 0 15px; font: inherit; font-size: 13px; font-weight: 680; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
 button:active, .link-button:active { transform: translateY(1px); }
 .primary { width: 100%; margin-top: 14px; background: #ff7a1a; color: #16100b; }
@@ -43,7 +51,7 @@ button:active, .link-button:active { transform: translateY(1px); }
 .ghost { background: transparent; border: 1px solid #34363b; color: #b8bac0; }
 .disabled { opacity: .42; pointer-events: none; }
 .button-row { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
-.button-row.lower { grid-template-columns: repeat(3, 1fr); margin-top: 12px; }
+.button-row.lower { grid-template-columns: repeat(4, 1fr); margin-top: 12px; }
 .inline-row { display: grid; grid-template-columns: 1fr 92px; gap: 9px; }
 .danger-zone { display: grid; gap: 10px; margin-top: 16px; padding: 12px; border: 1px solid rgba(165, 62, 52, .42); border-radius: 12px; background: rgba(74, 33, 31, .18); }
 .danger-zone strong { display: block; color: #ffd4ce; font-size: 12px; }
@@ -146,5 +154,5 @@ footer { display: flex; justify-content: space-between; gap: 20px; padding-top: 
 .login-form .primary { min-height: 46px; }
 .auth-error { margin: 0 0 18px; padding: 11px 12px; border: 1px solid #75342f; border-radius: 10px; background: rgba(117, 52, 47, .2); color: #ffd4ce; font-size: 12px; }
 .login-note { margin: 18px 0 0; color: #5f6268; font-size: 11px; line-height: 1.6; }
-@media (max-width: 860px) { main { width: min(100% - 28px, 1180px); padding-top: 24px; } header, footer, .settings-heading, .settings-footer { flex-direction: column; } .controls { width: 100%; min-width: 0; } .command-grid, .content-grid, .precise-panel, .settings-grid, .feishu-binding-meta { grid-template-columns: 1fr; } .settings-grid .wide { grid-column: auto; } .settings-actions-top, .settings-submit-actions, .settings-update-actions, .feishu-binding-actions { width: 100%; justify-content: space-between; } .settings-submit-actions, .settings-update-actions { flex-direction: column; } .settings-footer .primary, .settings-submit-actions .danger, .settings-update-actions button, .feishu-binding-actions button { width: 100%; } .metrics div + div { padding-left: 12px; } .row { grid-template-columns: 30px 1fr 70px; gap: 10px; } .track { grid-column: 2 / 4; grid-row: 2; margin-bottom: 12px; } }
+@media (max-width: 860px) { main { width: min(100% - 28px, 1180px); padding-top: 24px; } header, footer, .settings-heading, .settings-footer { flex-direction: column; } .controls { width: 100%; min-width: 0; } .command-grid, .content-grid, .precise-panel, .recording-panel, .settings-grid, .feishu-binding-meta { grid-template-columns: 1fr; } .button-row.lower, .clip-grid { grid-template-columns: 1fr; } .settings-grid .wide, .clip-grid .wide { grid-column: auto; } .settings-actions-top, .settings-submit-actions, .settings-update-actions, .feishu-binding-actions { width: 100%; justify-content: space-between; } .settings-submit-actions, .settings-update-actions { flex-direction: column; } .settings-footer .primary, .settings-submit-actions .danger, .settings-update-actions button, .feishu-binding-actions button { width: 100%; } .metrics div + div { padding-left: 12px; } .row { grid-template-columns: 30px 1fr 70px; gap: 10px; } .track { grid-column: 2 / 4; grid-row: 2; margin-bottom: 12px; } }
 @media (max-width: 520px) { .login-page { padding: 14px; } .login-shell { width: 100%; padding: 0; } .login-card { padding: 26px 22px; } }

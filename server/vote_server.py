@@ -16,6 +16,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import signal
 import sqlite3
 import time
@@ -285,6 +286,8 @@ class StateStore:
         self.directory.mkdir(parents=True, exist_ok=True)
         self.rounds_dir = self.directory / "rounds"
         self.rounds_dir.mkdir(exist_ok=True)
+        self.raw_rounds_dir = self.directory / "raw_rounds"
+        self.raw_rounds_dir.mkdir(exist_ok=True)
         self.raw_messages_path = self.directory / "raw_messages.jsonl"
         self.meta_path = self.directory / "state.json"
         self.lock = asyncio.Lock()
@@ -416,6 +419,10 @@ class StateStore:
                 round_file.unlink()
             except FileNotFoundError:
                 pass
+            try:
+                (self.raw_rounds_dir / f"{round_id}.jsonl").unlink()
+            except FileNotFoundError:
+                pass
             return meta
 
     async def delete_activity(self, activity: str) -> list[RoundMeta]:
@@ -438,6 +445,10 @@ class StateStore:
             for round_id in match_ids:
                 try:
                     (self.rounds_dir / f"{round_id}.jsonl").unlink()
+                except FileNotFoundError:
+                    pass
+                try:
+                    (self.raw_rounds_dir / f"{round_id}.jsonl").unlink()
                 except FileNotFoundError:
                     pass
             return matches
@@ -491,6 +502,35 @@ class StateStore:
                 handle.write(line + "\n")
             await self.save()
 
+    async def append_raw_danmaku_batch(
+        self,
+        round_id: str,
+        *,
+        poll_seq: int,
+        observed_at: str,
+        room_id: str,
+        url: str,
+        items: list[dict[str, Any]],
+    ) -> None:
+        if not items:
+            return
+        async with self.lock:
+            self.require_round(round_id)
+            path = self.raw_rounds_dir / f"{round_id}.jsonl"
+            with path.open("a", encoding="utf-8") as handle:
+                for index, item in enumerate(items):
+                    record = {
+                        "type": "raw_danmaku",
+                        "roundId": round_id,
+                        "pollSeq": poll_seq,
+                        "itemIndex": index,
+                        "observedAt": observed_at,
+                        "roomId": room_id,
+                        "url": url,
+                        "raw": item,
+                    }
+                    handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+
     def iter_slice_records(self, round_id: str):
         meta = self.require_round(round_id)
         start = meta.sliceStartSeq
@@ -519,6 +559,20 @@ class StateStore:
             "compactTimeRange": format_beijing_range(meta.sliceStartTime, meta.sliceEndTime) if meta.sliceEndTime else "",
         }, ensure_ascii=False, separators=(",", ":"))]
         lines.extend(json.dumps(record, ensure_ascii=False, separators=(",", ":")) for record in self.iter_slice_records(round_id))
+        return "\n".join(lines) + "\n"
+
+    def export_round_raw_jsonl(self, round_id: str) -> str:
+        meta = self.require_round(round_id)
+        lines = [json.dumps({
+            "type": "meta",
+            **asdict(meta),
+            "displayName": meta.baseName,
+            "timeRange": format_beijing_display_range(meta.sliceStartTime, meta.sliceEndTime),
+            "rawTrack": "observed_api_items",
+        }, ensure_ascii=False, separators=(",", ":"))]
+        path = self.raw_rounds_dir / f"{round_id}.jsonl"
+        if path.exists():
+            lines.extend(line.rstrip("\n") for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
         return "\n".join(lines) + "\n"
 
     def public_state(self) -> dict[str, Any]:
@@ -728,6 +782,7 @@ class MgtvCollector:
         assert self.url and self.round_id and self.room_id
         count_initial = bool(self.config.get("count_initial_history", False))
         first_batch = True
+        poll_seq = 0
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/537.36 Chrome Safari/537.36",
             "Referer": "https://www.mgtv.com/",
@@ -743,6 +798,15 @@ class MgtvCollector:
                 if isinstance(payload, dict) and payload.get("code") not in (None, 0, 200):
                     raise RuntimeError(f"history api code={payload.get('code')}: {payload.get('msg')}")
                 items = self.extract_history_items(payload)
+                poll_seq += 1
+                await self.engine.store.append_raw_danmaku_batch(
+                    self.round_id,
+                    poll_seq=poll_seq,
+                    observed_at=now_iso(),
+                    room_id=self.room_id,
+                    url=self.url,
+                    items=items,
+                )
                 # Oldest first makes the local JSONL easier to audit.
                 for item in reversed(items):
                     raw = {
@@ -868,6 +932,253 @@ class FeishuBot:
             await self.send_message(receive_id, receive_id_type, "image", {"image_key": image_key})
 
 
+class RecordingManager:
+    def __init__(self, config: dict[str, Any], storage_dir: Path):
+        self.config = config or {}
+        self.directory = Path(self.config.get("directory") or storage_dir / "recordings")
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.meta_path = self.directory / "recordings.json"
+        self.records: dict[str, dict[str, Any]] = {}
+        self.processes: dict[str, asyncio.subprocess.Process] = {}
+        self.load()
+
+    def enabled(self) -> bool:
+        return bool(self.config.get("enabled"))
+
+    def ffmpeg_path(self) -> str:
+        return str(self.config.get("ffmpeg_path") or shutil.which("ffmpeg") or "ffmpeg")
+
+    def default_source_url(self) -> str:
+        return str(self.config.get("stream_url") or self.config.get("source_url") or "")
+
+    def load(self) -> None:
+        if not self.meta_path.exists():
+            return
+        try:
+            raw = json.loads(self.meta_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return
+        self.records = {item.get("roundId", ""): item for item in raw.get("recordings", []) if item.get("roundId")}
+        for item in self.records.values():
+            if item.get("status") == "recording":
+                item["status"] = "interrupted"
+                item["endedAt"] = item.get("endedAt") or now_iso()
+        self.save()
+
+    def save(self) -> None:
+        payload = {"schemaVersion": 1, "updatedAt": now_iso(), "recordings": list(self.records.values())}
+        tmp = self.meta_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(self.meta_path)
+
+    def round_dir(self, round_id: str) -> Path:
+        path = self.directory / round_id
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def record_for(self, round_id: str) -> dict[str, Any] | None:
+        return self.records.get(round_id)
+
+    def public_records(self) -> list[dict[str, Any]]:
+        records = []
+        for record in self.records.values():
+            item = dict(record)
+            path = Path(str(item.get("path") or ""))
+            item["hasVideo"] = path.exists()
+            item["videoUrl"] = f"/api/rounds/{quote(item.get('roundId', ''), safe='')}/recording/video" if path.exists() else ""
+            item["clipCount"] = len(item.get("clips") or [])
+            records.append(item)
+        return sorted(records, key=lambda item: item.get("startedAt") or "", reverse=True)
+
+    async def start(self, meta: RoundMeta, source_url: str = "") -> dict[str, Any] | None:
+        if not self.enabled():
+            return None
+        source = source_url or self.default_source_url()
+        record_dir = self.round_dir(meta.id)
+        output = record_dir / "recording.mp4"
+        record = {
+            "roundId": meta.id,
+            "activity": meta.activity,
+            "roundName": meta.name,
+            "sourceUrl": source,
+            "path": str(output),
+            "status": "pending",
+            "startedAt": now_iso(),
+            "endedAt": "",
+            "error": "",
+            "markers": [],
+            "clips": [],
+        }
+        self.records[meta.id] = record
+        self.save()
+        if not source:
+            record["status"] = "skipped"
+            record["error"] = "未配置录制源 URL"
+            self.save()
+            return record
+        args = [
+            self.ffmpeg_path(),
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            "-i",
+            source,
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            str(output),
+        ]
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as exc:
+            record["status"] = "failed"
+            record["error"] = f"无法启动 ffmpeg：{exc}"
+            record["endedAt"] = now_iso()
+            self.save()
+            return record
+        self.processes[meta.id] = process
+        record["status"] = "recording"
+        record["pid"] = process.pid
+        self.save()
+        asyncio.create_task(self._watch(meta.id, process), name=f"recording-watch-{meta.id}")
+        return record
+
+    async def _watch(self, round_id: str, process: asyncio.subprocess.Process) -> None:
+        _, stderr = await process.communicate()
+        if self.processes.get(round_id) is process:
+            self.processes.pop(round_id, None)
+        record = self.records.get(round_id)
+        if not record:
+            return
+        if record.get("status") == "recording":
+            record["status"] = "finished" if process.returncode == 0 else "failed"
+            record["endedAt"] = record.get("endedAt") or now_iso()
+            if process.returncode not in (0, None):
+                record["error"] = (stderr or b"").decode("utf-8", errors="replace")[-1200:]
+            self.save()
+
+    async def stop(self, round_id: str) -> dict[str, Any] | None:
+        record = self.records.get(round_id)
+        process = self.processes.pop(round_id, None)
+        if process and process.returncode is None:
+            if process.stdin:
+                try:
+                    process.stdin.write(b"q")
+                    await process.stdin.drain()
+                except (BrokenPipeError, ConnectionError):
+                    pass
+            try:
+                await asyncio.wait_for(process.wait(), timeout=12)
+            except asyncio.TimeoutError:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    process.kill()
+        if record:
+            record["status"] = "finished" if Path(str(record.get("path") or "")).exists() else record.get("status", "stopped")
+            record["endedAt"] = record.get("endedAt") or now_iso()
+            self.save()
+        return record
+
+    async def stop_all(self) -> None:
+        for round_id in list(self.processes):
+            await self.stop(round_id)
+
+    def add_marker(self, round_id: str, label: str, at_seconds: float) -> dict[str, Any]:
+        record = self.records.get(round_id)
+        if not record:
+            raise KeyError(f"找不到录制：{round_id}")
+        marker = {
+            "id": safe_id(),
+            "label": normalize(label) or "未命名标记",
+            "atSeconds": max(0, float(at_seconds)),
+            "createdAt": now_iso(),
+        }
+        record.setdefault("markers", []).append(marker)
+        self.save()
+        return marker
+
+    async def create_clip(self, round_id: str, start_seconds: float, end_seconds: float, label: str = "") -> dict[str, Any]:
+        record = self.records.get(round_id)
+        if not record:
+            raise KeyError(f"找不到录制：{round_id}")
+        source = Path(str(record.get("path") or ""))
+        if not source.exists():
+            raise FileNotFoundError("录制文件不存在")
+        start = max(0.0, float(start_seconds))
+        end = max(start + 0.1, float(end_seconds))
+        clip_id = safe_id()
+        filename = f"clip-{clip_id}.mp4"
+        output = self.round_dir(round_id) / filename
+        args = [
+            self.ffmpeg_path(),
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            f"{start:.3f}",
+            "-to",
+            f"{end:.3f}",
+            "-i",
+            str(source),
+            "-c",
+            "copy",
+            str(output),
+        ]
+        process = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        _, stderr = await process.communicate()
+        if process.returncode != 0:
+            raise RuntimeError((stderr or b"").decode("utf-8", errors="replace")[-1200:] or "ffmpeg 截取失败")
+        clip = {
+            "id": clip_id,
+            "label": normalize(label) or f"{start:.1f}s-{end:.1f}s",
+            "startSeconds": start,
+            "endSeconds": end,
+            "path": str(output),
+            "url": f"/api/rounds/{quote(round_id, safe='')}/recording/clips/{quote(clip_id, safe='')}.mp4",
+            "createdAt": now_iso(),
+        }
+        record.setdefault("clips", []).append(clip)
+        self.save()
+        return clip
+
+    def video_path(self, round_id: str) -> Path:
+        record = self.records.get(round_id)
+        if not record:
+            raise KeyError(f"找不到录制：{round_id}")
+        path = Path(str(record.get("path") or ""))
+        if not path.exists():
+            raise FileNotFoundError("录制文件不存在")
+        return path
+
+    def clip_path(self, round_id: str, clip_id: str) -> Path:
+        record = self.records.get(round_id)
+        if not record:
+            raise KeyError(f"找不到录制：{round_id}")
+        clip = next((item for item in record.get("clips") or [] if item.get("id") == clip_id), None)
+        if not clip:
+            raise KeyError(f"找不到片段：{clip_id}")
+        path = Path(str(clip.get("path") or ""))
+        if not path.exists():
+            raise FileNotFoundError("片段文件不存在")
+        return path
+
+    def delete_round(self, round_id: str) -> None:
+        self.records.pop(round_id, None)
+        self.processes.pop(round_id, None)
+        shutil.rmtree(self.directory / round_id, ignore_errors=True)
+        self.save()
+
+
 class VoteService:
     def __init__(self, config: dict[str, Any], config_path: Path | None = None, repo_root: Path | None = None):
         self.config = config
@@ -888,6 +1199,7 @@ class VoteService:
         self.engine = VoteEngine(self.store)
         self.publisher = GithubPublisher(config.get("github", {}), self.store)
         self.collector = MgtvCollector(config.get("mgtv", {}), self.engine)
+        self.recorder = RecordingManager(config.get("recording", {}), self.store.directory)
         self.feishu = FeishuBot(config.get("feishu", {}))
         self.operator_auth = OperatorAuth(config.get("operator_auth") or {})
         self.default_candidates = candidates_from_config(config.get("vote", {}).get("candidates", []))
@@ -977,6 +1289,7 @@ class VoteService:
             ("listen.port", "listen", "port"),
             ("storage.directory", "storage", "directory"),
             ("mgtv.dedup_db_path", "mgtv", "dedup_db_path"),
+            ("recording.directory", "recording", "directory"),
         ]
         return [
             label
@@ -1004,6 +1317,9 @@ class VoteService:
             "activity": str((self.config.get("vote") or {}).get("activity") or "未分类活动"),
             "mgtvUrl": str((self.config.get("mgtv") or {}).get("url") or ""),
         }
+        recordings = {item.get("roundId"): item for item in self.recorder.public_records()}
+        for session in state.get("sessions") or []:
+            session["recording"] = recordings.get(session.get("id"))
         return state
 
     def public_base_url(self) -> str:
@@ -1182,6 +1498,7 @@ class VoteService:
             if "mgtv.dedup_db_path" in self._restart_fields_for(new_config):
                 runtime_mgtv["dedup_db_path"] = old_db_path
             self.collector.apply_config(runtime_mgtv)
+            self.recorder.config = new_config.get("recording", {}) or {}
 
             old_feishu = old_config.get("feishu") or {}
             new_feishu = new_config.get("feishu") or {}
@@ -1453,18 +1770,22 @@ class VoteService:
         url = url or self.config.get("mgtv", {}).get("url")
         activity = activity or self.config.get("vote", {}).get("activity") or "未分类活动"
         meta = await self.store.create_round(activity, name, url, self.default_candidates, self.default_policy)
+        await self.recorder.start(meta, str((self.config.get("recording") or {}).get("stream_url") or ""))
         await self.collector.start(meta.id, url)
         return meta
 
     async def end_round(self, publish: bool = True) -> RoundMeta | None:
         await self.collector.stop()
         meta = await self.store.stop_active()
+        if meta:
+            await self.recorder.stop(meta.id)
         if publish and meta:
             await self.publisher.publish(force=True, result_kind="rough")
         return meta
 
     async def delete_round(self, round_id: str, publish: bool = True) -> tuple[RoundMeta, str]:
         meta = await self.store.delete_round(round_id)
+        self.recorder.delete_round(round_id)
         publish_url = ""
         if publish:
             try:
@@ -1475,6 +1796,8 @@ class VoteService:
 
     async def delete_activity(self, activity: str, publish: bool = True) -> tuple[list[RoundMeta], str]:
         metas = await self.store.delete_activity(activity)
+        for meta in metas:
+            self.recorder.delete_round(meta.id)
         publish_url = ""
         if publish:
             try:
@@ -1852,6 +2175,18 @@ def create_app(service: VoteService) -> web.Application:
             headers={"Content-Disposition": f'attachment; filename="mgtv-round-{round_id}.jsonl"'},
         )
 
+    async def round_raw_export(request: web.Request) -> web.Response:
+        round_id = request.match_info["round_id"]
+        try:
+            body = service.store.export_round_raw_jsonl(round_id)
+        except KeyError as exc:
+            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.Response(
+            text=body,
+            content_type="application/x-ndjson",
+            headers={"Content-Disposition": f'attachment; filename="mgtv-round-{round_id}-raw.jsonl"'},
+        )
+
     async def round_result_png(request: web.Request) -> web.Response:
         round_id = request.match_info["round_id"]
         requested = str(request.query.get("result") or "")
@@ -1873,6 +2208,78 @@ def create_app(service: VoteService) -> web.Application:
         data = await request.json()
         reply = await service.handle_command(data.get("text", ""))
         return web.json_response({"reply": reply}, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+
+    async def recordings(_: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "enabled": service.recorder.enabled(),
+                "sourceUrlConfigured": bool(service.recorder.default_source_url()),
+                "recordings": service.recorder.public_records(),
+            },
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def round_recording(request: web.Request) -> web.Response:
+        round_id = request.match_info["round_id"]
+        record = service.recorder.record_for(round_id)
+        if not record:
+            return web.json_response({"error": f"找不到录制：{round_id}"}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        payload = dict(record)
+        path = Path(str(payload.get("path") or ""))
+        payload["hasVideo"] = path.exists()
+        payload["videoUrl"] = f"/api/rounds/{quote(round_id, safe='')}/recording/video" if path.exists() else ""
+        return web.json_response(payload, dumps=lambda data: json.dumps(data, ensure_ascii=False), headers={"Cache-Control": "no-store"})
+
+    async def round_recording_video(request: web.Request) -> web.StreamResponse:
+        round_id = request.match_info["round_id"]
+        try:
+            return web.FileResponse(service.recorder.video_path(round_id), headers={"Cache-Control": "no-store"})
+        except KeyError as exc:
+            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except FileNotFoundError as exc:
+            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+
+    async def add_recording_marker(request: web.Request) -> web.Response:
+        round_id = request.match_info["round_id"]
+        data = await request.json()
+        try:
+            marker = service.recorder.add_marker(round_id, str(data.get("label") or ""), float(data.get("atSeconds") or 0))
+        except KeyError as exc:
+            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except (TypeError, ValueError) as exc:
+            return web.json_response({"error": str(exc)}, status=400, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response({"ok": True, "marker": marker}, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+
+    async def create_recording_clip(request: web.Request) -> web.Response:
+        round_id = request.match_info["round_id"]
+        data = await request.json()
+        try:
+            clip = await service.recorder.create_clip(
+                round_id,
+                float(data.get("startSeconds") or 0),
+                float(data.get("endSeconds") or 0),
+                str(data.get("label") or ""),
+            )
+        except KeyError as exc:
+            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except FileNotFoundError as exc:
+            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except (TypeError, ValueError) as exc:
+            return web.json_response({"error": str(exc)}, status=400, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except RuntimeError as exc:
+            return web.json_response({"error": str(exc)}, status=502, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response({"ok": True, "clip": clip}, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+
+    async def recording_clip(request: web.Request) -> web.StreamResponse:
+        round_id = request.match_info["round_id"]
+        clip_id = request.match_info["clip_id"]
+        try:
+            return web.FileResponse(service.recorder.clip_path(round_id, clip_id), headers={"Cache-Control": "no-store"})
+        except KeyError as exc:
+            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except FileNotFoundError as exc:
+            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
 
     async def precise_upload(request: web.Request) -> web.Response:
         round_id = request.match_info["round_id"]
@@ -2004,8 +2411,15 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_post("/api/restart", restart_service)
     app.router.add_get("/api/update/status", update_status)
     app.router.add_post("/api/update/apply", apply_update)
+    app.router.add_get("/api/recordings", recordings)
     app.router.add_get("/api/rounds/{round_id}.jsonl", round_export)
+    app.router.add_get("/api/rounds/{round_id}/raw.jsonl", round_raw_export)
     app.router.add_get("/api/rounds/{round_id}/result.png", round_result_png)
+    app.router.add_get("/api/rounds/{round_id}/recording", round_recording)
+    app.router.add_get("/api/rounds/{round_id}/recording/video", round_recording_video)
+    app.router.add_post("/api/rounds/{round_id}/recording/markers", add_recording_marker)
+    app.router.add_post("/api/rounds/{round_id}/recording/clips", create_recording_clip)
+    app.router.add_get("/api/rounds/{round_id}/recording/clips/{clip_id}.mp4", recording_clip)
     app.router.add_get("/exports/rounds/{round_id}/result.png", round_result_png)
     app.router.add_post("/api/rounds/{round_id}/precise-result", precise_upload)
     app.router.add_delete("/api/rounds/{round_id}", delete_round)
@@ -2037,6 +2451,7 @@ async def amain() -> None:
         loop.add_signal_handler(sig, stop.set)
     await stop.wait()
     await service.collector.stop()
+    await service.recorder.stop_all()
     if service.feishu_connection is not None:
         await asyncio.to_thread(service.feishu_connection.stop)
     service.collector.fingerprints.close()

@@ -3,6 +3,7 @@ const settingsEl = Object.fromEntries([
   "cfgActivity", "cfgPolicy", "cfgCandidates",
   "cfgLiveUrl", "cfgRoomId", "cfgCameraId", "cfgHistoryApi", "cfgFlag", "cfgPollSeconds",
   "cfgReconnectSeconds", "cfgCountInitial", "cfgDedupHot", "cfgDedupMax", "cfgDedupDb",
+  "cfgRecordingEnabled", "cfgRecordingStreamUrl", "cfgRecordingFfmpeg", "cfgRecordingDir",
   "mgtvUrlHint",
   "cfgGithubEnabled", "cfgGithubOwner", "cfgGithubRepo", "cfgGithubBranch", "cfgGithubPath",
   "cfgGithubToken", "githubSecretState",
@@ -315,6 +316,7 @@ function populateSettings(payload) {
   const listen = config.listen || {};
   const storage = config.storage || {};
   const mgtv = config.mgtv || {};
+  const recording = config.recording || {};
   const vote = config.vote || {};
   const github = config.github || {};
   const feishu = config.feishu || {};
@@ -335,6 +337,11 @@ function populateSettings(payload) {
   setField("cfgDedupHot", mgtv.dedup_hot_cache_size);
   setField("cfgDedupMax", mgtv.dedup_max_records);
   setField("cfgDedupDb", mgtv.dedup_db_path);
+
+  setChecked("cfgRecordingEnabled", recording.enabled);
+  setField("cfgRecordingStreamUrl", recording.stream_url);
+  setField("cfgRecordingFfmpeg", recording.ffmpeg_path || "ffmpeg");
+  setField("cfgRecordingDir", recording.directory || "server/data/recordings");
 
   setChecked("cfgGithubEnabled", github.enabled);
   setField("cfgGithubOwner", github.owner);
@@ -398,6 +405,12 @@ function readSettingsForm() {
       dedup_hot_cache_size: Number(settingsEl.cfgDedupHot.value),
       dedup_max_records: Number(settingsEl.cfgDedupMax.value),
       dedup_db_path: settingsEl.cfgDedupDb.value.trim()
+    },
+    recording: {
+      enabled: settingsEl.cfgRecordingEnabled.checked,
+      stream_url: settingsEl.cfgRecordingStreamUrl.value.trim(),
+      ffmpeg_path: settingsEl.cfgRecordingFfmpeg.value.trim(),
+      directory: settingsEl.cfgRecordingDir.value.trim()
     },
     vote: {
       activity: settingsEl.cfgActivity.value.trim(),

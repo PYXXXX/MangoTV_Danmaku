@@ -132,11 +132,26 @@ sudoedit /var/lib/mgtv-danmaku/config.json
 }
 ~~~
 
+如需直播录屏，服务器需要安装 `ffmpeg`，并在运营端“系统配置 → 直播录屏与后处理”或配置文件中启用：
+
+~~~json
+{
+  "recording": {
+    "enabled": true,
+    "stream_url": "https://example.com/live.m3u8",
+    "ffmpeg_path": "ffmpeg",
+    "directory": "/var/lib/mgtv-danmaku/data/recordings"
+  }
+}
+~~~
+
+`recording.stream_url` 必须是 ffmpeg 可直接读取的媒体流地址，例如 HLS/m3u8；普通芒果网页 URL 不一定能录制。录制会随场次开始/结束自动启动和停止。
+
 说明：
 
 - 服务会从 `/z/{activityId}/{cameraId}.html` 解析 cameraId，并请求 `room_id=liveshow-{cameraId}`。
 - 如页面 URL 无法解析，可在 `mgtv` 中显式增加 `"room_id": "liveshow-5366"`。
-- `count_initial_history=false` 表示场次启动时先预热历史列表但不计票，避免把开场前缓存算入本轮。
+- `count_initial_history=false` 表示场次启动时先预热历史列表但不计票，避免把开场前缓存算入本轮；原始观测轨仍会保存首批历史返回，便于后处理复盘。
 - 去重索引主要占磁盘；`dedup_hot_cache_size` 控制内存中的热缓存规模。
 
 ### 3.3 活动、候选人与计票策略
@@ -178,7 +193,9 @@ sudoedit /var/lib/mgtv-danmaku/config.json
 
 - `/var/lib/mgtv-danmaku/data/state.json`：活动、场次、票数和发布状态。
 - `/var/lib/mgtv-danmaku/data/raw_messages.jsonl`：全量去重后的原始弹幕日志。
-- `/var/lib/mgtv-danmaku/data/rounds/*.jsonl`：按场次追加的记录。
+- `/var/lib/mgtv-danmaku/data/rounds/*.jsonl`：按场次追加的处理后弹幕记录，可用于计票审计和清洗。
+- `/var/lib/mgtv-danmaku/data/raw_rounds/*.jsonl`：按场次追加的原始观测弹幕记录，包含 poll 批次、room_id、观测时间和接口原始 item。
+- `/var/lib/mgtv-danmaku/data/recordings/`：直播录屏、标记和截取片段。
 - `/var/lib/mgtv-danmaku/data/fingerprints.sqlite3`：持久化去重索引。
 
 这些文件可能含昵称和原始弹幕，应按内部数据管理要求限制访问和保留周期。
@@ -801,6 +818,8 @@ sudo systemctl restart mgtv-danmaku
 
 - `raw_messages.jsonl`。
 - `rounds/*.jsonl`。
+- `raw_rounds/*.jsonl`。
+- `recordings/*`。
 - `fingerprints.sqlite3`。
 - 清洗输出和备份文件。
 

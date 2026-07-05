@@ -23,6 +23,11 @@ class WebuiSettingsJsTest(unittest.TestCase):
         self.assertIn("const activity = el.activityName.value.trim() || defaultActivityName()", source)
         self.assertIn("downloadPng", source)
         self.assertIn("/result.png?result=", source)
+        self.assertIn("downloadRaw", source)
+        self.assertIn("/raw.jsonl", source)
+        self.assertIn("recordingPlayer", source)
+        self.assertIn("/recording/markers", source)
+        self.assertIn("/recording/clips", source)
         self.assertIn("deleteRound", source)
         self.assertIn("/api/rounds/", source)
         self.assertIn("deleteActivity", source)
@@ -38,6 +43,15 @@ class WebuiSettingsJsTest(unittest.TestCase):
         self.assertIn("renderCurrentPng", source)
         self.assertIn("canvas.toDataURL(\"image/png\")", source)
         self.assertIn("https://pyxxxx.github.io/MangoTV_Danmaku/", source)
+
+    def test_settings_js_keeps_recording_config_fields(self):
+        html = (ROOT / "server" / "webui" / "index.html").read_text(encoding="utf-8")
+        source = (ROOT / "server" / "webui" / "settings.js").read_text(encoding="utf-8")
+        self.assertIn("cfgRecordingEnabled", html)
+        self.assertIn("cfgRecordingStreamUrl", html)
+        self.assertIn("cfgRecordingFfmpeg", source)
+        self.assertIn("recording:", source)
+        self.assertIn("stream_url", source)
 
     def test_feishu_binding_button_click_posts_start_endpoint(self):
         script = textwrap.dedent(

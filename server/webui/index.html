@@ -55,6 +55,7 @@
           </div>
           <div class="button-row lower">
             <a id="downloadSlice" class="link-button disabled" href="#" download>导出切片 JSONL</a>
+            <a id="downloadRaw" class="link-button disabled" href="#" download>导出原始弹幕</a>
             <a id="downloadPng" class="link-button disabled" href="#" download>导出结果 PNG</a>
             <button id="refresh" class="ghost" type="button">刷新</button>
           </div>
@@ -80,6 +81,28 @@
             <input id="preciseFile" type="file" accept=".json,.xml,application/json,application/xml,text/xml" required />
             <button id="uploadPrecise" class="primary" type="submit">上传并发布精确结果</button>
           </form>
+        </section>
+        <section class="panel recording-panel">
+          <div>
+            <h2>直播录屏与后处理</h2>
+            <p id="recordingStatus" class="panel-copy">选择场次后显示录屏状态。录屏需要在系统配置中启用并提供可录制的直播流 URL。</p>
+            <video id="recordingPlayer" class="recording-player" controls preload="metadata"></video>
+          </div>
+          <div class="recording-tools">
+            <label for="markerLabel">当前位置标记</label>
+            <div class="inline-row">
+              <input id="markerLabel" type="text" placeholder="例如：高能片段 / 主持人口播" />
+              <button id="addMarker" class="secondary" type="button" disabled>打标</button>
+            </div>
+            <div id="markerList" class="marker-list">暂无标记</div>
+            <div class="clip-grid">
+              <label>截取开始（秒）<input id="clipStart" type="number" min="0" step="0.1" placeholder="0" /></label>
+              <label>截取结束（秒）<input id="clipEnd" type="number" min="0" step="0.1" placeholder="60" /></label>
+              <label class="wide">片段名称<input id="clipLabel" type="text" placeholder="例如：第一段回放" /></label>
+            </div>
+            <button id="createClip" class="secondary" type="button" disabled>截取片段</button>
+            <div id="clipList" class="marker-list">暂无片段</div>
+          </div>
         </section>
       </section>
       <section id="settingsPanel" class="settings-panel" hidden aria-labelledby="settingsTitle">
@@ -125,6 +148,17 @@
               <label>内存去重缓存<input id="cfgDedupHot" type="number" min="1000" max="10000000" required /></label>
               <label>去重记录上限<input id="cfgDedupMax" type="number" min="10000" max="1000000000" required /></label>
               <label class="wide">SQLite 去重路径（修改后需重启）<input id="cfgDedupDb" type="text" required /></label>
+            </div>
+          </details>
+
+          <details>
+            <summary>直播录屏与后处理</summary>
+            <p class="settings-warning">录屏依赖 ffmpeg。直播流 URL 需要是 ffmpeg 可直接读取的地址，例如 m3u8；普通网页 URL 不一定能录制。配置变更只对下一场生效。</p>
+            <div class="settings-grid">
+              <label class="check-label"><input id="cfgRecordingEnabled" type="checkbox" /> 启用场次自动录屏</label>
+              <label class="wide">录屏直播流 URL<input id="cfgRecordingStreamUrl" type="url" placeholder="例如：https://example.com/live.m3u8" /></label>
+              <label>ffmpeg 路径<input id="cfgRecordingFfmpeg" type="text" placeholder="ffmpeg" /></label>
+              <label>录制目录（修改后需重启）<input id="cfgRecordingDir" type="text" placeholder="server/data/recordings" /></label>
             </div>
           </details>
 
