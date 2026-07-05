@@ -906,6 +906,14 @@ class VoteService:
     def settings_view(self) -> dict[str, Any]:
         return public_settings(self.config, self.settings_runtime())
 
+    def public_state(self) -> dict[str, Any]:
+        state = self.store.public_state()
+        state["defaults"] = {
+            "activity": str((self.config.get("vote") or {}).get("activity") or "未分类活动"),
+            "mgtvUrl": str((self.config.get("mgtv") or {}).get("url") or ""),
+        }
+        return state
+
     async def start_feishu_binding(self, loop: asyncio.AbstractEventLoop) -> dict[str, Any]:
         if self.config_path is None:
             raise RuntimeError("当前服务未指定可写配置文件，无法保存飞书绑定结果")
@@ -1204,7 +1212,7 @@ class VoteService:
 
     def feishu_card(self, open_id: str, notice: str = "") -> dict[str, Any]:
         public_url = str(self.config.get("feishu", {}).get("public_results_url") or "")
-        return build_control_card(self.store.public_state(), self.user_selection.get(open_id), notice, public_url)
+        return build_control_card(self.public_state(), self.user_selection.get(open_id), notice, public_url)
 
     async def handle_feishu_text(
         self,
@@ -1215,7 +1223,7 @@ class VoteService:
         receive_id_type: str,
     ) -> None:
         if not self.feishu.is_allowed(open_id, chat_id):
-            await self.feishu.send_card(receive_id, receive_id_type, build_control_card(self.store.public_state(), notice="无操作权限。"))
+            await self.feishu.send_card(receive_id, receive_id_type, build_control_card(self.public_state(), notice="无操作权限。"))
             return
         normalized = normalize(text)
         if normalized in {"菜单", "卡片", "控制台", "/menu"}:
@@ -1232,13 +1240,28 @@ class VoteService:
             reply = await self.handle_command(normalized, open_id)
         await self.feishu.send_card(receive_id, receive_id_type, self.feishu_card(open_id, reply))
 
-    async def handle_feishu_card_action(self, action: str, open_id: str, chat_id: str, option: str = "") -> dict[str, Any]:
+    def feishu_start_form_defaults(self, form_value: dict[str, Any] | None) -> tuple[str, str, str]:
+        values = form_value if isinstance(form_value, dict) else {}
+        default_activity = str((self.config.get("vote") or {}).get("activity") or "未分类活动")
+        activity = normalize(values.get("activity") or default_activity) or default_activity
+        name = normalize(values.get("round_name") or "") or f"第 {len(self.store.round_order) + 1} 轮"
+        url = normalize(values.get("live_url") or "")
+        return activity, name, url
+
+    async def handle_feishu_card_action(
+        self,
+        action: str,
+        open_id: str,
+        chat_id: str,
+        option: str = "",
+        form_value: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if not self.feishu.is_allowed(open_id, chat_id):
-            return build_control_card(self.store.public_state(), notice="无操作权限。")
+            return build_control_card(self.public_state(), notice="无操作权限。")
         notice = "状态已刷新。"
         try:
             if action == "show_rounds":
-                return build_round_list_card(self.store.public_state(), self.user_selection.get(open_id))
+                return build_round_list_card(self.public_state(), self.user_selection.get(open_id))
             if action == "control":
                 return self.feishu_card(open_id)
             if action == "select_round":
@@ -1254,6 +1277,14 @@ class VoteService:
                 else:
                     name = f"第 {len(self.store.round_order) + 1} 轮"
                     meta = await self.start_round(name)
+                    self.user_selection[open_id] = meta.id
+                    notice = f"已开始：{meta.activity} / {meta.name}"
+            elif action == "start_custom":
+                if self.store.active_round_id:
+                    notice = "已有场次正在采集，请先结束本轮。"
+                else:
+                    activity, name, url = self.feishu_start_form_defaults(form_value)
+                    meta = await self.start_round(name, url or None, activity)
                     self.user_selection[open_id] = meta.id
                     notice = f"已开始：{meta.activity} / {meta.name}"
             elif action == "end_round":
@@ -1635,7 +1666,8 @@ def create_app(service: VoteService) -> web.Application:
         return web.FileResponse(precise_doc, headers={"Content-Type": "text/markdown; charset=utf-8"})
 
     async def results(_: web.Request) -> web.Response:
-        return web.json_response(service.store.public_state(), dumps=lambda data: json.dumps(data, ensure_ascii=False))
+        state = service.public_state() if hasattr(service, "public_state") else service.store.public_state()
+        return web.json_response(state, dumps=lambda data: json.dumps(data, ensure_ascii=False))
 
     async def round_export(request: web.Request) -> web.Response:
         round_id = request.match_info["round_id"]
@@ -1689,13 +1721,18 @@ def create_app(service: VoteService) -> web.Application:
         if header.get("event_type") == "card.action.trigger" or body.get("type") == "card.action.trigger":
             action = event.get("action", {})
             value = action.get("value") or {}
+            action_name = str(value.get("action") or "")
+            if not action_name and action.get("name") == "start_round_submit":
+                action_name = "start_custom"
+            form_value = action.get("form_value") or action.get("formValue")
             operator = event.get("operator") or {}
             context = event.get("context") or {}
             card = await service.handle_feishu_card_action(
-                str(value.get("action") or ""),
+                action_name,
                 str(operator.get("open_id") or ""),
                 str(context.get("open_chat_id") or ""),
                 str(action.get("option") or ""),
+                form_value if isinstance(form_value, dict) else None,
             )
             return web.json_response({"card": {"type": "raw", "data": card}}, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
         if header.get("event_type") not in {"im.message.receive_v1", None}:

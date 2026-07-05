@@ -103,17 +103,28 @@ class FeishuLongConnection:
                 return P2CardActionTriggerResponse({})
             value = getattr(action, "value", None) or {}
             action_name = str(value.get("action") or "")
+            if not action_name and getattr(action, "name", "") == "start_round_submit":
+                action_name = "start_custom"
             option = str(getattr(action, "option", "") or "")
+            form_value = (
+                getattr(action, "form_value", None)
+                or getattr(action, "formValue", None)
+                or getattr(action, "form_value_map", None)
+                or {}
+            )
+            if not isinstance(form_value, dict):
+                form_value = {}
             operator = getattr(event, "operator", None)
             context = getattr(event, "context", None)
             open_id = getattr(operator, "open_id", "") or ""
             chat_id = getattr(context, "open_chat_id", "") or ""
             message_id = getattr(context, "open_message_id", "") or ""
-            dedup_key = f"{message_id}|{open_id}|{action_name}|{option}"
+            form_fingerprint = json.dumps(form_value, ensure_ascii=False, sort_keys=True)
+            dedup_key = f"{message_id}|{open_id}|{action_name}|{option}|{form_fingerprint}"
             if self._is_duplicate(dedup_key):
                 return P2CardActionTriggerResponse({"toast": {"type": "info", "content": "操作已处理"}})
             future = asyncio.run_coroutine_threadsafe(
-                self.service.handle_feishu_card_action(action_name, open_id, chat_id, option),
+                self.service.handle_feishu_card_action(action_name, open_id, chat_id, option, form_value),
                 loop,
             )
             try:

@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 try:
     from server.vote_server import VoteService
@@ -66,5 +67,54 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(public["defaultResultType"], "precise")
                 self.assertEqual(public["results"]["rough"]["voteCounts"], {"c1": 0, "c2": 0})
                 self.assertEqual(public["results"]["precise"]["voteCounts"], {"c1": 8, "c2": 5})
+            finally:
+                service.collector.fingerprints.close()
+
+    async def test_feishu_start_form_uses_submitted_fields_and_config_default(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "mgtv": {
+                    "url": "https://www.mgtv.com/z/1001668/5366.html",
+                    "dedup_db_path": str(Path(temp) / "fingerprints.sqlite3"),
+                },
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {
+                    "enabled": True,
+                    "allowed_open_ids": ["ou_operator"],
+                    "allowed_chat_ids": ["oc_control_room"],
+                },
+            }
+            service = VoteService(config)
+            calls = []
+
+            async def fake_start_round(name, url=None, activity=None):
+                calls.append({"name": name, "url": url, "activity": activity})
+                return SimpleNamespace(id="round-1", name=name, activity=activity)
+
+            service.start_round = fake_start_round
+            try:
+                card = await service.handle_feishu_card_action(
+                    "start_custom",
+                    "ou_operator",
+                    "oc_control_room",
+                    form_value={
+                        "activity": "",
+                        "round_name": "突围赛",
+                        "live_url": "https://www.mgtv.com/z/1001668/5366.html",
+                    },
+                )
+                self.assertEqual(calls, [{
+                    "name": "突围赛",
+                    "url": "https://www.mgtv.com/z/1001668/5366.html",
+                    "activity": "歌手 2026",
+                }])
+                self.assertEqual(service.user_selection["ou_operator"], "round-1")
+                self.assertIn("已开始：歌手 2026 / 突围赛", str(card))
             finally:
                 service.collector.fingerprints.close()

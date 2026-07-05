@@ -15,6 +15,13 @@ class WebuiSettingsJsTest(unittest.TestCase):
         self.assertIn("AbortController", source)
         self.assertIn("parseMgtvLiveUrl", source)
 
+    def test_app_js_prefills_start_activity_from_runtime_defaults(self):
+        source = (ROOT / "server" / "webui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("function defaultActivityName()", source)
+        self.assertIn("state.defaults", source)
+        self.assertIn("el.activityName.value = defaultActivityName()", source)
+        self.assertIn("const activity = el.activityName.value.trim() || defaultActivityName()", source)
+
     def test_feishu_binding_button_click_posts_start_endpoint(self):
         script = textwrap.dedent(
             r"""

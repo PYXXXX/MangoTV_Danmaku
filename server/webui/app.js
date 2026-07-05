@@ -56,6 +56,31 @@ function addLog(text) {
   el.log.textContent = logs.join("\n\n");
 }
 
+function configuredDefaults() {
+  return (state && state.defaults) || {};
+}
+
+function defaultActivityName() {
+  return configuredDefaults().activity || selectedActivity || "未分类活动";
+}
+
+function defaultRoundName() {
+  return "第 " + (((state && state.sessions && state.sessions.length) || 0) + 1) + " 轮";
+}
+
+function applyStartDefaults() {
+  const activity = defaultActivityName();
+  if (el.activityName && document.activeElement !== el.activityName && !el.activityName.value.trim()) {
+    el.activityName.value = activity;
+  }
+  if (el.activityName) {
+    el.activityName.placeholder = activity ? ("默认：" + activity) : "例如：歌手 2026";
+  }
+  if (el.roundName) {
+    el.roundName.placeholder = "默认：" + defaultRoundName();
+  }
+}
+
 function requireLogin(response) {
   if (response.status === 401) {
     const next = window.location.pathname + window.location.search;
@@ -202,6 +227,7 @@ function render() {
     el.downloadSlice.href = "#";
     el.downloadSlice.classList.add("disabled");
   }
+  applyStartDefaults();
 }
 
 async function load() {
@@ -223,11 +249,11 @@ async function load() {
 
 el.startForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const activity = el.activityName.value.trim() || selectedActivity || "未分类活动";
-  const name = el.roundName.value.trim() || ("第 " + (((state && state.sessions && state.sessions.length) || 0) + 1) + " 轮");
+  const activity = el.activityName.value.trim() || defaultActivityName();
+  const name = el.roundName.value.trim() || defaultRoundName();
   const url = el.liveUrl.value.trim();
   await sendCommand("开始 " + activity + "|" + name + (url ? (" " + url) : ""));
-  el.activityName.value = "";
+  el.activityName.value = defaultActivityName();
   el.roundName.value = "";
 });
 

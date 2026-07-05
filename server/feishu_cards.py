@@ -18,6 +18,68 @@ def action_row(*buttons: dict[str, Any]) -> dict[str, Any]:
     return {"tag": "action", "actions": list(buttons)}
 
 
+def text_input(name: str, placeholder: str, default_value: str = "") -> dict[str, Any]:
+    field: dict[str, Any] = {
+        "tag": "input",
+        "name": name,
+        "placeholder": plain_text(placeholder),
+    }
+    if default_value:
+        field["default_value"] = default_value
+    return field
+
+
+def start_round_form(default_activity: str, next_round_name: str, default_url: str = "") -> dict[str, Any]:
+    return {
+        "tag": "form",
+        "name": "start_round_form",
+        "elements": [
+            {"tag": "markdown", "content": "**自定义开始场次**\n活动名已按系统配置预填；场次名和直播 URL 可按需修改。"},
+            {"tag": "markdown", "content": "活动名称"},
+            text_input("activity", "例如：歌手 2026", default_activity),
+            {"tag": "markdown", "content": "场次名称"},
+            text_input("round_name", "留空自动使用下一轮名称", next_round_name),
+            {"tag": "markdown", "content": "直播 URL（可选）"},
+            text_input("live_url", "留空使用系统配置的默认直播 URL", default_url),
+            {
+                "tag": "column_set",
+                "horizontal_align": "left",
+                "columns": [
+                    {
+                        "tag": "column",
+                        "width": "auto",
+                        "vertical_align": "center",
+                        "elements": [
+                            {
+                                "tag": "button",
+                                "text": plain_text("按表单开始采集"),
+                                "type": "primary",
+                                "name": "start_round_submit",
+                                "form_action_type": "submit",
+                                "value": {"action": "start_custom"},
+                            }
+                        ],
+                    },
+                    {
+                        "tag": "column",
+                        "width": "auto",
+                        "vertical_align": "center",
+                        "elements": [
+                            {
+                                "tag": "button",
+                                "text": plain_text("刷新状态"),
+                                "type": "default",
+                                "name": "start_round_refresh",
+                                "value": {"action": "refresh"},
+                            }
+                        ],
+                    },
+                ],
+            },
+        ],
+    }
+
+
 def select_session(state: dict[str, Any], selected_round_id: str | None) -> dict[str, Any] | None:
     sessions = state.get("sessions") or []
     return (
@@ -76,6 +138,10 @@ def build_control_card(
     public_url: str = "",
 ) -> dict[str, Any]:
     session = select_session(state, selected_round_id)
+    defaults = state.get("defaults") if isinstance(state.get("defaults"), dict) else {}
+    default_activity = str(defaults.get("activity") or "未分类活动")
+    default_url = str(defaults.get("mgtvUrl") or "")
+    next_round_name = f"第 {len(state.get('sessions') or []) + 1} 轮"
     active_id = state.get("activeSessionId")
     running = next((item for item in state.get("sessions") or [] if item.get("id") == active_id and item.get("status") == "running"), None)
     selected_is_active = bool(session and running and session.get("id") == running.get("id"))
@@ -98,8 +164,8 @@ def build_control_card(
             "tag": "markdown",
             "content": (
                 "**下一步**\n"
-                "点击“开始默认场次”会使用 WebUI 中配置的默认活动、候选人与直播源，"
-                "自动创建下一轮。需要自定义活动名或候选人时，请先在 WebUI 的系统配置里保存。"
+                f"默认活动：**{default_activity}**\n"
+                "可直接点“开始默认场次”，也可以在下面表单里修改活动名、场次名或直播 URL 后开始。"
             ),
         })
     else:
@@ -125,6 +191,7 @@ def build_control_card(
             button("开始默认场次", "start_default", "primary"),
             button("刷新状态", "refresh", "default"),
         ))
+        elements.append(start_round_form(default_activity, next_round_name, default_url))
     elements.append(action_row(
         button("查看/切换场次", "show_rounds"),
         button("发布粗略结果", "publish_rough", "primary"),

@@ -59,6 +59,24 @@ class FeishuCardTest(unittest.TestCase):
         self.assertIn("120", rendered)
         self.assertIn("打开公开结果页", rendered)
 
+    def test_control_card_renders_start_form_with_runtime_defaults(self):
+        state = {
+            "activeSessionId": None,
+            "defaults": {
+                "activity": "歌手 2026",
+                "mgtvUrl": "https://www.mgtv.com/z/1001668/5366.html",
+            },
+            "sessions": [],
+        }
+        card = build_control_card(state)
+        rendered = str(card)
+        self.assertIn("start_round_form", rendered)
+        self.assertIn("start_round_submit", rendered)
+        self.assertIn("start_custom", rendered)
+        self.assertIn("歌手 2026", rendered)
+        self.assertIn("第 1 轮", rendered)
+        self.assertIn("https://www.mgtv.com/z/1001668/5366.html", rendered)
+
     def test_round_list_uses_select_callback(self):
         card = build_round_list_card(self.state, "r0")
         selector = next(
