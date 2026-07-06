@@ -52,12 +52,16 @@ class WebuiSettingsJsTest(unittest.TestCase):
         self.assertIn("cfgRecordingStreamUrl", html)
         self.assertIn("startMgtvAuth", html)
         self.assertIn("checkMgtvSource", html)
+        self.assertIn("mgtvAuthProtocol", html)
         self.assertIn("cfgRecordingFfmpeg", source)
         self.assertIn("recording:", source)
         self.assertIn("stream_url", source)
         self.assertIn("preferred_quality", source)
         self.assertIn("/api/mgtv/auth/start", source)
         self.assertIn("/api/mgtv/source/check", source)
+        self.assertIn("芒果扫码接口", source)
+        self.assertNotIn("mgtvAuthPlaywright", source)
+        self.assertNotIn("playwrightAvailable", source)
 
     def test_feishu_binding_button_click_posts_start_endpoint(self):
         script = textwrap.dedent(

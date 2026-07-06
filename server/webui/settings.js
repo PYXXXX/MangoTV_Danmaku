@@ -5,7 +5,7 @@ const settingsEl = Object.fromEntries([
   "cfgReconnectSeconds", "cfgCountInitial", "cfgDedupHot", "cfgDedupMax", "cfgDedupDb",
   "cfgRecordingEnabled", "cfgRecordingQuality", "cfgRecordingStreamUrl", "cfgRecordingFfmpeg", "cfgRecordingDir",
   "mgtvAuthStatus", "mgtvAuthMessage", "mgtvAuthCookie", "mgtvAuthUser", "mgtvAuthVip",
-  "mgtvAuthPlaywright", "mgtvAuthQrWrap", "mgtvAuthQr", "mgtvSourceFeedback",
+  "mgtvAuthProtocol", "mgtvAuthQrWrap", "mgtvAuthQr", "mgtvSourceFeedback",
   "startMgtvAuth", "checkMgtvSource",
   "mgtvUrlHint",
   "cfgGithubEnabled", "cfgGithubOwner", "cfgGithubRepo", "cfgGithubBranch", "cfgGithubPath",
@@ -300,8 +300,8 @@ function renderMgtvAuth(payload) {
   settingsEl.mgtvAuthMessage.textContent = (payload && (payload.error || payload.message))
     || "用于检测 1080P/VIP 清晰度并解析可录制播放流。登录态只保存在服务器配置中，不会回显。";
   settingsEl.mgtvAuthCookie.textContent = cookieConfigured ? "已配置" : "未配置";
-  settingsEl.mgtvAuthPlaywright.textContent = payload && typeof payload.playwrightAvailable === "boolean"
-    ? (payload.playwrightAvailable ? "可用" : "未安装")
+  settingsEl.mgtvAuthProtocol.textContent = payload && payload.loginProtocolAvailable
+    ? "芒果扫码接口"
     : "待检测";
   const user = (payload && payload.user) || {};
   settingsEl.mgtvAuthUser.textContent = user.nickname || user.uid || "-";
