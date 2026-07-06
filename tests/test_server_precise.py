@@ -340,6 +340,46 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 service.collector.fingerprints.close()
 
+    async def test_mgtv_source_detection_persists_stream_but_redacts_response(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = {
+                "storage": {"directory": str(root / "data")},
+                "recording": {"enabled": True, "stream_url": "", "preferred_quality": "1080P", "directory": str(root / "recordings")},
+                "mgtv": {"url": "https://www.mgtv.com/z/1001668/5366.html", "dedup_db_path": str(root / "fingerprints.sqlite3")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {"enabled": False},
+            }
+            config_path = root / "config.json"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            service = VoteService(config, config_path=config_path)
+
+            async def fake_detect_stream(page_url, preferred_quality):
+                self.assertEqual(page_url, config["mgtv"]["url"])
+                self.assertEqual(preferred_quality, "1080P")
+                return {
+                    "ok": True,
+                    "streamUrl": "https://secure.example.com/live.m3u8?token=secret",
+                    "actualQuality": "1080P",
+                    "message": "已检测到播放源。",
+                }
+
+            service.mgtv_auth.detect_stream = fake_detect_stream
+            try:
+                result = await service.detect_mgtv_recording_source(quality="1080P")
+                self.assertEqual(result["streamUrl"], "已解析，已隐藏")
+                self.assertNotIn("secret", json.dumps(result))
+                saved = json.loads(config_path.read_text(encoding="utf-8"))
+                self.assertEqual(saved["recording"]["stream_url"], "https://secure.example.com/live.m3u8?token=secret")
+                self.assertEqual(service.recorder.config["stream_url"], "https://secure.example.com/live.m3u8?token=secret")
+            finally:
+                service.collector.fingerprints.close()
+
     async def test_feishu_delete_round_action_removes_selected_round(self):
         with tempfile.TemporaryDirectory() as temp:
             config = {

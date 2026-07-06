@@ -202,13 +202,26 @@ def build_settings_update(
         target = dict(updated.get("recording") or {})
         target.update({
             "enabled": as_bool(source.get("enabled")),
-            "stream_url": as_url(source.get("stream_url"), "录屏直播流 URL", required=False),
+            "preferred_quality": str(source.get("preferred_quality") or "auto").strip() or "auto",
             "ffmpeg_path": str(source.get("ffmpeg_path") or "").strip(),
             "directory": str(source.get("directory") or "").strip(),
         })
-        if target["enabled"] and not target["stream_url"]:
-            warnings.append("已启用录屏但未配置直播流 URL；开始场次时会跳过录制")
+        supplied_stream_url = str(source.get("stream_url") or "").strip()
+        if supplied_stream_url:
+            target["stream_url"] = as_url(supplied_stream_url, "录屏直播流 URL", required=False)
+        if target["enabled"] and not target.get("stream_url"):
+            warnings.append("已启用录屏但未配置直播流 URL；开始场次时会尝试自动检测播放源")
         updated["recording"] = target
+
+    if "mgtv_auth" in payload:
+        source = payload.get("mgtv_auth")
+        if not isinstance(source, dict):
+            raise SettingsValidationError("mgtv_auth 配置格式无效")
+        target = dict(updated.get("mgtv_auth") or {})
+        target.update({
+            "enabled": as_bool(source.get("enabled", True)),
+        })
+        updated["mgtv_auth"] = target
 
     if "vote" in payload:
         source = payload.get("vote")
@@ -345,6 +358,20 @@ def public_settings(config: dict[str, Any], runtime: dict[str, Any]) -> dict[str
     feishu["app_secret_configured"] = has_real_value(original_feishu.get("app_secret"))
     feishu["verification_token_configured"] = has_real_value(original_feishu.get("verification_token"))
     result["feishu"] = feishu
+
+    recording = dict(result.get("recording") or {})
+    original_recording = config.get("recording") or {}
+    recording["stream_url"] = ""
+    recording["stream_url_configured"] = has_real_value(original_recording.get("stream_url"))
+    result["recording"] = recording
+
+    mgtv_auth = dict(result.get("mgtv_auth") or {})
+    original_mgtv_auth = config.get("mgtv_auth") or {}
+    mgtv_auth["cookies"] = []
+    mgtv_auth["cookie_header"] = ""
+    mgtv_auth["user_info"] = {}
+    mgtv_auth["cookie_configured"] = has_real_value(original_mgtv_auth.get("cookie_header")) or bool(original_mgtv_auth.get("cookies"))
+    result["mgtv_auth"] = mgtv_auth
 
     auth = dict(result.get("operator_auth") or {})
     auth.pop("password_hash", None)

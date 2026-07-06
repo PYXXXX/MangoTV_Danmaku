@@ -90,6 +90,9 @@ button:disabled:active { transform: none; }
 .feishu-binding-pending .doc-link { margin: 7px 0; }
 .feishu-binding-actions { display: flex; justify-content: flex-end; }
 .feishu-binding-actions button { min-width: 150px; }
+.mgtv-qr-wrap { display: grid; gap: 8px; justify-items: center; padding: 12px; border: 1px solid rgba(255, 122, 26, .22); border-radius: 12px; background: rgba(255, 122, 26, .07); }
+.mgtv-qr-wrap[hidden] { display: none; }
+.mgtv-qr-wrap img { width: min(100%, 360px); max-height: 300px; object-fit: contain; border-radius: 10px; background: #fff; }
 .field-label { color: #777a81; font-size: 11px; }
 .field-hint { display: block; margin-top: 2px; color: #666970; font-size: 11px; line-height: 1.5; }
 .field-hint.success { color: #8fdbaf; }

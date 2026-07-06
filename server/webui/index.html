@@ -154,8 +154,41 @@
           <details>
             <summary>直播录屏与后处理</summary>
             <p class="settings-warning">录屏依赖 ffmpeg。直播流 URL 需要是 ffmpeg 可直接读取的地址，例如 m3u8；普通网页 URL 不一定能录制。配置变更只对下一场生效。</p>
+            <div class="feishu-binding-card">
+              <div>
+                <div class="feishu-binding-head">
+                  <h3>芒果 TV 扫码登录</h3>
+                  <span id="mgtvAuthStatus" class="update-status">未读取</span>
+                </div>
+                <p id="mgtvAuthMessage" class="panel-copy">用于检测 1080P/VIP 清晰度并解析可录制播放流。登录态只保存在服务器配置中，不会回显。</p>
+              </div>
+              <div class="feishu-binding-meta">
+                <div><span>登录态</span><code id="mgtvAuthCookie">未配置</code></div>
+                <div><span>账号</span><code id="mgtvAuthUser">-</code></div>
+                <div><span>VIP</span><code id="mgtvAuthVip">未知</code></div>
+                <div><span>检测能力</span><code id="mgtvAuthPlaywright">未检测</code></div>
+              </div>
+              <div id="mgtvAuthQrWrap" class="mgtv-qr-wrap" hidden>
+                <img id="mgtvAuthQr" alt="芒果 TV 登录二维码截图" />
+                <p class="panel-copy">请用芒果 TV App 扫码并确认登录；页面会自动刷新状态。</p>
+              </div>
+              <p id="mgtvSourceFeedback" class="panel-copy">检测播放源会尝试打开直播页并捕获可直录 m3u8；若返回需要 VIP/DRM/接口变化，请以提示为准。</p>
+              <div class="feishu-binding-actions">
+                <button id="startMgtvAuth" class="secondary" type="button">发起扫码登录</button>
+                <button id="checkMgtvSource" class="secondary" type="button">检测播放源</button>
+              </div>
+            </div>
             <div class="settings-grid">
               <label class="check-label"><input id="cfgRecordingEnabled" type="checkbox" /> 启用场次自动录屏</label>
+              <label>默认清晰度
+                <select id="cfgRecordingQuality">
+                  <option value="auto">自动最高可用</option>
+                  <option value="1080P">1080P</option>
+                  <option value="720P">720P</option>
+                  <option value="540P">540P</option>
+                  <option value="480P">480P</option>
+                </select>
+              </label>
               <label class="wide">录屏直播流 URL<input id="cfgRecordingStreamUrl" type="url" placeholder="例如：https://example.com/live.m3u8" /></label>
               <label>ffmpeg 路径<input id="cfgRecordingFfmpeg" type="text" placeholder="ffmpeg" /></label>
               <label>录制目录（修改后需重启）<input id="cfgRecordingDir" type="text" placeholder="server/data/recordings" /></label>

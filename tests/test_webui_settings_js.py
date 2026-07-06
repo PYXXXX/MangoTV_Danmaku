@@ -48,10 +48,16 @@ class WebuiSettingsJsTest(unittest.TestCase):
         html = (ROOT / "server" / "webui" / "index.html").read_text(encoding="utf-8")
         source = (ROOT / "server" / "webui" / "settings.js").read_text(encoding="utf-8")
         self.assertIn("cfgRecordingEnabled", html)
+        self.assertIn("cfgRecordingQuality", html)
         self.assertIn("cfgRecordingStreamUrl", html)
+        self.assertIn("startMgtvAuth", html)
+        self.assertIn("checkMgtvSource", html)
         self.assertIn("cfgRecordingFfmpeg", source)
         self.assertIn("recording:", source)
         self.assertIn("stream_url", source)
+        self.assertIn("preferred_quality", source)
+        self.assertIn("/api/mgtv/auth/start", source)
+        self.assertIn("/api/mgtv/source/check", source)
 
     def test_feishu_binding_button_click_posts_start_endpoint(self):
         script = textwrap.dedent(

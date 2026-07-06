@@ -77,7 +77,10 @@ cd /opt/MangoTV_Danmaku
 sudo -u mgtv-vote python3 -m venv .venv
 sudo -u mgtv-vote .venv/bin/pip install --upgrade pip
 sudo -u mgtv-vote .venv/bin/pip install -r requirements-server.txt
+sudo -u mgtv-vote .venv/bin/python -m playwright install chromium
 ~~~
+
+扫码登录芒果 TV 和自动检测录屏播放源依赖 Playwright Chromium。若系统缺少浏览器运行库，先按 Playwright 提示安装依赖；在 Debian/Ubuntu 上通常可执行 `sudo .venv/bin/python -m playwright install-deps chromium`，再重新执行上面的 `install chromium`。
 
 创建独立于源码目录的可写配置和数据目录：
 
@@ -139,13 +142,22 @@ sudoedit /var/lib/mgtv-danmaku/config.json
   "recording": {
     "enabled": true,
     "stream_url": "https://example.com/live.m3u8",
+    "preferred_quality": "1080P",
     "ffmpeg_path": "ffmpeg",
     "directory": "/var/lib/mgtv-danmaku/data/recordings"
+  },
+  "mgtv_auth": {
+    "enabled": true,
+    "cookies": [],
+    "cookie_header": "",
+    "user_info": {}
   }
 }
 ~~~
 
-`recording.stream_url` 必须是 ffmpeg 可直接读取的媒体流地址，例如 HLS/m3u8；普通芒果网页 URL 不一定能录制。录制会随场次开始/结束自动启动和停止。
+`recording.stream_url` 必须是 ffmpeg 可直接读取的媒体流地址，例如 HLS/m3u8；普通芒果网页 URL 不一定能录制。推荐运营在 WebUI「系统配置 → 直播录屏与后处理」里点击“发起扫码登录”，用有对应观看权益的芒果 TV 账号扫码后，再点击“检测播放源”。系统会按 `recording.preferred_quality` 尝试解析 1080P/720P 等清晰度并保存播放源，敏感 cookie 与 m3u8 URL 不会在页面回显。
+
+注意：该功能只使用账号自身可观看的清晰度，不绕过登录、VIP、DRM 或平台限制。如果页面提示需要 VIP、清晰度不可用、DRM 保护或芒果 TV 前端接口变化，系统会提示检测失败；此时需要更换有权限账号、降低清晰度，或手动填入合法可录制的 m3u8。
 
 说明：
 

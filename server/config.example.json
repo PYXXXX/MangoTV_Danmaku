@@ -31,8 +31,15 @@
   "recording": {
     "enabled": false,
     "stream_url": "",
+    "preferred_quality": "1080P",
     "ffmpeg_path": "ffmpeg",
     "directory": "server/data/recordings"
+  },
+  "mgtv_auth": {
+    "enabled": true,
+    "cookies": [],
+    "cookie_header": "",
+    "user_info": {}
   },
   "github": {
     "enabled": false,

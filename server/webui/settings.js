@@ -3,7 +3,10 @@ const settingsEl = Object.fromEntries([
   "cfgActivity", "cfgPolicy", "cfgCandidates",
   "cfgLiveUrl", "cfgRoomId", "cfgCameraId", "cfgHistoryApi", "cfgFlag", "cfgPollSeconds",
   "cfgReconnectSeconds", "cfgCountInitial", "cfgDedupHot", "cfgDedupMax", "cfgDedupDb",
-  "cfgRecordingEnabled", "cfgRecordingStreamUrl", "cfgRecordingFfmpeg", "cfgRecordingDir",
+  "cfgRecordingEnabled", "cfgRecordingQuality", "cfgRecordingStreamUrl", "cfgRecordingFfmpeg", "cfgRecordingDir",
+  "mgtvAuthStatus", "mgtvAuthMessage", "mgtvAuthCookie", "mgtvAuthUser", "mgtvAuthVip",
+  "mgtvAuthPlaywright", "mgtvAuthQrWrap", "mgtvAuthQr", "mgtvSourceFeedback",
+  "startMgtvAuth", "checkMgtvSource",
   "mgtvUrlHint",
   "cfgGithubEnabled", "cfgGithubOwner", "cfgGithubRepo", "cfgGithubBranch", "cfgGithubPath",
   "cfgGithubToken", "githubSecretState",
@@ -24,6 +27,8 @@ let settingsSnapshot = null;
 let updatePollTimer = null;
 let feishuBindingPollTimer = null;
 let feishuBindingLastStatus = "";
+let mgtvAuthPollTimer = null;
+let mgtvAuthLastStatus = "";
 
 function setField(id, value) {
   settingsEl[id].value = value == null ? "" : String(value);
@@ -274,6 +279,136 @@ async function loadFeishuBinding(showErrors = true) {
   return payload;
 }
 
+function mgtvAuthStatusText(status) {
+  return {
+    idle: "未登录",
+    pending: "等待扫码",
+    bound: "已登录",
+    failed: "登录失败",
+    expired: "已过期"
+  }[status] || "未读取";
+}
+
+function renderMgtvAuth(payload) {
+  const status = (payload && payload.status) || "idle";
+  const cookieConfigured = Boolean(payload && payload.cookieConfigured);
+  const className = cookieConfigured || status === "bound"
+    ? "ready"
+    : (status === "pending" ? "available" : (status === "failed" || status === "expired" ? "error" : ""));
+  settingsEl.mgtvAuthStatus.className = "update-status " + className;
+  settingsEl.mgtvAuthStatus.textContent = cookieConfigured && status !== "pending" ? "已保存登录态" : mgtvAuthStatusText(status);
+  settingsEl.mgtvAuthMessage.textContent = (payload && (payload.error || payload.message))
+    || "用于检测 1080P/VIP 清晰度并解析可录制播放流。登录态只保存在服务器配置中，不会回显。";
+  settingsEl.mgtvAuthCookie.textContent = cookieConfigured ? "已配置" : "未配置";
+  settingsEl.mgtvAuthPlaywright.textContent = payload && typeof payload.playwrightAvailable === "boolean"
+    ? (payload.playwrightAvailable ? "可用" : "未安装")
+    : "待检测";
+  const user = (payload && payload.user) || {};
+  settingsEl.mgtvAuthUser.textContent = user.nickname || user.uid || "-";
+  settingsEl.mgtvAuthVip.textContent = user.isVip ? ("是" + (user.vipType ? " · " + user.vipType : "")) : (cookieConfigured ? "否/未知" : "未知");
+  const pending = status === "pending" && payload && payload.screenshot;
+  settingsEl.mgtvAuthQrWrap.hidden = !pending;
+  if (pending) {
+    settingsEl.mgtvAuthQr.src = payload.screenshot;
+  } else if (typeof settingsEl.mgtvAuthQr.removeAttribute === "function") {
+    settingsEl.mgtvAuthQr.removeAttribute("src");
+  } else {
+    settingsEl.mgtvAuthQr.src = "";
+  }
+  settingsEl.startMgtvAuth.disabled = status === "pending";
+  settingsEl.startMgtvAuth.textContent = status === "pending" ? "等待扫码…" : "发起扫码登录";
+}
+
+function stopMgtvAuthPolling() {
+  if (mgtvAuthPollTimer) {
+    clearInterval(mgtvAuthPollTimer);
+    mgtvAuthPollTimer = null;
+  }
+}
+
+function startMgtvAuthPolling() {
+  stopMgtvAuthPolling();
+  mgtvAuthPollTimer = setInterval(() => {
+    loadMgtvAuth(false).catch((error) => {
+      settingsEl.mgtvAuthStatus.className = "update-status error";
+      settingsEl.mgtvAuthStatus.textContent = "读取失败";
+      settingsEl.mgtvAuthMessage.textContent = error.message;
+      stopMgtvAuthPolling();
+    });
+  }, 2000);
+}
+
+async function loadMgtvAuth(showErrors = true) {
+  const response = await fetch("/api/mgtv/auth?t=" + Date.now(), { cache: "no-store" });
+  requireLogin(response);
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || "芒果 TV 登录状态读取失败");
+  const previous = mgtvAuthLastStatus;
+  mgtvAuthLastStatus = payload.status || "";
+  renderMgtvAuth(payload);
+  if (payload.status === "pending") {
+    startMgtvAuthPolling();
+  } else {
+    stopMgtvAuthPolling();
+    if (payload.status === "bound" && previous === "pending") {
+      await loadSettings(false);
+    }
+  }
+  return payload;
+}
+
+async function startMgtvAuth() {
+  if (settingsEl.startMgtvAuth.disabled) return;
+  settingsEl.startMgtvAuth.disabled = true;
+  settingsEl.mgtvAuthStatus.className = "update-status available";
+  settingsEl.mgtvAuthStatus.textContent = "启动中";
+  settingsEl.mgtvAuthMessage.textContent = "正在打开芒果 TV 登录页并生成二维码截图……";
+  try {
+    const response = await fetch("/api/mgtv/auth/start", { method: "POST" });
+    requireLogin(response);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "芒果 TV 扫码登录发起失败");
+    renderMgtvAuth(payload);
+    if (payload.status === "pending") startMgtvAuthPolling();
+  } catch (error) {
+    settingsEl.mgtvAuthStatus.className = "update-status error";
+    settingsEl.mgtvAuthStatus.textContent = "发起失败";
+    settingsEl.mgtvAuthMessage.textContent = error.message;
+    settingsEl.startMgtvAuth.disabled = false;
+  }
+}
+
+async function checkMgtvSource() {
+  if (settingsEl.checkMgtvSource.disabled) return;
+  settingsEl.checkMgtvSource.disabled = true;
+  settingsEl.mgtvSourceFeedback.className = "panel-copy";
+  settingsEl.mgtvSourceFeedback.textContent = "正在打开直播页检测播放源，通常需要 10～30 秒……";
+  try {
+    const response = await fetch("/api/mgtv/source/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url: settingsEl.cfgLiveUrl.value.trim(),
+        quality: settingsEl.cfgRecordingQuality.value
+      })
+    });
+    requireLogin(response);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "播放源检测失败");
+    settingsEl.mgtvSourceFeedback.className = "panel-copy success";
+    settingsEl.mgtvSourceFeedback.textContent = (payload.message || "播放源检测成功。")
+      + " 已保存为服务器录屏源，敏感 m3u8 不会在页面回显。"
+      + (payload.actualQuality ? " 实际清晰度：" + payload.actualQuality + "。" : "");
+    await loadSettings(false);
+    await loadMgtvAuth(false);
+  } catch (error) {
+    settingsEl.mgtvSourceFeedback.className = "panel-copy error";
+    settingsEl.mgtvSourceFeedback.textContent = error.message;
+  } finally {
+    settingsEl.checkMgtvSource.disabled = false;
+  }
+}
+
 function stopUpdatePolling() {
   if (updatePollTimer) {
     clearInterval(updatePollTimer);
@@ -317,6 +452,7 @@ function populateSettings(payload) {
   const storage = config.storage || {};
   const mgtv = config.mgtv || {};
   const recording = config.recording || {};
+  const mgtvAuth = config.mgtv_auth || {};
   const vote = config.vote || {};
   const github = config.github || {};
   const feishu = config.feishu || {};
@@ -339,9 +475,18 @@ function populateSettings(payload) {
   setField("cfgDedupDb", mgtv.dedup_db_path);
 
   setChecked("cfgRecordingEnabled", recording.enabled);
-  setField("cfgRecordingStreamUrl", recording.stream_url);
+  setField("cfgRecordingQuality", recording.preferred_quality || "auto");
+  setField("cfgRecordingStreamUrl", "");
+  settingsEl.cfgRecordingStreamUrl.placeholder = recording.stream_url_configured
+    ? "已配置，留空保留；也可粘贴新的 m3u8 覆盖"
+    : "可留空，由扫码登录后自动检测";
   setField("cfgRecordingFfmpeg", recording.ffmpeg_path || "ffmpeg");
   setField("cfgRecordingDir", recording.directory || "server/data/recordings");
+  renderMgtvAuth({
+    status: "idle",
+    cookieConfigured: Boolean(mgtvAuth.cookie_configured),
+    user: mgtvAuth.user_info || {},
+  });
 
   setChecked("cfgGithubEnabled", github.enabled);
   setField("cfgGithubOwner", github.owner);
@@ -409,8 +554,12 @@ function readSettingsForm() {
     recording: {
       enabled: settingsEl.cfgRecordingEnabled.checked,
       stream_url: settingsEl.cfgRecordingStreamUrl.value.trim(),
+      preferred_quality: settingsEl.cfgRecordingQuality.value,
       ffmpeg_path: settingsEl.cfgRecordingFfmpeg.value.trim(),
       directory: settingsEl.cfgRecordingDir.value.trim()
+    },
+    mgtv_auth: {
+      enabled: true
     },
     vote: {
       activity: settingsEl.cfgActivity.value.trim(),
@@ -559,6 +708,7 @@ settingsEl.settingsToggle.addEventListener("click", async () => {
   settingsEl.settingsPanel.scrollIntoView({ behavior: "smooth", block: "start" });
   try {
     await loadSettings();
+    await loadMgtvAuth(false);
     await loadFeishuBinding(false);
     checkUpdate(false).catch(() => {});
   } catch (error) {
@@ -570,6 +720,7 @@ settingsEl.settingsToggle.addEventListener("click", async () => {
 settingsEl.settingsClose.addEventListener("click", () => {
   settingsEl.settingsPanel.hidden = true;
   stopFeishuBindingPolling();
+  stopMgtvAuthPolling();
 });
 
 settingsEl.cfgLiveUrl.addEventListener("input", () => {
@@ -647,8 +798,17 @@ settingsEl.applyUpdate.addEventListener("click", () => {
   applyUpdate();
 });
 
+settingsEl.startMgtvAuth.addEventListener("click", () => {
+  startMgtvAuth();
+});
+
+settingsEl.checkMgtvSource.addEventListener("click", () => {
+  checkMgtvSource();
+});
+
 loadSettings(false).catch(() => {
   settingsEl.configStatus.className = "config-status";
   settingsEl.configStatus.textContent = "配置读取失败";
 });
+loadMgtvAuth(false).catch(() => {});
 loadFeishuBinding(false).catch(() => {});

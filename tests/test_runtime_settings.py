@@ -23,6 +23,19 @@ def base_config(root: Path) -> dict:
     return {
         "listen": {"host": "127.0.0.1", "port": 8080, "public_base_url": "https://example.com"},
         "storage": {"directory": str(root / "data")},
+        "recording": {
+            "enabled": False,
+            "stream_url": "https://secure.example.com/live.m3u8?token=secret",
+            "preferred_quality": "1080P",
+            "ffmpeg_path": "ffmpeg",
+            "directory": str(root / "recordings"),
+        },
+        "mgtv_auth": {
+            "enabled": True,
+            "cookies": [{"name": "HDCN", "value": "secret-cookie", "domain": ".mgtv.com"}],
+            "cookie_header": "HDCN=secret-cookie; uuid=secret-uuid",
+            "user_info": {"data": {"uid": "123", "nickname": "测试用户", "phone": "secret-phone"}},
+        },
         "mgtv": {
             "url": "https://www.mgtv.com/z/1/2.html",
             "history_api": "https://lb.bz.mgtv.com/get_history",
@@ -80,8 +93,14 @@ class RuntimeSettingsTest(unittest.TestCase):
             self.assertNotIn("github_pat_real_secret", rendered)
             self.assertNotIn("feishu-secret", rendered)
             self.assertNotIn("verify-secret", rendered)
+            self.assertNotIn("secret-cookie", rendered)
+            self.assertNotIn("secret-uuid", rendered)
+            self.assertNotIn("secure.example.com", rendered)
+            self.assertNotIn("secret-phone", rendered)
             self.assertTrue(view["config"]["github"]["token_configured"])
             self.assertTrue(view["config"]["feishu"]["app_secret_configured"])
+            self.assertTrue(view["config"]["recording"]["stream_url_configured"])
+            self.assertTrue(view["config"]["mgtv_auth"]["cookie_configured"])
 
     def test_secret_fields_are_preserved_when_web_form_leaves_them_blank(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -112,6 +131,27 @@ class RuntimeSettingsTest(unittest.TestCase):
             )
             self.assertEqual(update.config["github"]["token"], config["github"]["token"])
             self.assertEqual(update.config["feishu"]["app_secret"], config["feishu"]["app_secret"])
+
+    def test_recording_stream_url_is_preserved_when_web_form_leaves_it_blank(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = base_config(Path(temp))
+            update = build_settings_update(
+                config,
+                {
+                    "recording": {
+                        "enabled": True,
+                        "stream_url": "",
+                        "preferred_quality": "720P",
+                        "ffmpeg_path": "ffmpeg",
+                        "directory": config["recording"]["directory"],
+                    },
+                    "mgtv_auth": {"enabled": True},
+                },
+                active_round=False,
+            )
+            self.assertEqual(update.config["recording"]["stream_url"], config["recording"]["stream_url"])
+            self.assertEqual(update.config["recording"]["preferred_quality"], "720P")
+            self.assertEqual(update.config["mgtv_auth"]["cookie_header"], config["mgtv_auth"]["cookie_header"])
 
     def test_active_round_warns_but_accepts_next_round_defaults(self):
         with tempfile.TemporaryDirectory() as temp:

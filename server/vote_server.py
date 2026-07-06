@@ -37,6 +37,7 @@ try:
     from server.precise_results import parse_precise_result, validate_precise_result
     from server.result_image import render_result_png
     from server.feishu_cards import build_control_card, build_round_list_card
+    from server.mgtv_auth import MgtvAuthManager
     from server.operator_auth import OperatorAuth, safe_next_url
     from server.runtime_settings import (
         SettingsValidationError,
@@ -51,6 +52,7 @@ except ModuleNotFoundError:  # Support `python server/vote_server.py`.
     from precise_results import parse_precise_result, validate_precise_result
     from result_image import render_result_png
     from feishu_cards import build_control_card, build_round_list_card
+    from mgtv_auth import MgtvAuthManager
     from operator_auth import OperatorAuth, safe_next_url
     from runtime_settings import SettingsValidationError, build_settings_update, has_real_value, public_settings, save_config_atomic
     from updater import GitUpdater, UpdateError
@@ -1200,6 +1202,7 @@ class VoteService:
         self.publisher = GithubPublisher(config.get("github", {}), self.store)
         self.collector = MgtvCollector(config.get("mgtv", {}), self.engine)
         self.recorder = RecordingManager(config.get("recording", {}), self.store.directory)
+        self.mgtv_auth = MgtvAuthManager(config.get("mgtv_auth", {}))
         self.feishu = FeishuBot(config.get("feishu", {}))
         self.operator_auth = OperatorAuth(config.get("operator_auth") or {})
         self.default_candidates = candidates_from_config(config.get("vote", {}).get("candidates", []))
@@ -1336,6 +1339,50 @@ class VoteService:
 
     def export_round_result_png(self, round_id: str, result_type: str | None = None) -> tuple[bytes, str]:
         return render_result_png(self.public_state(), round_id, result_type)
+
+    async def _save_mgtv_login(self, cookies: list[dict[str, Any]], cookie_header: str, user_info: dict[str, Any]) -> None:
+        if self.config_path is None:
+            return
+        async with self.config_lock:
+            target = copy.deepcopy(self.config)
+            auth = dict(target.get("mgtv_auth") or {})
+            auth.update({
+                "cookies": cookies,
+                "cookie_header": cookie_header,
+                "user_info": user_info,
+                "bound_at": now_iso(),
+            })
+            target["mgtv_auth"] = auth
+            save_config_atomic(self.config_path, target)
+            self.config = target
+            self.mgtv_auth.config = auth
+
+    async def start_mgtv_qr_login(self) -> dict[str, Any]:
+        return await self.mgtv_auth.start_qr_login(self._save_mgtv_login)
+
+    async def detect_mgtv_recording_source(self, url: str | None = None, quality: str | None = None) -> dict[str, Any]:
+        recording = self.config.get("recording") or {}
+        page_url = url or self.config.get("mgtv", {}).get("url") or ""
+        preferred = quality or str(recording.get("preferred_quality") or "auto")
+        if not page_url:
+            return {"ok": False, "error": "未配置芒果直播页 URL", "quality": preferred}
+        result = await self.mgtv_auth.detect_stream(page_url, preferred)
+        if result.get("ok") and result.get("streamUrl"):
+            async with self.config_lock:
+                target = copy.deepcopy(self.config)
+                rec = dict(target.get("recording") or {})
+                rec["stream_url"] = result["streamUrl"]
+                rec["last_detected_quality"] = result.get("actualQuality") or result.get("quality") or ""
+                rec["last_detected_at"] = now_iso()
+                target["recording"] = rec
+                if self.config_path is not None:
+                    save_config_atomic(self.config_path, target)
+                self.config = target
+                self.recorder.config = rec
+        redacted = dict(result)
+        if redacted.get("streamUrl"):
+            redacted["streamUrl"] = "已解析，已隐藏"
+        return redacted
 
     async def start_feishu_binding(self, loop: asyncio.AbstractEventLoop) -> dict[str, Any]:
         if self.config_path is None:
@@ -1499,6 +1546,7 @@ class VoteService:
                 runtime_mgtv["dedup_db_path"] = old_db_path
             self.collector.apply_config(runtime_mgtv)
             self.recorder.config = new_config.get("recording", {}) or {}
+            self.mgtv_auth.config = new_config.get("mgtv_auth", {}) or {}
 
             old_feishu = old_config.get("feishu") or {}
             new_feishu = new_config.get("feishu") or {}
@@ -1770,7 +1818,13 @@ class VoteService:
         url = url or self.config.get("mgtv", {}).get("url")
         activity = activity or self.config.get("vote", {}).get("activity") or "未分类活动"
         meta = await self.store.create_round(activity, name, url, self.default_candidates, self.default_policy)
-        await self.recorder.start(meta, str((self.config.get("recording") or {}).get("stream_url") or ""))
+        recording = self.config.get("recording") or {}
+        recording_source = str(recording.get("stream_url") or "")
+        if recording.get("enabled") and not recording_source:
+            detected = await self.detect_mgtv_recording_source(url, str(recording.get("preferred_quality") or "auto"))
+            if detected.get("ok"):
+                recording_source = str((self.config.get("recording") or {}).get("stream_url") or "")
+        await self.recorder.start(meta, recording_source)
         await self.collector.start(meta.id, url)
         return meta
 
@@ -2163,6 +2217,26 @@ def create_app(service: VoteService) -> web.Application:
         state = service.public_state() if hasattr(service, "public_state") else service.store.public_state()
         return web.json_response(state, dumps=lambda data: json.dumps(data, ensure_ascii=False))
 
+    async def mgtv_auth_status(_: web.Request) -> web.Response:
+        return web.json_response(
+            service.mgtv_auth.public_status(),
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def start_mgtv_auth(_: web.Request) -> web.Response:
+        result = await service.start_mgtv_qr_login()
+        return web.json_response(result, dumps=lambda payload: json.dumps(payload, ensure_ascii=False), headers={"Cache-Control": "no-store"})
+
+    async def check_mgtv_source(request: web.Request) -> web.Response:
+        data = await request.json()
+        result = await service.detect_mgtv_recording_source(
+            str(data.get("url") or ""),
+            str(data.get("quality") or ""),
+        )
+        status = 200 if result.get("ok") else 409
+        return web.json_response(result, status=status, dumps=lambda payload: json.dumps(payload, ensure_ascii=False), headers={"Cache-Control": "no-store"})
+
     async def round_export(request: web.Request) -> web.Response:
         round_id = request.match_info["round_id"]
         try:
@@ -2406,6 +2480,9 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_get("/api/results.json", results)
     app.router.add_get("/api/settings", get_settings)
     app.router.add_post("/api/settings", update_settings)
+    app.router.add_get("/api/mgtv/auth", mgtv_auth_status)
+    app.router.add_post("/api/mgtv/auth/start", start_mgtv_auth)
+    app.router.add_post("/api/mgtv/source/check", check_mgtv_source)
     app.router.add_get("/api/feishu/binding", get_feishu_binding)
     app.router.add_post("/api/feishu/binding/start", start_feishu_binding)
     app.router.add_post("/api/restart", restart_service)
