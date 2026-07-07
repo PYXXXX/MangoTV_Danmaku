@@ -102,6 +102,37 @@ body::before {
   color: rgba(162, 169, 179, .72);
 }
 
+.ops-mini-button {
+  display: inline-flex;
+  min-height: 2.25rem;
+  align-items: center;
+  gap: .35rem;
+  border-radius: .75rem;
+  border: 1px solid rgba(255, 255, 255, .12);
+  background: rgba(255, 255, 255, .04);
+  padding: .45rem .7rem;
+  color: #dbe4ef;
+  font-size: .75rem;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+  transition: background .18s ease, border-color .18s ease, transform .18s ease;
+}
+
+.ops-mini-button:hover {
+  border-color: rgba(255, 134, 31, .34);
+  background: rgba(255, 134, 31, .10);
+}
+
+.ops-mini-button:active {
+  transform: translateY(1px) scale(.99);
+}
+
+.ops-mini-button:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+
 .metric-ring {
   background:
     radial-gradient(circle at center, #101821 0 48%, transparent 49%),

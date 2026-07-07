@@ -1,16 +1,28 @@
 import {
   ArrowSquareOut,
   BellRinging,
+  BookmarkSimple,
   Broadcast,
+  CaretDown,
   ChatCircleDots,
   CheckCircle,
+  Clock,
   Database,
+  DotsThree,
+  DownloadSimple,
   Gauge,
+  GlobeHemisphereWest,
   Lightning,
+  LinkSimple,
+  MonitorPlay,
+  PaperPlaneTilt,
   Play,
   Pulse,
+  Robot,
+  Scissors,
   ShieldCheck,
   Stop,
+  UploadSimple,
   VideoCamera,
   WarningCircle
 } from "@phosphor-icons/react";
@@ -501,11 +513,13 @@ function OperationsPage({ rounds, activeRound, defaultActivity }: { rounds: Roun
   const result = selectedResult(activeRound, resultType);
   const rows = rankingRows(activeRound, result.data);
   const total = rows.reduce((sum, row) => sum + row.votes, 0);
+  const reviewCount = Number(result.data.reviewCount || activeRound?.reviewCount || 0);
   const [roundForm, setRoundForm] = useState({
     activity: defaultActivity || activeRound?.activity || "歌手 2026",
     name: "",
     url: ""
   });
+  const [opsMode, setOpsMode] = useState<"realtime" | "post">("realtime");
   const [renameValue, setRenameValue] = useState("");
   const [selectedRecordingId, setSelectedRecordingId] = useState(activeRound?.id || rounds.find((item) => item.recording)?.id || "");
   const [markerForm, setMarkerForm] = useState({ label: "", atSeconds: 0 });
@@ -513,6 +527,7 @@ function OperationsPage({ rounds, activeRound, defaultActivity }: { rounds: Roun
   const [pendingDelete, setPendingDelete] = useState<null | { kind: "round"; label: string } | { kind: "activity"; activity: string }>(null);
   const [deleteSyncPublic, setDeleteSyncPublic] = useState(true);
   const [preciseFile, setPreciseFile] = useState<File | null>(null);
+  const [copied, setCopied] = useState(false);
   useEffect(() => {
     setRoundForm((current) => ({
       ...current,
@@ -551,6 +566,10 @@ function OperationsPage({ rounds, activeRound, defaultActivity }: { rounds: Roun
   });
   const pushFeishu = useMutation({
     mutationFn: () => apiPost("/api/feishu/push-card"),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
+  });
+  const detectSource = useMutation({
+    mutationFn: () => apiPost("/api/mgtv/source/check", { url: activeRound?.pageUrl || roundForm.url || undefined }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
   });
   const renameRound = useMutation({
@@ -623,300 +642,488 @@ function OperationsPage({ rounds, activeRound, defaultActivity }: { rounds: Roun
     }
     deleteActivity.mutate({ activity: pendingDelete.activity, publish: deleteSyncPublic });
   };
-  const operationError = startRound.error || endRound.error || publish.error || pushFeishu.error || renameRound.error || deleteRound.error || deleteActivity.error || addMarker.error || createClip.error || createAnalysisRound.error || uploadPrecise.error || recordingTimeline.error;
+  const copyPublicLink = async () => {
+    const publicUrl = new URL("/studio/public", window.location.origin).toString();
+    await navigator.clipboard?.writeText(publicUrl);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1400);
+  };
+  const operationError = startRound.error || endRound.error || publish.error || pushFeishu.error || detectSource.error || renameRound.error || deleteRound.error || deleteActivity.error || addMarker.error || createClip.error || createAnalysisRound.error || uploadPrecise.error || recordingTimeline.error;
   const timeline = recordingTimeline.data;
   const density = timeline?.danmakuDensity || [];
   const maxDensity = Math.max(1, ...density.map((item) => item.count));
   const recording = timeline?.recording || recordingRound?.recording || null;
   const sortedRounds = [...rounds].sort((a, b) => String(b.startedAt || b.endedAt || "").localeCompare(String(a.startedAt || a.endedAt || "")));
+  const roundRows = sortedRounds.slice(0, 6);
+  const activeDurationSeconds = activeRound?.startedAt ? Math.max(0, (Date.now() - new Date(activeRound.startedAt).getTime()) / 1000) : 0;
+  const recordingDuration = Number(timeline?.durationSeconds || recording?.durationSeconds || activeDurationSeconds || 0);
+  const markers = timeline?.markers || recording?.markers || [];
+  const clips = timeline?.clips || recording?.clips || [];
+  const firstCandidate = rows[0];
+  const activityLabel = activeRound?.activity || defaultActivity || roundForm.activity || "歌手 2026";
+  const activeRoundLabel = activeRound ? roundName(activeRound) : "等待场次";
+  const activeQuality = recording?.status === "recording" ? "录制中" : activeRound?.pageUrl ? "已解析" : "待检测";
+  const activePageUrl = activeRound?.pageUrl || roundForm.url || "等待识别";
   return (
-    <section>
-      <PageHeading
-        kicker="Operations Workspace"
-        title="运营工作区"
-        description="实时开轮次、录制后切片、飞书同步和公开发布集中在这里。这个页面将替代旧的表单堆叠式操作区。"
-        action={<PrimaryButton onClick={() => startRound.mutate()}>开始新一轮</PrimaryButton>}
-      />
-      <div className="grid grid-cols-[320px_minmax(620px,1fr)_390px] gap-4 max-2xl:grid-cols-1">
-        <Card title="当前直播状态">
-          <Timeline
-            items={[
-              { title: "活动页", description: activeRound?.pageUrl || activeRound?.activity || "等待识别", tone: activeRound ? "done" : "idle" },
-              { title: "直播源", description: activeRound?.pageUrl ? "已解析活动页" : "待检测", tone: activeRound?.pageUrl ? "done" : "idle" },
-              { title: "视频录制", description: activeRound?.recording?.status || "未录制", tone: activeRound?.recording ? "active" : "idle" },
-              { title: "弹幕采集", description: `${formatCount(activeRound?.messageCount)} 条`, tone: activeRound?.status === "running" ? "active" : "idle" }
-            ]}
-          />
-        </Card>
-
-        <Card
-          title="场次与切片"
-          action={
-            <div className="grid grid-cols-2 rounded-xl border border-white/10 bg-black/20 p-1">
-              <button className={`rounded-lg px-4 py-2 text-sm font-black ${result.type === "rough" ? "bg-orange-400/15 text-ops-gold" : "text-ops-muted"}`} onClick={() => setResultType("rough")} type="button">粗略结果</button>
-              <button className={`rounded-lg px-4 py-2 text-sm font-black ${result.type === "precise" ? "bg-orange-400/15 text-ops-gold" : "text-ops-muted"}`} onClick={() => setResultType("precise")} type="button" disabled={!activeRound?.results?.precise}>精确结果</button>
-            </div>
-          }
+    <section className="ops-cockpit grid gap-4">
+      <div className="grid grid-cols-[290px_minmax(0,1fr)_360px] gap-4 max-2xl:grid-cols-[300px_minmax(0,1fr)] max-xl:grid-cols-1">
+        <OpsPanel
+          title="当前直播状态"
+          action={<span className={`rounded-full px-3 py-1 text-xs font-black ${activeRound?.status === "running" ? "bg-emerald-400/12 text-emerald-200" : "bg-white/[0.06] text-ops-muted"}`}>{activeRound?.status === "running" ? "监控中" : "等待场次"}</span>}
+          className="min-h-[520px]"
         >
-          <div className="grid grid-cols-[1fr_280px] gap-4 max-xl:grid-cols-1">
-            <div>
-              <div className="mb-4 grid gap-3 rounded-2xl border border-white/10 bg-black/20 p-4">
-                <div className="grid grid-cols-3 gap-3 max-md:grid-cols-1">
-                  <Field label="活动名称">
-                    <input className="ops-input" value={roundForm.activity} onChange={(event) => setRoundForm({ ...roundForm, activity: event.target.value })} />
-                  </Field>
-                  <Field label="场次名称">
-                    <input className="ops-input" value={roundForm.name} onChange={(event) => setRoundForm({ ...roundForm, name: event.target.value })} placeholder={`默认：第 ${rounds.length + 1} 轮`} />
-                  </Field>
-                  <Field label="直播 URL（可选）">
-                    <input className="ops-input" value={roundForm.url} onChange={(event) => setRoundForm({ ...roundForm, url: event.target.value })} placeholder="默认使用活动监控链接" />
-                  </Field>
-                </div>
-                <div className="flex flex-wrap gap-3">
-                  <button type="button" className="rounded-xl bg-ops-orange px-5 py-3 text-sm font-black text-[#1b0d03]" onClick={() => startRound.mutate()} disabled={startRound.isPending}>开始新一轮</button>
-                  <button type="button" className="rounded-xl border border-red-400/35 bg-red-400/15 px-5 py-3 text-sm font-black text-red-100" onClick={() => endRound.mutate()} disabled={!activeRound || activeRound.status !== "running" || endRound.isPending}>结束并发布粗略结果</button>
-                </div>
-                {operationError && <p className="rounded-xl border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm text-red-100">{String((operationError as Error).message || operationError)}</p>}
-              </div>
-              <RankingTable rows={rows} />
-            </div>
-            <div className="grid content-start gap-3">
-              <button type="button" onClick={() => publish.mutate()} disabled={!activeRound || publish.isPending} className="rounded-xl border border-emerald-400/35 bg-emerald-400/15 px-4 py-3 text-sm font-black text-emerald-100">发布公开页</button>
-              <a className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-center text-sm font-black text-slate-100" href={activeRound ? `/api/rounds/${encodeURIComponent(activeRound.id)}/result.png?result=${result.type}` : "#"}>导出 PNG</a>
-              <a className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-center text-sm font-black text-slate-100" href={activeRound ? `/api/rounds/${encodeURIComponent(activeRound.id)}.jsonl` : "#"}>导出弹幕</a>
-              <div className="rounded-2xl border border-white/10 bg-black/20 p-4 text-sm text-ops-muted">
-                <b className="mb-2 block text-white">当前场次</b>
-                {activeRound ? `${activeRound.activity || "未分类活动"} / ${roundName(activeRound)}` : "等待场次"}
-              </div>
-              <div className="grid gap-2 rounded-2xl border border-white/10 bg-black/20 p-4">
-                <Field label="重命名所选场次">
-                  <input className="ops-input" value={renameValue} onChange={(event) => setRenameValue(event.target.value)} placeholder={activeRound ? roundName(activeRound) : "等待场次"} />
-                </Field>
-                <button type="button" className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-black text-slate-100" disabled={!activeRound || !renameValue.trim() || renameRound.isPending} onClick={() => renameRound.mutate()}>重命名</button>
-              </div>
-              <div className="grid gap-2 rounded-2xl border border-red-400/25 bg-red-400/10 p-4">
-                <strong className="text-sm text-red-100">删除管理</strong>
-                <p className="text-xs leading-6 text-red-100/75">只能删除已结束场次；删除活动会移除该活动下全部已结束场次。删除时可选择是否立即同步公开页。</p>
-                <button type="button" className="rounded-xl border border-red-400/35 bg-red-400/15 px-4 py-3 text-sm font-black text-red-100" disabled={!activeRound || activeRound.status === "running" || deleteRound.isPending} onClick={deleteCurrentRound}>删除场次</button>
-                <button type="button" className="rounded-xl border border-red-400/35 bg-red-400/15 px-4 py-3 text-sm font-black text-red-100" disabled={(!activeRound?.activity && !roundForm.activity && !defaultActivity) || activeRound?.status === "running" || deleteActivity.isPending} onClick={deleteCurrentActivity}>删除活动</button>
-                {pendingDelete && (
-                  <div className="mt-2 rounded-2xl border border-red-300/35 bg-[#2a0f0f] p-4">
-                    <strong className="block text-sm text-red-100">
-                      确认删除{pendingDelete.kind === "round" ? `场次「${pendingDelete.label}」` : `活动「${pendingDelete.activity}」`}
-                    </strong>
-                    <p className="mt-2 text-xs leading-6 text-red-100/75">
-                      删除后不可在管理台恢复。{pendingDelete.kind === "activity" ? "系统会删除该活动下全部已结束场次，采集中场次会被服务端拒绝。" : "采集中场次会被服务端拒绝。"}
-                    </p>
-                    <label className="mt-3 flex items-center gap-2 text-xs font-bold text-red-50">
-                      <input type="checkbox" checked={deleteSyncPublic} onChange={(event) => setDeleteSyncPublic(event.target.checked)} />
-                      删除后立即同步远端公开页
-                    </label>
-                    <div className="mt-3 grid grid-cols-2 gap-2">
-                      <button type="button" className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-black text-slate-200" onClick={() => setPendingDelete(null)}>取消</button>
-                      <button type="button" className="rounded-xl bg-red-500 px-3 py-2 text-xs font-black text-white" disabled={deleteRound.isPending || deleteActivity.isPending} onClick={confirmDelete}>确认删除</button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </Card>
-
-        <Card title="飞书协同与发布" action={<StatusBadge tone="blue">卡片预览</StatusBadge>}>
-          <div className="rounded-2xl border border-white/10 bg-black/20 p-5">
-            <strong className="block text-2xl font-black tracking-[-0.04em]">{activeRound?.activity || "暂无活动"}</strong>
-            <span className="mt-2 block text-sm text-ops-muted">{activeRound ? roundName(activeRound) : "等待场次"}</span>
-            <div className="mt-5 grid grid-cols-3 gap-3">
-              <MiniMetric label="弹幕" value={formatCount(result.data.messageCount || activeRound?.messageCount)} />
-              <MiniMetric label="有效" value={formatCount(total)} />
-              <MiniMetric label="待审" value={formatCount(result.data.reviewCount || activeRound?.reviewCount)} />
-            </div>
-          </div>
-          <div className="mt-4 grid gap-3">
-            <button className="rounded-xl bg-blue-500 px-4 py-3 text-sm font-black text-white" type="button" disabled={pushFeishu.isPending} onClick={() => pushFeishu.mutate()}>同步到飞书</button>
-            <button className="rounded-xl bg-emerald-500 px-4 py-3 text-sm font-black text-white" type="button" disabled={!activeRound || publish.isPending} onClick={() => publish.mutate()}>发布公开页</button>
-          </div>
-        </Card>
-      </div>
-
-      <Card title="精确结果发布" className="mt-4" action={<StatusBadge tone={activeRound?.results?.precise ? "green" : "neutral"}>{activeRound?.results?.precise ? "已发布精确结果" : "待上传"}</StatusBadge>}>
-        <div className="grid grid-cols-[minmax(0,1fr)_360px] items-end gap-4 max-xl:grid-cols-1">
-          <div>
-            <p className="text-sm leading-7 text-ops-muted">
-              先结束场次并导出弹幕切片，按清洗规范生成 precise_result.json 或 XML。上传后系统会校验候选人、票数和场次，并立即发布为公开页默认结果。
-            </p>
-            <a className="mt-3 inline-flex rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-black text-slate-100" href="/docs/precise-result-agent" target="_blank" rel="noreferrer">查看 Agent 清洗规范</a>
-          </div>
-          <div className="grid gap-3">
-            <input
-              className="ops-input"
-              type="file"
-              accept=".json,.xml,application/json,text/xml,application/xml"
-              onChange={(event) => setPreciseFile(event.target.files?.[0] || null)}
+          <div className="rounded-3xl border border-white/10 bg-black/25 p-4">
+            <OpsStatusItem
+              icon={<CheckCircle size={22} weight="fill" />}
+              tone={activeRound ? "green" : "idle"}
+              title="活动页已识别"
+              detail={activePageUrl}
+              meta={formatShortTime(activeRound?.startedAt)}
             />
-            <button
-              type="button"
-              className="rounded-xl bg-ops-orange px-5 py-3 text-sm font-black text-[#1b0d03]"
-              disabled={!activeRound || activeRound.status === "running" || !preciseFile || uploadPrecise.isPending}
-              onClick={() => uploadPrecise.mutate()}
-            >
-              上传并发布精确结果
-            </button>
+            <OpsStatusItem
+              icon={<CheckCircle size={22} weight="fill" />}
+              tone={activeRound?.pageUrl ? "green" : "idle"}
+              title="直播源已解析"
+              detail={activeRound?.pageUrl ? "机位已解析，可开始采集" : "等待活动监控解析"}
+              meta={activeRound?.pageUrl ? "已就绪" : "-"}
+            />
+            <OpsStatusItem
+              icon={<VideoCamera size={22} weight="fill" />}
+              tone={recording?.status === "recording" ? "orange" : "idle"}
+              title={recording?.status === "recording" ? "视频录制中" : "视频未录制"}
+              detail="录制时长"
+              meta={recording?.status === "recording" ? formatClockDuration(recordingDuration) : "-"}
+              emph={recording?.status === "recording" ? formatClockDuration(recordingDuration) : undefined}
+            />
+            <OpsStatusItem
+              icon={<ChatCircleDots size={22} weight="fill" />}
+              tone={activeRound?.status === "running" ? "blue" : "idle"}
+              title={activeRound?.status === "running" ? "弹幕采集中" : "弹幕待命"}
+              detail="已采集弹幕"
+              meta={`${formatCount(activeRound?.messageCount)} 条`}
+              emph={activeRound?.status === "running" ? `${formatCount(activeRound?.messageCount)} 条` : undefined}
+            />
+            <OpsStatusItem
+              icon={<MonitorPlay size={22} weight="fill" />}
+              tone={activeRound?.pageUrl ? "purple" : "idle"}
+              title="当前清晰度"
+              detail={activeQuality}
+              meta={activeRound?.pageUrl ? activeQuality : "-"}
+              emph={activeRound?.pageUrl ? activeQuality : undefined}
+              last
+            />
           </div>
-        </div>
-      </Card>
+          <button
+            type="button"
+            className="mt-4 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl border border-blue-300/25 bg-blue-400/10 px-4 text-sm font-black text-blue-100 transition hover:bg-blue-400/15 disabled:opacity-60"
+            disabled={detectSource.isPending}
+            onClick={() => detectSource.mutate()}
+          >
+            <Broadcast size={18} />
+            立即检测一次
+          </button>
+        </OpsPanel>
 
-      <Card title="场次列表" className="mt-4" action={<StatusBadge tone="neutral">{formatCount(rounds.length)} 场</StatusBadge>}>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[860px] border-separate border-spacing-y-2 text-left text-sm">
-            <thead className="text-xs text-ops-muted">
-              <tr>
-                <th className="px-3 py-2">场次</th>
-                <th className="px-3 py-2">时间范围</th>
-                <th className="px-3 py-2">状态</th>
-                <th className="px-3 py-2">弹幕</th>
-                <th className="px-3 py-2">结果</th>
-                <th className="px-3 py-2 text-right">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sortedRounds.map((round) => {
-                const isSelected = round.id === activeRound?.id || round.id === selectedRoundId;
-                return (
-                  <tr key={round.id} className={isSelected ? "bg-orange-400/10" : "bg-white/[0.035]"}>
-                    <td className="rounded-l-2xl border-y border-l border-white/10 px-3 py-3">
-                      <strong className="block text-slate-100">{roundName(round)}</strong>
-                      <span className="mt-1 block text-xs text-ops-muted">{round.activity || "未分类活动"}</span>
+        <OpsPanel title="场次与切片" className="min-h-[520px]">
+          <div className="mb-5 flex flex-wrap items-end justify-between gap-4 border-b border-white/10 pb-4">
+            <div className="flex gap-8">
+              <button type="button" onClick={() => setOpsMode("realtime")} className={`border-b-2 pb-2 text-sm font-black ${opsMode === "realtime" ? "border-ops-orange text-white" : "border-transparent text-ops-muted"}`}>实时运营</button>
+              <button type="button" onClick={() => setOpsMode("post")} className={`border-b-2 pb-2 text-sm font-black ${opsMode === "post" ? "border-ops-orange text-white" : "border-transparent text-ops-muted"}`}>录制后处理</button>
+            </div>
+            <div className="grid grid-cols-2 rounded-2xl border border-white/10 bg-black/25 p-1">
+              <button className={`rounded-xl px-4 py-2 text-xs font-black ${result.type === "rough" ? "bg-orange-400/15 text-ops-gold" : "text-ops-muted"}`} onClick={() => setResultType("rough")} type="button">粗略结果</button>
+              <button className={`rounded-xl px-4 py-2 text-xs font-black ${result.type === "precise" ? "bg-orange-400/15 text-ops-gold" : "text-ops-muted"}`} onClick={() => setResultType("precise")} type="button" disabled={!activeRound?.results?.precise}>精确结果</button>
+            </div>
+          </div>
+
+          <div className="mb-5 grid grid-cols-[minmax(0,1fr)_230px] gap-5 max-lg:grid-cols-1">
+            <Field label="场次名称">
+              <input
+                className="ops-input min-h-[3.25rem]"
+                value={roundForm.name}
+                onChange={(event) => setRoundForm({ ...roundForm, name: event.target.value })}
+                placeholder={`例如：第 ${rounds.length + 1} 轮 选歌`}
+                maxLength={20}
+              />
+              <span className="justify-self-end font-mono text-xs text-ops-subtle">{roundForm.name.length}/20</span>
+            </Field>
+            <div className="grid gap-3">
+              <button type="button" className="orange-glow inline-flex min-h-[3.25rem] items-center justify-center gap-2 rounded-2xl bg-ops-orange px-5 text-sm font-black text-[#1b0d03] transition hover:brightness-110 disabled:opacity-60" onClick={() => startRound.mutate()} disabled={startRound.isPending}>
+                <Play size={18} weight="fill" />
+                开始新一轮
+              </button>
+              <button type="button" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl border border-orange-400/35 bg-orange-400/10 px-5 text-sm font-black text-ops-gold transition hover:bg-orange-400/15 disabled:opacity-60" onClick={() => endRound.mutate()} disabled={!activeRound || activeRound.status !== "running" || endRound.isPending}>
+                <UploadSimple size={18} weight="bold" />
+                结束并发布粗略结果
+              </button>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto rounded-2xl border border-white/10 bg-black/20">
+            <table className="w-full min-w-[620px] text-left text-sm">
+              <thead className="text-xs text-ops-muted">
+                <tr className="border-b border-white/10">
+                  <th className="px-4 py-3 font-bold">场次</th>
+                  <th className="px-4 py-3 font-bold">时间范围</th>
+                  <th className="px-4 py-3 font-bold">状态</th>
+                  <th className="px-4 py-3 font-bold">弹幕数</th>
+                  <th className="px-4 py-3 text-right font-bold">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {roundRows.map((round) => (
+                  <tr key={round.id} className={`border-b border-white/[0.06] last:border-0 ${round.id === activeRound?.id || round.id === selectedRoundId ? "bg-orange-400/[0.055]" : ""}`}>
+                    <td className="px-4 py-3">
+                      <button type="button" className="text-left" onClick={() => setSelectedRoundId(round.id)}>
+                        <strong className="block text-slate-100">{roundName(round)}</strong>
+                        <span className="mt-1 block text-xs text-ops-muted">{round.activity || "未分类活动"}</span>
+                      </button>
                     </td>
-                    <td className="border-y border-white/10 px-3 py-3 font-mono text-xs text-ops-muted">{round.timeRange || "-"}</td>
-                    <td className="border-y border-white/10 px-3 py-3"><StatusBadge tone={round.status === "running" ? "blue" : "green"}>{round.status === "running" ? "进行中" : "已结束"}</StatusBadge></td>
-                    <td className="border-y border-white/10 px-3 py-3 font-mono">{formatCount(round.messageCount)}</td>
-                    <td className="border-y border-white/10 px-3 py-3 text-xs text-ops-muted">{round.results?.precise ? "精确结果" : "粗略结果"}</td>
-                    <td className="rounded-r-2xl border-y border-r border-white/10 px-3 py-3">
+                    <td className="px-4 py-3 font-mono text-xs text-ops-muted">{roundDisplayRange(round)}</td>
+                    <td className="px-4 py-3"><RoundStatusPill round={round} /></td>
+                    <td className="px-4 py-3 font-mono text-slate-200">{formatCount(round.messageCount)}</td>
+                    <td className="px-4 py-3">
                       <div className="flex justify-end gap-2">
-                        <button type="button" className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-black text-slate-100" onClick={() => setSelectedRoundId(round.id)}>选择</button>
-                        <a className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-black text-slate-100" href={`/api/rounds/${encodeURIComponent(round.id)}/result.png?result=${round.results?.precise ? "precise" : "rough"}`}>PNG</a>
-                        <a className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-black text-slate-100" href={`/api/rounds/${encodeURIComponent(round.id)}.jsonl`}>弹幕</a>
+                        <a className="ops-mini-button" href={`/api/rounds/${encodeURIComponent(round.id)}/result.png?result=${round.results?.precise ? "precise" : "rough"}`}>导出 PNG</a>
+                        <a className="ops-mini-button" href={`/api/rounds/${encodeURIComponent(round.id)}.jsonl`}>导出弹幕</a>
+                        <button type="button" className="ops-mini-button" onClick={() => setSelectedRoundId(round.id)}>更多</button>
                       </div>
                     </td>
                   </tr>
-                );
-              })}
-              {!sortedRounds.length && (
-                <tr><td className="rounded-2xl border border-white/10 bg-white/[0.035] px-4 py-10 text-center text-ops-muted" colSpan={6}>暂无场次。活动监控开播后可自动创建，也可以手动开始新一轮。</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </Card>
+                ))}
+                {!roundRows.length && (
+                  <tr>
+                    <td className="px-4 py-12 text-center text-ops-muted" colSpan={5}>暂无场次。输入名称后可开始新一轮。</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-ops-muted">
+            <span className="inline-flex items-center gap-2"><Clock size={15} /> 提示：结束场次后可回看录屏、上传精确结果，并发布公开页。</span>
+            <div className="flex flex-wrap gap-2">
+              <input className="max-w-56 rounded-xl border border-white/10 bg-black/25 px-3 py-2 text-xs text-slate-100" type="file" accept=".json,.xml,application/json,text/xml,application/xml" onChange={(event) => setPreciseFile(event.target.files?.[0] || null)} />
+              <button type="button" className="ops-mini-button border-red-300/25 text-red-100" disabled={!activeRound || activeRound.status === "running" || !preciseFile || uploadPrecise.isPending} onClick={() => uploadPrecise.mutate()}>上传精确结果</button>
+              <button type="button" className="ops-mini-button border-red-300/25 text-red-100" disabled={!activeRound || activeRound.status === "running" || deleteRound.isPending} onClick={deleteCurrentRound}>删除场次</button>
+            </div>
+          </div>
+        </OpsPanel>
 
-      <Card title="录制后处理" className="mt-4" action={<StatusBadge tone={recording?.status === "recording" ? "orange" : recording ? "green" : "neutral"}>{recording?.status || "暂无录制"}</StatusBadge>}>
-        <div className="grid grid-cols-[320px_minmax(0,1fr)_360px] gap-5 max-xl:grid-cols-1">
-          <div className="grid content-start gap-3">
-            <Field label="选择录制场次">
-              <select className="ops-input" value={recordingRound?.id || ""} onChange={(event) => setSelectedRecordingId(event.target.value)}>
+        <OpsPanel
+          title="飞书协同与发布"
+          action={<span className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-black text-emerald-200"><span className="size-2 rounded-full bg-emerald-400" />已连接</span>}
+          className="min-h-[520px] max-2xl:col-span-2 max-xl:col-span-1"
+        >
+          <p className="mb-3 text-xs text-ops-muted">飞书卡片预览（实时更新）</p>
+          <div className="rounded-3xl border border-white/10 bg-[#111923] p-4 shadow-2xl">
+            <div className="mb-3 flex items-center gap-3">
+              <span className="grid size-9 place-items-center rounded-full bg-blue-400/20 text-blue-200"><Robot size={21} weight="fill" /></span>
+              <div>
+                <strong className="block text-sm">直播运营助手 <span className="ml-1 rounded bg-white/10 px-1 text-[10px] text-ops-muted">机器人</span></strong>
+                <span className="text-xs text-ops-muted">{formatShortTime(new Date().toISOString())}</span>
+              </div>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+              <div className="flex items-start justify-between gap-3">
+                <strong className="block text-xl tracking-[-0.04em]">{activityLabel}</strong>
+                <span className="rounded-lg bg-orange-400/15 px-2 py-1 text-[10px] font-black text-ops-gold">{activeRound?.status === "running" ? "实时运营" : "待同步"}</span>
+              </div>
+              <div className="mt-1 flex items-center gap-2 text-sm text-ops-muted">
+                <span className="truncate">{activeRoundLabel}</span>
+                <span>{activeRound?.status === "running" ? "进行中" : "等待场次"}</span>
+                <span className="font-mono">{formatClockDuration(activeDurationSeconds)}</span>
+              </div>
+              <div className="mt-3 grid grid-cols-3 gap-2 border-y border-white/10 py-3">
+                <MiniMetric label="弹幕" value={formatCount(result.data.messageCount || activeRound?.messageCount)} />
+                <MiniMetric label="有效计票" value={formatCount(total)} />
+                <MiniMetric label="语义待审" value={formatCount(reviewCount)} />
+              </div>
+              <div className="mt-3 grid grid-cols-[1fr_1fr_1fr_40px] gap-2">
+                <button type="button" className="ops-mini-button justify-center px-2" onClick={() => setSelectedRoundId(activeRound?.id || null)}>场次列表</button>
+                <button type="button" className="ops-mini-button justify-center px-2" onClick={() => pushFeishu.mutate()} disabled={pushFeishu.isPending}>切换场次</button>
+                <a className="ops-mini-button justify-center px-2" href={activeRound ? `/api/rounds/${encodeURIComponent(activeRound.id)}/result.png?result=${result.type}` : "#"}>导出 PNG</a>
+                <button type="button" className="ops-mini-button justify-center px-2"><DotsThree size={18} /></button>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-2 gap-2">
+            {["开播通知", "异常通知（断流/录制失败等）", "场次开始/结束通知", "关键操作回执"].map((label) => (
+              <span key={label} className="flex min-w-0 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.035] px-2.5 py-2 text-xs text-slate-200">
+                <span className="relative inline-flex h-4 w-8 shrink-0 rounded-full bg-ops-orange"><i className="absolute right-1 top-1 size-2 rounded-full bg-white" /></span>
+                <span className="truncate">{label}</span>
+              </span>
+            ))}
+          </div>
+
+          <div className="mt-4 grid grid-cols-3 gap-2">
+            <button className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-2xl bg-blue-500 px-2 text-xs font-black text-white transition hover:brightness-110 disabled:opacity-60" type="button" disabled={pushFeishu.isPending} onClick={() => pushFeishu.mutate()}>
+              <PaperPlaneTilt size={18} weight="fill" />
+              同步到飞书
+            </button>
+            <button className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-2xl bg-emerald-500 px-2 text-xs font-black text-white transition hover:brightness-110 disabled:opacity-60" type="button" disabled={!activeRound || publish.isPending} onClick={() => publish.mutate()}>
+              <GlobeHemisphereWest size={18} weight="fill" />
+              发布公开页
+            </button>
+            <button className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-2xl border border-white/10 bg-white/[0.04] px-2 text-xs font-black text-slate-100 transition hover:bg-white/[0.07]" type="button" onClick={copyPublicLink}>
+              <LinkSimple size={18} />
+              {copied ? "已复制" : "复制公开链接"}
+            </button>
+          </div>
+          <p className="mt-3 truncate text-xs text-ops-muted">公开链接：https://pyxxxx.github.io/MangoTV_Danmaku/</p>
+        </OpsPanel>
+      </div>
+
+      <OpsPanel title="录制后处理" className="min-h-[430px]">
+        <div className="grid grid-cols-[minmax(0,1fr)_360px] gap-5 max-xl:grid-cols-1">
+          <div className="grid gap-4">
+            <div className="flex flex-wrap items-center gap-4">
+              <select className="ops-input max-w-[360px]" value={recordingRound?.id || ""} onChange={(event) => setSelectedRecordingId(event.target.value)}>
                 {[...rounds].filter((item) => item.recording).map((item) => (
                   <option key={item.id} value={item.id}>{item.activity || "未分类活动"} / {roundName(item)}</option>
                 ))}
                 {!rounds.some((item) => item.recording) && <option value="">暂无录制</option>}
               </select>
-            </Field>
-            <div className="overflow-hidden rounded-2xl border border-white/10 bg-black/70">
-              {recording?.hasVideo && recording.videoUrl ? (
-                <video className="aspect-video w-full bg-black" controls src={recording.videoUrl} />
-              ) : (
-                <div className="grid aspect-video place-items-center text-sm text-ops-muted">
-                  {recording ? "录制文件暂不可播放" : "选择有录制的场次后显示播放器"}
-                </div>
-              )}
+              <span className="inline-flex items-center gap-2 text-sm text-ops-muted">
+                <span className={`size-2 rounded-full ${recording?.status === "recording" ? "bg-emerald-400" : "bg-white/25"}`} />
+                {recording?.status === "recording" ? "录制中" : "等待录制"}
+              </span>
+              <span className="font-mono text-sm text-ops-muted">{formatClockDuration(recordingDuration)}</span>
             </div>
+            <div className="grid grid-cols-[280px_minmax(0,1fr)] gap-4 max-lg:grid-cols-1">
+              <div className="overflow-hidden rounded-2xl border border-white/10 bg-black/80">
+                {recording?.hasVideo && recording.videoUrl ? (
+                  <video className="aspect-video w-full bg-black" controls src={recording.videoUrl} />
+                ) : (
+                  <div className="grid aspect-video place-items-center bg-black text-ops-muted">
+                    <Play size={70} weight="fill" className="text-white/35" />
+                  </div>
+                )}
+                <div className="flex items-center gap-3 border-t border-white/10 px-4 py-3 text-xs text-slate-200">
+                  <Play size={16} weight="fill" />
+                  <span className="size-4 rounded-full bg-white/80" />
+                  <span className="font-mono">{formatClockDuration(Math.min(recordingDuration, Number(clipForm.startSeconds || 0)))} / {formatClockDuration(recordingDuration)}</span>
+                  <span className="ml-auto">⛶</span>
+                </div>
+              </div>
+              <div className="grid content-center gap-4 rounded-2xl border border-white/10 bg-black/20 p-4">
+                <RecordingRuler density={density} maxDensity={maxDensity} markers={markers} clips={clips} durationSeconds={recordingDuration} />
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-3xl border border-white/10 bg-black/20 p-4">
             <div className="grid grid-cols-2 gap-3">
-              <MiniMetric label="录制时长" value={formatDuration(timeline?.durationSeconds)} />
-              <MiniMetric label="片段数量" value={formatCount((timeline?.clips || recording?.clips || []).length)} />
+              <button type="button" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl border border-orange-400/45 bg-orange-400/15 px-4 text-sm font-black text-ops-gold" disabled={!recordingRound?.id || addMarker.isPending} onClick={() => addMarker.mutate()}>
+                <BookmarkSimple size={18} weight="bold" />
+                添加标记
+              </button>
+              <button type="button" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl border border-blue-400/45 bg-blue-400/15 px-4 text-sm font-black text-blue-100" disabled={!recordingRound?.id || createClip.isPending} onClick={() => createClip.mutate()}>
+                <Scissors size={18} weight="bold" />
+                截取片段
+              </button>
+              <button type="button" className="col-span-2 inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl border border-emerald-400/45 bg-emerald-400/15 px-4 text-sm font-black text-emerald-100" disabled={!clips[0] || createAnalysisRound.isPending} onClick={() => clips[0] && createAnalysisRound.mutate(clips[0].id)}>
+                <Gauge size={18} weight="bold" />
+                生成分析场次
+              </button>
             </div>
-          </div>
-
-          <div className="grid content-start gap-4">
-            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-              <div className="mb-3 flex items-center justify-between">
-                <strong className="text-sm">弹幕密度时间轴</strong>
-                <span className="text-xs text-ops-muted">{density.length ? `${density.length} 个时间桶` : "暂无密度数据"}</span>
-              </div>
-              <div className="flex h-28 items-end gap-1 rounded-xl bg-black/30 p-3">
-                {density.length ? density.slice(0, 80).map((item) => (
-                  <span
-                    key={item.t}
-                    className="min-w-1 flex-1 rounded-t bg-gradient-to-t from-ops-blue to-ops-orange"
-                    style={{ height: `${Math.max(5, (item.count / maxDensity) * 100)}%` }}
-                    title={`${item.t}s: ${item.count} 条`}
-                  />
-                )) : <span className="grid h-full w-full place-items-center text-sm text-ops-muted">录制弹幕后会显示密度</span>}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 max-md:grid-cols-1">
-              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                <strong className="mb-3 block text-sm">标记</strong>
-                <div className="grid max-h-48 gap-2 overflow-auto">
-                  {(timeline?.markers || recording?.markers || []).map((marker) => (
-                    <div key={marker.id} className="flex justify-between rounded-xl bg-white/[0.04] px-3 py-2 text-sm">
-                      <span>{marker.label}</span>
-                      <b className="font-mono text-ops-gold">{formatDuration(marker.atSeconds)}</b>
-                    </div>
-                  ))}
-                  {!(timeline?.markers || recording?.markers || []).length && <p className="text-sm text-ops-muted">暂无标记</p>}
-                </div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                <strong className="mb-3 block text-sm">片段</strong>
-                <div className="grid max-h-48 gap-2 overflow-auto">
-                  {(timeline?.clips || recording?.clips || []).map((clip) => (
-                    <div key={clip.id} className="grid gap-2 rounded-xl bg-white/[0.04] p-3 text-sm">
-                      <div className="flex justify-between gap-3">
-                        <span>{clip.label}</span>
-                        <b className="font-mono text-ops-gold">{formatDuration(clip.startSeconds)} - {formatDuration(clip.endSeconds)}</b>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        {clip.url && <a className="text-xs text-blue-200" href={clip.url}>视频</a>}
-                        {clip.danmakuUrl && <a className="text-xs text-blue-200" href={clip.danmakuUrl}>弹幕</a>}
-                        <button type="button" className="text-xs text-emerald-200" disabled={createAnalysisRound.isPending} onClick={() => createAnalysisRound.mutate(clip.id)}>生成分析场次</button>
-                      </div>
-                    </div>
-                  ))}
-                  {!(timeline?.clips || recording?.clips || []).length && <p className="text-sm text-ops-muted">暂无片段</p>}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid content-start gap-3">
-            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-              <strong className="mb-3 block text-sm">添加标记</strong>
-              <Field label="标记名称"><input className="ops-input" value={markerForm.label} onChange={(event) => setMarkerForm({ ...markerForm, label: event.target.value })} placeholder="例如：选歌环节" /></Field>
-              <Field label="时间点（秒）"><input className="ops-input" type="number" value={markerForm.atSeconds} onChange={(event) => setMarkerForm({ ...markerForm, atSeconds: Number(event.target.value) })} /></Field>
-              <button className="mt-3 w-full rounded-xl border border-orange-400/40 bg-orange-400/15 px-4 py-3 text-sm font-black text-ops-gold" type="button" disabled={!recordingRound?.id || addMarker.isPending} onClick={() => addMarker.mutate()}>添加标记</button>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-              <strong className="mb-3 block text-sm">截取片段</strong>
-              <Field label="片段名称"><input className="ops-input" value={clipForm.label} onChange={(event) => setClipForm({ ...clipForm, label: event.target.value })} placeholder="例如：互动投票片段" /></Field>
+            <div className="mt-4 grid gap-3">
+              <Field label="当前位置标记">
+                <input className="ops-input" value={markerForm.label} onChange={(event) => setMarkerForm({ ...markerForm, label: event.target.value })} placeholder="例如：高能片段 / 主持人口播" />
+              </Field>
               <div className="grid grid-cols-2 gap-3">
-                <Field label="开始（秒）"><input className="ops-input" type="number" value={clipForm.startSeconds} onChange={(event) => setClipForm({ ...clipForm, startSeconds: Number(event.target.value) })} /></Field>
-                <Field label="结束（秒）"><input className="ops-input" type="number" value={clipForm.endSeconds} onChange={(event) => setClipForm({ ...clipForm, endSeconds: Number(event.target.value) })} /></Field>
+                <Field label="截取开始（秒）"><input className="ops-input" type="number" value={clipForm.startSeconds} onChange={(event) => setClipForm({ ...clipForm, startSeconds: Number(event.target.value) })} /></Field>
+                <Field label="截取结束（秒）"><input className="ops-input" type="number" value={clipForm.endSeconds} onChange={(event) => setClipForm({ ...clipForm, endSeconds: Number(event.target.value) })} /></Field>
               </div>
-              <button className="mt-3 w-full rounded-xl border border-blue-400/40 bg-blue-400/15 px-4 py-3 text-sm font-black text-blue-100" type="button" disabled={!recordingRound?.id || createClip.isPending} onClick={() => createClip.mutate()}>截取片段</button>
+              <Field label="片段名称">
+                <input className="ops-input" value={clipForm.label} onChange={(event) => setClipForm({ ...clipForm, label: event.target.value })} placeholder="例如：第一段回放" />
+              </Field>
+            </div>
+            <div className="mt-5 flex items-center justify-between">
+              <span className="text-sm text-ops-muted">已创影片段（{clips.length}）</span>
+              <button className="inline-flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-black text-slate-100" type="button">
+                查看全部
+                <CaretDown size={14} />
+              </button>
+            </div>
+            <div className="mt-3 grid gap-2">
+              {clips.slice(0, 3).map((clip) => (
+                <div key={clip.id} className="rounded-2xl border border-white/10 bg-white/[0.035] p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm text-slate-100">{clip.label}</span>
+                    <span className="rounded-full bg-emerald-400/12 px-3 py-1 text-xs font-black text-emerald-200">已生成场次</span>
+                  </div>
+                  <span className="mt-1 block font-mono text-xs text-ops-muted">{formatClockDuration(clip.startSeconds)} - {formatClockDuration(clip.endSeconds)}</span>
+                </div>
+              ))}
+              {!clips.length && <p className="rounded-2xl border border-white/10 bg-white/[0.035] px-4 py-5 text-sm text-ops-muted">暂无片段</p>}
             </div>
           </div>
         </div>
-      </Card>
+        <p className="mt-4 inline-flex items-center gap-2 text-xs leading-6 text-ops-muted">
+          <Clock size={15} />
+          说明：从录屏中截取片段后，会自动提取对应时间范围的弹幕，生成可分析的场次接入实时精选、飞书同步与发布。
+        </p>
+      </OpsPanel>
+
+      {operationError && (
+        <div className="rounded-2xl border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm text-red-100">
+          {String((operationError as Error).message || operationError)}
+        </div>
+      )}
+      {pendingDelete && (
+        <div className="rounded-3xl border border-red-300/35 bg-[#2a0f0f] p-5">
+          <strong className="block text-sm text-red-100">
+            确认删除{pendingDelete.kind === "round" ? `场次「${pendingDelete.label}」` : `活动「${pendingDelete.activity}」`}
+          </strong>
+          <p className="mt-2 text-xs leading-6 text-red-100/75">
+            删除后不可在管理台恢复。采集中场次会被服务端拒绝。
+          </p>
+          <label className="mt-3 flex items-center gap-2 text-xs font-bold text-red-50">
+            <input type="checkbox" checked={deleteSyncPublic} onChange={(event) => setDeleteSyncPublic(event.target.checked)} />
+            删除后立即同步远端公开页
+          </label>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button type="button" className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-xs font-black text-slate-200" onClick={() => setPendingDelete(null)}>取消</button>
+            <button type="button" className="rounded-xl bg-red-500 px-4 py-2 text-xs font-black text-white" disabled={deleteRound.isPending || deleteActivity.isPending} onClick={confirmDelete}>确认删除</button>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
 
+function OpsPanel({ title, action, children, className = "" }: { title: string; action?: React.ReactNode; children: React.ReactNode; className?: string }) {
+  return (
+    <section className={`glass relative min-w-0 overflow-hidden rounded-3xl p-5 ${className}`}>
+      <div className="mb-4 flex items-start justify-between gap-4">
+        <h3 className="text-xl font-black tracking-[-0.04em]">{title}</h3>
+        {action}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function OpsStatusItem({ icon, tone, title, detail, meta, emph, last = false }: { icon: React.ReactNode; tone: "green" | "orange" | "blue" | "purple" | "idle"; title: string; detail: string; meta?: string; emph?: string; last?: boolean }) {
+  const toneClass = {
+    green: "bg-emerald-400 text-[#062413]",
+    orange: "bg-ops-orange text-[#1b0d03]",
+    blue: "bg-blue-500 text-white",
+    purple: "bg-purple-500 text-white",
+    idle: "bg-slate-700 text-slate-300"
+  }[tone];
+  const lineClass = tone === "idle" ? "bg-white/10" : "bg-gradient-to-b from-ops-orange to-blue-500";
+  return (
+    <div className="grid grid-cols-[48px_minmax(0,1fr)] gap-3">
+      <div className="relative grid justify-items-center">
+        <span className={`z-10 grid size-10 place-items-center rounded-full ${toneClass}`}>{icon}</span>
+        {!last && <span className={`absolute top-10 h-[calc(100%+14px)] w-px ${lineClass}`} />}
+      </div>
+      <div className={`min-h-[74px] border-b border-white/[0.08] pb-4 ${last ? "border-b-0 pb-0" : ""}`}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <strong className="block text-sm text-slate-100">{title}</strong>
+            <span className="mt-1 block truncate text-xs leading-5 text-ops-muted">{detail}</span>
+          </div>
+          {emph ? <b className="shrink-0 font-mono text-2xl font-black text-ops-orange">{emph}</b> : <span className="shrink-0 font-mono text-xs text-ops-muted">{meta || "-"}</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RoundStatusPill({ round }: { round: RoundSession }) {
+  const precise = Boolean(round.results?.precise);
+  const running = round.status === "running";
+  const label = running ? "进行中" : precise ? "已发布" : "已结束";
+  const className = running
+    ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-200"
+    : precise
+      ? "border-purple-400/25 bg-purple-400/10 text-purple-200"
+      : "border-blue-400/25 bg-blue-400/10 text-blue-200";
+  return <span className={`inline-flex rounded-full border px-3 py-1 text-xs font-black ${className}`}>{label}</span>;
+}
+
+function RecordingRuler({ density, maxDensity, markers, clips, durationSeconds }: { density: Array<{ t: number; count: number }>; maxDensity: number; markers: Array<{ id: string; label: string; atSeconds: number }>; clips: Array<{ id: string; label: string; startSeconds: number; endSeconds: number }>; durationSeconds: number }) {
+  const safeDuration = Math.max(1, Number(durationSeconds || 0));
+  const buckets = density.length ? density.slice(0, 120) : Array.from({ length: 90 }, (_, index) => ({ t: index, count: 0 }));
+  const markerItems = markers.slice(0, 5);
+  const clipItems = clips.slice(0, 3);
+  return (
+    <div className="grid gap-4">
+      <div className="relative h-32 rounded-2xl border border-white/10 bg-black/30 p-4">
+        <div className="absolute left-4 right-4 top-5 h-px bg-white/10" />
+        <div className="absolute left-4 right-4 top-8 flex justify-between font-mono text-[10px] text-ops-subtle">
+          <span>00:00</span>
+          <span>{formatClockDuration(safeDuration / 2)}</span>
+          <span>{formatClockDuration(safeDuration)}</span>
+        </div>
+        {clipItems.map((clip) => {
+          const left = Math.min(96, Math.max(0, (clip.startSeconds / safeDuration) * 100));
+          const width = Math.min(100 - left, Math.max(4, ((clip.endSeconds - clip.startSeconds) / safeDuration) * 100));
+          return <span key={clip.id} className="absolute top-[52px] h-2 rounded-full bg-blue-400/55" style={{ left: `calc(1rem + ${left}% * .92)`, width: `${width}%` }} />;
+        })}
+        {markerItems.map((marker, index) => {
+          const left = Math.min(96, Math.max(2, (marker.atSeconds / safeDuration) * 100));
+          const palette = ["bg-emerald-500", "bg-ops-orange", "bg-blue-500", "bg-yellow-500", "bg-purple-500"];
+          return (
+            <span key={marker.id} className="absolute top-[50px] grid justify-items-center gap-1" style={{ left: `calc(${left}% - 18px)` }}>
+              <b className={`rounded-xl px-2 py-1 text-[10px] ${palette[index % palette.length]} text-white`}>{marker.label}</b>
+              <i className={`h-9 w-px ${palette[index % palette.length]}`} />
+              <i className={`size-3 rounded-full ${palette[index % palette.length]}`} />
+            </span>
+          );
+        })}
+        <div className="absolute bottom-5 left-4 right-4 flex h-6 items-end gap-px">
+          {buckets.map((item, index) => (
+            <span
+              key={`${item.t}-${index}`}
+              className={`min-w-px flex-1 rounded-t ${item.count ? "bg-gradient-to-t from-blue-500 to-ops-orange" : "bg-white/[0.06]"}`}
+              style={{ height: `${item.count ? Math.max(12, (item.count / Math.max(1, maxDensity)) * 100) : 12}%` }}
+            />
+          ))}
+        </div>
+      </div>
+      <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
+        <div className="flex flex-wrap items-center gap-8 text-xs text-ops-muted">
+          <span className="inline-flex items-center gap-2"><i className="size-2 rounded-full bg-ops-orange" /> 已添加标记</span>
+          <span className="inline-flex items-center gap-2"><i className="size-2 rounded-full bg-blue-500" /> 片段区间</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function roundDisplayRange(round: RoundSession) {
+  if (round.timeRange) return round.timeRange;
+  if (round.startedAt && (round.endedAt || round.stoppedAt)) {
+    return `${formatShortClock(round.startedAt)} - ${formatShortClock(round.endedAt || round.stoppedAt)}`;
+  }
+  if (round.startedAt) return `${formatShortClock(round.startedAt)} - 进行中`;
+  return "-";
+}
+
+function formatShortClock(value?: string) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+function formatClockDuration(seconds: unknown) {
+  const total = Math.max(0, Math.floor(Number(seconds || 0)));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
+
 function MiniMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-xl border border-white/10 bg-white/[0.035] p-3">
+    <div className="rounded-xl border border-white/10 bg-black/15 p-2">
       <span className="block text-xs text-ops-muted">{label}</span>
-      <b className="mt-1 block font-mono text-xl font-black">{value}</b>
+      <b className="mt-1 block font-mono text-lg font-black">{value}</b>
     </div>
   );
 }
