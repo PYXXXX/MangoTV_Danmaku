@@ -17,7 +17,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { apiDelete, apiGet, apiPatch, apiPost, apiUpload, getBootstrap, getSystemMetrics, getSystemLogs, getSystemStatus } from "../../api/client";
-import type { ActivityItem, FeishuBindingStatus, MgtvAuthStatus, RecordingTimeline, RoundSession, SystemLogEvent, SystemLogSummary, SystemLogsResponse, SystemStatus, UpdateStatus } from "../../api/types";
+import type { ActivityItem, FeishuBindingStatus, MgtvAuthStatus, RecordingTimeline, RoundSession, SourceDetectionResult, SystemLogEvent, SystemLogSummary, SystemLogsResponse, SystemStatus, UpdateStatus } from "../../api/types";
 import { Card, PageHeading, PrimaryButton, Shell, StatusBadge } from "../../components/Shell";
 import { MetricCard } from "../../components/MetricCard";
 import { RankingTable } from "../../components/RankingTable";
@@ -123,9 +123,17 @@ function ActivityMonitorPage({ activity, status }: { activity?: ActivityItem | n
       setIsDirty(false);
     }
   });
-  const detect = useMutation({
-    mutationFn: () => apiPost(`/api/activities/${encodeURIComponent(activityId)}/source/detect`, { url: form.url, quality: form.preferredQuality }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
+  const detect = useMutation<SourceDetectionResult>({
+    mutationFn: () => apiPost<SourceDetectionResult>(`/api/activities/${encodeURIComponent(activityId)}/source/detect`, { url: form.url, quality: form.preferredQuality }),
+    onSuccess: async (payload) => {
+      const available = normalizeQualityOptions(payload.availableQualities);
+      if (available.length && form.preferredQuality !== "auto" && !available.includes(form.preferredQuality)) {
+        const detectedQuality = payload.actualQuality && available.includes(payload.actualQuality) ? payload.actualQuality : available[0];
+        setForm((current) => ({ ...current, preferredQuality: detectedQuality }));
+        setIsDirty(true);
+      }
+      await queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] });
+    }
   });
   const stop = useMutation({
     mutationFn: () => apiPost(`/api/activities/${encodeURIComponent(activityId)}/monitor/stop`),
@@ -147,7 +155,22 @@ function ActivityMonitorPage({ activity, status }: { activity?: ActivityItem | n
   const isRecognizedActivity = Boolean(parsedActivityId);
   const statusText = form.monitorEnabled ? "监控中" : "未启用";
   const statusTone = form.monitorEnabled ? "green" : isDirty ? "orange" : "neutral";
-  const currentQuality = state.quality || (form.preferredQuality === "auto" ? "自动最高可用" : form.preferredQuality);
+  const detectedQualities = useMemo(
+    () => normalizeQualityOptions([
+      ...(state.availableQualities || []),
+      ...(detect.data?.availableQualities || []),
+      state.quality || "",
+      detect.data?.actualQuality || "",
+      detect.data?.quality || "",
+      form.preferredQuality === "auto" ? "" : form.preferredQuality
+    ]),
+    [detect.data?.actualQuality, detect.data?.availableQualities, detect.data?.quality, form.preferredQuality, state.availableQualities, state.quality]
+  );
+  const qualityOptions = useMemo(() => {
+    const fetched = detectedQualities.length ? detectedQualities : ["1080P", "720P", "540P"];
+    return ["auto", ...fetched.filter((item) => item !== "auto")];
+  }, [detectedQualities]);
+  const availableQualityText = detectedQualities.length ? detectedQualities.join(" / ") : "待检测";
   const recentEvents = [
     {
       time: formatShortTime(state.lastCheckAt),
@@ -248,7 +271,7 @@ function ActivityMonitorPage({ activity, status }: { activity?: ActivityItem | n
               </p>
               <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
                 <InfoPill label="检测结果" value={state.lastError ? "检测失败" : state.quality ? "可录制" : "等待开播"} tone={state.lastError ? "red" : state.quality ? "green" : "neutral"} />
-                <InfoPill label="可用清晰度" value={currentQuality || "-"} tone={state.quality ? "green" : "neutral"} />
+                <InfoPill label="可用清晰度" value={availableQualityText} tone={detectedQualities.length ? "green" : "neutral"} />
               </div>
               <button
                 type="button"
@@ -289,11 +312,13 @@ function ActivityMonitorPage({ activity, status }: { activity?: ActivityItem | n
               <div className="mt-3 grid grid-cols-[1fr_1fr] gap-3 max-sm:grid-cols-1">
                 <Field label="清晰度">
                   <select className="ops-input" value={form.preferredQuality} onChange={(event) => updateForm({ preferredQuality: event.target.value })}>
-                    <option value="auto">自动最高可用</option>
-                    <option value="1080P">1080P</option>
-                    <option value="720P">720P</option>
-                    <option value="540P">540P</option>
+                    {qualityOptions.map((quality) => (
+                      <option key={quality} value={quality}>{qualityLabel(quality)}</option>
+                    ))}
                   </select>
+                  <span className="text-xs leading-5 text-ops-subtle">
+                    {detectedQualities.length ? `已从直播源检测到：${detectedQualities.join(" / ")}` : "检测直播源后会自动更新可选清晰度。"}
+                  </span>
                 </Field>
                 <Field label="检测间隔（秒）">
                   <input className="ops-input" type="number" min={10} max={3600} value={form.pollSeconds} onChange={(event) => updateForm({ pollSeconds: Number(event.target.value) })} />
@@ -393,6 +418,20 @@ function ActivityMonitorPage({ activity, status }: { activity?: ActivityItem | n
 function parseMgtvActivityId(url = "") {
   const match = url.match(/mgtv\.com\/z\/(\d+)(?:\.html|\/|\?|#|$)/i);
   return match?.[1] || "";
+}
+
+function normalizeQualityOptions(values?: Array<string | undefined | null>) {
+  const result: string[] = [];
+  for (const value of values || []) {
+    const text = String(value || "").trim();
+    if (!text || text === "auto" || result.includes(text)) continue;
+    result.push(text);
+  }
+  return result;
+}
+
+function qualityLabel(value: string) {
+  return value === "auto" ? "自动最高可用" : value;
 }
 
 function formatShortTime(value?: string) {

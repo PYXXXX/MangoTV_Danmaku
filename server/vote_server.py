@@ -1441,14 +1441,27 @@ class VoteService:
             "activity": "",
             "url": "",
             "quality": "",
+            "availableQualities": [],
             "taskRunning": False,
             "autoStarted": False,
         }
+
+    @staticmethod
+    def _normalize_quality_list(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        result: list[str] = []
+        for item in value:
+            text = str(item or "").strip()
+            if text and text not in result:
+                result.append(text)
+        return result
 
     def monitor_config(self) -> dict[str, Any]:
         monitor = dict(self.config.get("monitor") or {})
         vote = self.config.get("vote") or {}
         mgtv = self.config.get("mgtv") or {}
+        recording = self.config.get("recording") or {}
         return {
             "enabled": bool(monitor.get("enabled")),
             "activity": str(monitor.get("activity") or vote.get("activity") or "未分类活动"),
@@ -1458,6 +1471,7 @@ class VoteService:
             "autoRecordDanmaku": bool(monitor.get("auto_record_danmaku", True)),
             "feishuNotify": bool(monitor.get("feishu_notify", True)),
             "pollSeconds": max(10, min(3600, int(monitor.get("poll_seconds") or 45))),
+            "preferredQuality": str(recording.get("preferred_quality") or "auto"),
             "roundName": str(monitor.get("round_name") or ""),
         }
 
@@ -1474,9 +1488,16 @@ class VoteService:
 
     def monitor_status_view(self) -> dict[str, Any]:
         self._set_monitor_state()
+        state = dict(self.monitor_state)
+        recording = self.config.get("recording") or {}
+        available_qualities = self._normalize_quality_list(
+            state.get("availableQualities") or recording.get("available_qualities")
+        )
+        if available_qualities:
+            state["availableQualities"] = available_qualities
         return {
             "config": self.monitor_config(),
-            "state": dict(self.monitor_state),
+            "state": state,
         }
 
     def _initial_feishu_binding_state(self) -> dict[str, Any]:
@@ -1732,6 +1753,7 @@ class VoteService:
                 "recordingSource": {
                     "configured": bool(recording.get("stream_url")),
                     "quality": recording.get("last_detected_quality") or recording.get("preferred_quality") or "auto",
+                    "availableQualities": self._normalize_quality_list(recording.get("available_qualities")),
                     "detectedAt": recording.get("last_detected_at") or "",
                 },
             },
@@ -2071,6 +2093,7 @@ class VoteService:
                 detected = await self.detect_mgtv_recording_source(url, str((self.config.get("recording") or {}).get("preferred_quality") or "auto"))
                 source_ready = bool(detected.get("ok"))
                 quality = str(detected.get("actualQuality") or detected.get("quality") or "")
+                available_qualities = self._normalize_quality_list(detected.get("availableQualities"))
                 if not source_ready:
                     self.monitor_auto_started = False
                     self._set_monitor_state(
@@ -2078,6 +2101,7 @@ class VoteService:
                         message=str(detected.get("error") or "直播源暂不可用，等待下一次检测。"),
                         lastError=str(detected.get("error") or ""),
                         quality=quality,
+                        availableQualities=available_qualities or self.monitor_state.get("availableQualities") or [],
                     )
                     await self.notify_monitor_status_once()
                     return self.monitor_status_view()
@@ -2109,6 +2133,7 @@ class VoteService:
             lastSuccessAt=now_iso(),
             lastError="",
             quality=quality,
+            availableQualities=self._normalize_quality_list((self.config.get("recording") or {}).get("available_qualities")) or self.monitor_state.get("availableQualities") or [],
         )
 
         should_auto_start = bool(config["autoRecordVideo"] or config["autoRecordDanmaku"])
@@ -2495,6 +2520,7 @@ class VoteService:
         if not page_url:
             return {"ok": False, "error": "未配置芒果直播页 URL", "quality": preferred}
         result = await self.mgtv_auth.detect_stream(page_url, preferred)
+        available_qualities = self._normalize_quality_list(result.get("availableQualities"))
         if result.get("ok") and result.get("streamUrl"):
             async with self.config_lock:
                 target = copy.deepcopy(self.config)
@@ -2502,6 +2528,8 @@ class VoteService:
                 rec["stream_url"] = result["streamUrl"]
                 rec["last_detected_quality"] = result.get("actualQuality") or result.get("quality") or ""
                 rec["last_detected_at"] = now_iso()
+                if available_qualities:
+                    rec["available_qualities"] = available_qualities
                 target["recording"] = rec
                 mgtv = dict(target.get("mgtv") or {})
                 if result.get("pageUrl"):
@@ -2524,7 +2552,25 @@ class VoteService:
                 "直播源检测成功",
                 f"quality={result.get('actualQuality') or result.get('quality') or preferred}, camera_id={result.get('cameraId') or ''}",
             )
+            self._set_monitor_state(
+                status="source_ready",
+                message="直播源已检测，可开始录制。",
+                lastCheckAt=now_iso(),
+                lastSuccessAt=now_iso(),
+                lastError="",
+                quality=str(result.get("actualQuality") or result.get("quality") or preferred),
+                availableQualities=available_qualities,
+            )
         elif result.get("error"):
+            if available_qualities:
+                self._set_monitor_state(availableQualities=available_qualities)
+            self._set_monitor_state(
+                status="waiting",
+                message="直播源检测失败，等待重试。",
+                lastCheckAt=now_iso(),
+                lastError=str(result.get("error") or ""),
+                quality=str(result.get("actualQuality") or result.get("quality") or preferred),
+            )
             self.add_system_event("warn", "mgtv", "直播源检测失败，等待重试", str(result.get("error") or ""))
         redacted = dict(result)
         if redacted.get("streamUrl"):

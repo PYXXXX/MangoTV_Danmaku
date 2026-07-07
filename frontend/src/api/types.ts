@@ -136,8 +136,27 @@ export interface MonitorView {
     lastCheckAt?: string;
     lastError?: string;
     quality?: string;
+    availableQualities?: string[];
     taskRunning?: boolean;
   };
+}
+
+export interface SourceDetectionResult {
+  ok?: boolean;
+  error?: string;
+  message?: string;
+  quality?: string;
+  actualQuality?: string;
+  availableQualities?: string[];
+  streamUrl?: string;
+  streamUrlConfigured?: boolean;
+  loginRequired?: boolean;
+  vipRequired?: boolean | "unknown";
+  candidates?: number;
+  pageUrl?: string;
+  activityId?: string;
+  cameraId?: string;
+  resolvedFrom?: string;
 }
 
 export interface MgtvAuthStatus {

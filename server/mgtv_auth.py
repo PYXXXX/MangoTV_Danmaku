@@ -464,12 +464,16 @@ class MgtvAuthManager:
         sources = payload.get("sources") if isinstance(payload.get("sources"), list) else []
         selected = self._select_source(sources, preferred_quality)
         stream_url = str(selected.get("url") or "") if selected else ""
+        available_qualities = list(dict.fromkeys(
+            str(item.get("name") or item.get("definition") or "").strip()
+            for item in sources
+            if item.get("url") and str(item.get("name") or item.get("definition") or "").strip()
+        ))
         code = str(data.get("code") or "")
         message = str(data.get("msg") or "")
         if not stream_url:
             pay_source = selected or next((item for item in sources if str(item.get("needPay") or "") == "1"), None)
             vip_required = bool(pay_source and str(pay_source.get("needPay") or "") == "1") or code in {"2040352", "2040101", "2040114", "2040117", "2040202", "2040363", "2040353"}
-            available = [str(item.get("name") or item.get("definition") or "") for item in sources if item.get("url")]
             return {
                 "ok": False,
                 "error": message or "未获取到可直录播放流。可能需要登录/VIP，或当前清晰度不可用。",
@@ -477,7 +481,7 @@ class MgtvAuthManager:
                 "vipRequired": vip_required,
                 "quality": preferred_quality,
                 "actualQuality": str(selected.get("name") or "") if selected else "",
-                "availableQualities": [item for item in available if item],
+                "availableQualities": available_qualities,
                 "candidates": len(sources),
                 "code": code,
                 "pageUrl": page_url,
@@ -491,6 +495,7 @@ class MgtvAuthManager:
             "streamUrlConfigured": True,
             "quality": preferred_quality,
             "actualQuality": str(selected.get("name") or self._guess_quality(stream_url)),
+            "availableQualities": available_qualities,
             "loginRequired": False,
             "vipRequired": str(selected.get("needPay") or "") == "1",
             "candidates": len(sources),

@@ -110,6 +110,7 @@ class MgtvAuthAsyncTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["streamUrl"], "https://example.com/1080.m3u8")
         self.assertEqual(result["actualQuality"], "1080P ·50帧")
+        self.assertEqual(result["availableQualities"], ["720P", "1080P ·50帧"])
         self.assertEqual(result["pageUrl"], "https://www.mgtv.com/z/1001668/5366.html")
 
     async def test_detect_stream_accepts_activity_url_after_resolution(self):
@@ -138,6 +139,7 @@ class MgtvAuthAsyncTest(unittest.IsolatedAsyncioTestCase):
         manager._request_json = fake_request_json
         result = await manager.detect_stream("https://www.mgtv.com/z/1001668.html?fpa=1", "720P")
         self.assertTrue(result["ok"])
+        self.assertEqual(result["availableQualities"], ["720P"])
         self.assertEqual(result["pageUrl"], "https://www.mgtv.com/z/1001668/5366.html?fpa=1")
         self.assertEqual(result["resolvedFrom"], "https://www.mgtv.com/z/1001668.html?fpa=1")
 

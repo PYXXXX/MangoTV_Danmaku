@@ -776,6 +776,7 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                     "ok": True,
                     "streamUrl": "https://secure.example.com/live.m3u8?token=secret",
                     "actualQuality": "1080P",
+                    "availableQualities": ["1080P", "720P"],
                     "message": "已检测到播放源。",
                 }
 
@@ -786,6 +787,8 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("secret", json.dumps(result))
                 saved = json.loads(config_path.read_text(encoding="utf-8"))
                 self.assertEqual(saved["recording"]["stream_url"], "https://secure.example.com/live.m3u8?token=secret")
+                self.assertEqual(saved["recording"]["available_qualities"], ["1080P", "720P"])
+                self.assertEqual(service.monitor_status_view()["state"]["availableQualities"], ["1080P", "720P"])
                 self.assertEqual(service.recorder.config["stream_url"], "https://secure.example.com/live.m3u8?token=secret")
             finally:
                 service.collector.fingerprints.close()
