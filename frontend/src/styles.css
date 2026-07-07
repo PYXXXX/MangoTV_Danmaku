@@ -103,6 +103,12 @@ body::before {
   color: rgba(162, 169, 179, .72);
 }
 
+pre,
+code {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .ops-mini-button {
   display: inline-flex;
   min-height: 2.25rem;

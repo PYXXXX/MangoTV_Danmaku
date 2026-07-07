@@ -35,14 +35,14 @@ export function PublicResultsApp() {
     .sort((a, b) => String(b.stoppedAt || b.startedAt || "").localeCompare(String(a.stoppedAt || a.startedAt || "")))
     .slice(0, 5);
   return (
-    <div className="min-h-dvh text-[#fff7ea] public-stage">
-      <nav className="sticky top-0 z-10 flex min-h-16 items-center justify-between border-b border-white/10 bg-[#06090d]/80 px-8 backdrop-blur-2xl max-md:flex-col max-md:items-start max-md:gap-3 max-md:py-4">
-        <a className="flex items-center gap-3 text-xl font-black tracking-[-0.045em]" href="./">
+    <div className="min-h-dvh min-w-0 text-[#fff7ea] public-stage">
+      <nav className="sticky top-0 z-10 flex min-w-0 min-h-16 items-center justify-between border-b border-white/10 bg-[#06090d]/80 px-8 backdrop-blur-2xl max-md:flex-col max-md:items-start max-md:gap-3 max-md:py-4">
+        <a className="flex min-w-0 items-center gap-3 text-xl font-black tracking-[-0.045em]" href="./">
           <span className="orange-glow grid size-10 place-items-center rounded-full bg-gradient-to-br from-[#ff9d35] to-[#ff7417] text-[#160b04]">▶</span>
-          公开结果页
+          <span className="truncate">公开结果页</span>
         </a>
-        <div className="flex flex-wrap items-center gap-7 text-sm text-slate-300">
-          <a href="#ranking">{activity}</a>
+        <div className="flex min-w-0 flex-wrap items-center gap-7 text-sm text-slate-300">
+          <a className="max-w-60 truncate" href="#ranking" title={activity}>{activity}</a>
           <a href="#timeline">场次列表</a>
           <a href="#source">数据说明</a>
           <a className="inline-flex min-h-9 items-center gap-2 rounded-full border border-white/10 px-4" href="https://github.com/PYXXXX/MangoTV_Danmaku" target="_blank" rel="noreferrer">
@@ -52,8 +52,8 @@ export function PublicResultsApp() {
         </div>
       </nav>
 
-      <main className="relative z-[1] mx-auto w-[min(1540px,calc(100%-46px))] py-7">
-        <header className="grid min-h-[310px] grid-cols-[minmax(0,1fr)_minmax(420px,635px)] gap-6 max-lg:grid-cols-1">
+      <main className="relative z-[1] mx-auto w-[min(1540px,calc(100%-46px))] min-w-0 py-7">
+        <header className="grid min-h-[310px] min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,635px)] gap-6 max-lg:grid-cols-1">
           <section className="grid content-center">
             <p className="mb-4 font-mono text-xs font-black uppercase tracking-[0.18em] text-ops-orange">Public Live Report</p>
             <h1 className="max-w-4xl text-6xl font-black leading-[.96] tracking-[-0.065em] max-md:text-4xl">
@@ -70,7 +70,7 @@ export function PublicResultsApp() {
           </section>
 
           <Card title="当前场次" className="bg-black/20">
-            <strong className="block text-4xl font-black tracking-[-0.055em]">{session ? roundName(session) : "等待发布"}</strong>
+            <strong className="block min-w-0 break-words text-4xl font-black tracking-[-0.055em]">{session ? roundName(session) : "等待发布"}</strong>
             <span className="mt-2 block text-sm text-ops-muted">{session?.timeRange || (session?.status === "running" ? "正在采集" : "暂无场次时间")}</span>
             <div className="mt-6 rounded-3xl border border-orange-400/40 bg-orange-400/10 p-5">
               {leader ? (
@@ -80,8 +80,8 @@ export function PublicResultsApp() {
                     <div className="orange-glow grid size-20 place-items-center rounded-full border border-orange-300/40 bg-[radial-gradient(circle,#ffc077,#ff861f_58%,#2a1305)] text-[#2a1305]">
                       <Microphone size={42} weight="fill" />
                     </div>
-                    <div>
-                      <strong className="block text-4xl font-black tracking-[-0.055em]">{leader.name}</strong>
+                    <div className="min-w-0">
+                      <strong className="block min-w-0 truncate text-4xl font-black tracking-[-0.055em]" title={leader.name}>{leader.name}</strong>
                       <small className="mt-2 block text-xl font-black text-ops-gold">{formatCount(leader.votes)} 票</small>
                     </div>
                     <strong className="font-mono text-5xl font-black text-ops-orange">{leader.percent.toFixed(1)}%</strong>
@@ -103,7 +103,7 @@ export function PublicResultsApp() {
           <Metric label="语义待审" value={formatCount(result.data.reviewCount || session?.reviewCount)} />
         </div>
 
-        <section className="grid grid-cols-[minmax(0,1.35fr)_minmax(390px,.95fr)] gap-5 max-xl:grid-cols-1">
+        <section className="grid min-w-0 grid-cols-[minmax(0,1.35fr)_minmax(0,.95fr)] gap-5 max-xl:grid-cols-1">
           <Card
             title="实时弹幕投票排名"
             className="min-h-[520px]"
@@ -137,8 +137,8 @@ export function PublicResultsApp() {
             <Card title="场次时间线">
               <div id="timeline" className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
                 {(state?.sessions || []).map((item) => (
-                  <button key={item.id} type="button" onClick={() => { setSelectedSessionId(item.id); setResultType(item.defaultResultType || "rough"); }} className={`min-h-24 rounded-2xl border p-4 text-left ${item.id === session?.id ? "border-orange-400/60 bg-orange-400/10" : "border-white/10 bg-black/20"}`}>
-                    <strong className="block text-sm">{roundName(item)}</strong>
+                  <button key={item.id} type="button" onClick={() => { setSelectedSessionId(item.id); setResultType(item.defaultResultType || "rough"); }} className={`min-w-0 min-h-24 rounded-2xl border p-4 text-left ${item.id === session?.id ? "border-orange-400/60 bg-orange-400/10" : "border-white/10 bg-black/20"}`}>
+                    <strong className="block min-w-0 truncate text-sm" title={roundName(item)}>{roundName(item)}</strong>
                     <span className="mt-2 block text-xs leading-5 text-ops-muted">{item.timeRange || item.status} · {formatCount(item.messageCount)} 样本</span>
                   </button>
                 ))}
@@ -148,7 +148,7 @@ export function PublicResultsApp() {
             <Card title="数据来源">
               <div id="source" className="grid gap-3 text-sm leading-7 text-ops-muted">
                 <p className="flex gap-2"><ShieldCheck size={20} className="mt-1 text-ops-green" /> 页面数据来自公开弹幕采集与统计分析。</p>
-                <p>公开结果页地址：<a className="text-ops-gold" href={dataSource}>{dataSource}</a></p>
+                <p className="min-w-0 [overflow-wrap:anywhere]">公开结果页地址：<a className="text-ops-gold" href={dataSource}>{dataSource}</a></p>
                 <p>统计数据不代表湖南卫视 &amp; 芒果 TV 立场，仅供娱乐参考。</p>
               </div>
             </Card>
@@ -156,8 +156,8 @@ export function PublicResultsApp() {
             <Card title="最近发布">
               <div className="grid gap-3">
                 {recent.map((item) => (
-                  <button key={item.id} type="button" onClick={() => setSelectedSessionId(item.id)} className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-left text-sm">
-                    <span className="truncate">{roundName(item)} · {item.defaultResultType === "precise" ? "精确结果" : "粗略结果"}</span>
+                  <button key={item.id} type="button" onClick={() => setSelectedSessionId(item.id)} className="flex min-w-0 items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-left text-sm">
+                    <span className="min-w-0 truncate">{roundName(item)} · {item.defaultResultType === "precise" ? "精确结果" : "粗略结果"}</span>
                     <time className="shrink-0 text-xs text-ops-muted">{item.stoppedAt ? new Date(item.stoppedAt).toLocaleTimeString("zh-CN", { hour12: false }) : item.status}</time>
                   </button>
                 ))}
@@ -168,7 +168,7 @@ export function PublicResultsApp() {
         </section>
       </main>
 
-      {query.isError && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-2xl border border-red-400/30 bg-red-400/15 px-5 py-3 text-sm text-red-100">公开数据读取失败</div>}
+      {query.isError && <div className="fixed bottom-5 left-1/2 max-w-[calc(100vw-2rem)] -translate-x-1/2 rounded-2xl border border-red-400/30 bg-red-400/15 px-5 py-3 text-sm text-red-100 [overflow-wrap:anywhere]">公开数据读取失败</div>}
     </div>
   );
 }
@@ -179,14 +179,14 @@ function Badge({ children, tone = "neutral" }: { children: React.ReactNode; tone
     : tone === "green"
       ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
       : "border-white/10 bg-white/[0.04] text-slate-300";
-  return <span className={`inline-flex min-h-9 items-center rounded-xl border px-3 text-sm font-bold ${toneClass}`}>{children}</span>;
+  return <span className={`inline-flex min-h-9 max-w-full items-center rounded-xl border px-3 text-sm font-bold ${toneClass}`}><span className="min-w-0 truncate">{children}</span></span>;
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="border-r border-white/10 p-6 last:border-r-0 max-md:border-b max-md:border-r-0">
+    <div className="min-w-0 border-r border-white/10 p-6 last:border-r-0 max-md:border-b max-md:border-r-0">
       <span className="block text-sm text-ops-muted">{label}</span>
-      <strong className="mt-2 block font-mono text-5xl font-black tracking-[-0.06em]">{value}</strong>
+      <strong className="mt-2 block min-w-0 truncate font-mono text-5xl font-black tracking-[-0.06em]">{value}</strong>
     </div>
   );
 }

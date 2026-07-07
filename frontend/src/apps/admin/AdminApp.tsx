@@ -78,7 +78,7 @@ export function AdminApp() {
       }
     >
       {bootstrap.isLoading && <div className="grid min-h-[50vh] place-items-center text-ops-muted">正在读取工作台状态…</div>}
-      {bootstrap.error && <div className="rounded-2xl border border-red-400/30 bg-red-400/10 p-5 text-red-100">读取失败：{String(bootstrap.error)}</div>}
+      {bootstrap.error && <Notice tone="red">读取失败：{String(bootstrap.error)}</Notice>}
       {bootstrap.data && (
         <>
           {page === "activity" && <ActivityMonitorPage activity={bootstrap.data.activity} status={systemStatus} rounds={publicState?.sessions || []} recordings={bootstrap.data.recordings || []} />}
@@ -256,7 +256,7 @@ function ActivityMonitorPage({ activity, status, rounds = [], recordings = [] }:
         </button>
       </div>
 
-      <div className="grid items-start grid-cols-[minmax(390px,1.08fr)_minmax(390px,1fr)_minmax(340px,.92fr)] gap-5 max-2xl:grid-cols-[minmax(0,1fr)_minmax(340px,.9fr)] max-xl:grid-cols-1">
+      <div className="grid min-w-0 grid-cols-[minmax(0,1.08fr)_minmax(0,1fr)_minmax(0,.92fr)] items-start gap-5 max-2xl:grid-cols-[minmax(0,1fr)_minmax(0,.9fr)] max-xl:grid-cols-1">
         <div className="grid content-start gap-5">
           <Card
             title="活动信息"
@@ -307,7 +307,7 @@ function ActivityMonitorPage({ activity, status, rounds = [], recordings = [] }:
                   保存并监控
                 </button>
               </div>
-              {error && <p className="rounded-2xl border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm text-red-100">{String((error as Error).message || error)}</p>}
+              {error && <Notice tone="red">{String((error as Error).message || error)}</Notice>}
             </div>
           </Card>
 
@@ -493,7 +493,7 @@ function InfoPill({ label, value, tone = "neutral" }: { label: string; value: st
   return (
     <div className={`rounded-2xl border px-3 py-3 ${toneClass}`}>
       <span className="block text-[11px] font-bold text-ops-muted">{label}</span>
-      <strong className="mt-1 block truncate text-sm">{value || "-"}</strong>
+      <strong className="mt-1 block min-w-0 truncate text-sm" title={value || "-"}>{value || "-"}</strong>
     </div>
   );
 }
@@ -505,9 +505,9 @@ function StrategyToggle({ icon, label, description, checked, onChange, children 
         <span className="grid size-11 place-items-center rounded-2xl bg-white/[0.06] text-ops-muted">
           {icon}
         </span>
-        <span>
+        <span className="min-w-0">
           <strong className="block text-sm text-white">{label}</strong>
-          <span className="mt-1 block text-xs leading-5 text-ops-muted">{description}</span>
+          <span className="mt-1 block text-xs leading-5 text-ops-muted [overflow-wrap:anywhere]">{description}</span>
         </span>
         <span className={`h-8 w-14 rounded-full p-1 transition ${checked ? "bg-ops-orange shadow-[0_0_24px_rgba(255,134,31,.26)]" : "bg-white/10"}`}>
           <i className={`block size-6 rounded-full bg-white shadow-sm transition-transform ${checked ? "translate-x-6" : ""}`} />
@@ -521,18 +521,18 @@ function StrategyToggle({ icon, label, description, checked, onChange, children 
 function CollectionMetric({ icon, label, value, detail, tone }: { icon: React.ReactNode; label: string; value: string; detail: string; tone: "orange" | "blue" }) {
   const color = tone === "orange" ? "text-ops-orange bg-orange-400/10" : "text-blue-200 bg-blue-400/10";
   return (
-    <div className="rounded-3xl border border-white/10 bg-black/20 p-4">
+    <div className="min-w-0 rounded-3xl border border-white/10 bg-black/20 p-4">
       <span className={`mb-4 grid size-10 place-items-center rounded-2xl ${color}`}>{icon}</span>
       <span className="block text-sm text-ops-muted">{label}</span>
-      <strong className="mt-2 block text-2xl tracking-[-0.04em]">{value}</strong>
-      <span className="mt-3 block border-t border-white/10 pt-3 text-xs text-ops-muted">{detail}</span>
+      <strong className="mt-2 block min-w-0 truncate text-2xl tracking-[-0.04em]" title={value}>{value}</strong>
+      <span className="mt-3 block min-w-0 border-t border-white/10 pt-3 text-xs text-ops-muted [overflow-wrap:anywhere]">{detail}</span>
     </div>
   );
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="grid gap-2 text-sm text-ops-muted">
+    <label className="grid min-w-0 gap-2 text-sm text-ops-muted">
       {label}
       {children}
     </label>
@@ -1103,13 +1103,11 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
       </OpsPanel>
 
       {operationError && (
-        <div className="rounded-2xl border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm text-red-100">
-          {String((operationError as Error).message || operationError)}
-        </div>
+        <Notice tone="red">{String((operationError as Error).message || operationError)}</Notice>
       )}
       {pendingDelete && (
-        <div className="rounded-3xl border border-red-300/35 bg-[#2a0f0f] p-5">
-          <strong className="block text-sm text-red-100">
+        <div className="min-w-0 rounded-3xl border border-red-300/35 bg-[#2a0f0f] p-5">
+          <strong className="block min-w-0 text-sm text-red-100 [overflow-wrap:anywhere]">
             确认删除{pendingDelete.kind === "round" ? `场次「${pendingDelete.label}」` : `活动「${pendingDelete.activity}」`}
           </strong>
           <p className="mt-2 text-xs leading-6 text-red-100/75">
@@ -1132,9 +1130,9 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
 function OpsPanel({ title, action, children, className = "" }: { title: string; action?: React.ReactNode; children: React.ReactNode; className?: string }) {
   return (
     <section className={`glass relative min-w-0 overflow-hidden rounded-3xl p-5 ${className}`}>
-      <div className="mb-4 flex items-start justify-between gap-4">
-        <h3 className="text-xl font-black tracking-[-0.04em]">{title}</h3>
-        {action}
+      <div className="mb-4 flex min-w-0 items-start justify-between gap-4">
+        <h3 className="min-w-0 truncate text-xl font-black tracking-[-0.04em]">{title}</h3>
+        {action && <div className="max-w-full shrink-0">{action}</div>}
       </div>
       {children}
     </section>
@@ -1159,10 +1157,10 @@ function OpsStatusItem({ icon, tone, title, detail, meta, emph, last = false }: 
       <div className={`min-h-[74px] border-b border-white/[0.08] pb-4 ${last ? "border-b-0 pb-0" : ""}`}>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <strong className="block text-sm text-slate-100">{title}</strong>
+            <strong className="block truncate text-sm text-slate-100">{title}</strong>
             <span className="mt-1 block truncate text-xs leading-5 text-ops-muted">{detail}</span>
           </div>
-          {emph ? <b className="shrink-0 font-mono text-2xl font-black text-ops-orange">{emph}</b> : <span className="shrink-0 font-mono text-xs text-ops-muted">{meta || "-"}</span>}
+          {emph ? <b className="min-w-0 shrink-0 truncate font-mono text-2xl font-black text-ops-orange">{emph}</b> : <span className="min-w-0 shrink-0 truncate font-mono text-xs text-ops-muted">{meta || "-"}</span>}
         </div>
       </div>
     </div>
@@ -1259,9 +1257,9 @@ function formatClockDuration(seconds: unknown) {
 
 function MiniMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-xl border border-white/10 bg-black/15 p-2">
+    <div className="min-w-0 rounded-xl border border-white/10 bg-black/15 p-2">
       <span className="block text-xs text-ops-muted">{label}</span>
-      <b className="mt-1 block font-mono text-lg font-black">{value}</b>
+      <b className="mt-1 block min-w-0 truncate font-mono text-lg font-black" title={value}>{value}</b>
     </div>
   );
 }
@@ -1423,11 +1421,11 @@ function SettingsBlueprintPage({ status, settings }: { status?: SystemStatus; se
         title="系统配置"
         description="低频配置集中在这里；活动 URL 与日常操作请在活动监控和运营工作区完成。保存后会热应用可切换项，并标注下一场生效或需安全重启的影响。"
       />
-      {save.error && <p className="mb-4 rounded-2xl border border-red-400/30 bg-red-400/10 px-5 py-4 text-sm text-red-100">{String((save.error as Error).message || save.error)}</p>}
+      {save.error && <Notice tone="red">{String((save.error as Error).message || save.error)}</Notice>}
       {Boolean(save.data) && (
-        <p className="mb-4 rounded-2xl border border-emerald-400/30 bg-emerald-400/10 px-5 py-4 text-sm text-emerald-100">
+        <Notice tone="green">
           配置已保存。{restartRequired ? "部分配置需要安全重启。" : "可热应用配置已生效。"}{!!saveResult?.warnings?.length && ` 提醒：${saveResult.warnings.join("；")}`}
-        </p>
+        </Notice>
       )}
 
       <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(250px,.74fr)] gap-4 max-[1680px]:grid-cols-3 max-2xl:grid-cols-2 max-lg:grid-cols-1">
@@ -1448,7 +1446,7 @@ function SettingsBlueprintPage({ status, settings }: { status?: SystemStatus; se
                   <SettingsRow label="VIP 状态" value={mgtvView?.user?.isVip ? `是${mgtvView.user.vipType ? ` · ${mgtvView.user.vipType}` : ""}` : mgtvView?.cookieConfigured ? "否/未知" : "未知"} />
                   <SettingsRow label="登录方式" value={mgtvView?.loginProtocolAvailable ? mgtvView.loginProtocol || "mgtv_http_qr" : "待检测"} />
                   {(mgtvView?.error || startMgtvAuth.error || mgtvAuth.error) && (
-                    <p className="mt-3 rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-xs text-red-100">{String(mgtvView?.error || (startMgtvAuth.error as Error)?.message || (mgtvAuth.error as Error)?.message)}</p>
+                    <Notice tone="red">{String(mgtvView?.error || (startMgtvAuth.error as Error)?.message || (mgtvAuth.error as Error)?.message)}</Notice>
                   )}
                 </div>
                 <div className="grid size-28 shrink-0 place-items-center rounded-2xl border border-white/10 bg-white/[0.035] p-2 max-sm:h-28 max-sm:w-full">
@@ -1479,8 +1477,8 @@ function SettingsBlueprintPage({ status, settings }: { status?: SystemStatus; se
                 <SettingsRow label="App ID" value={maskSecret(feishuView?.appId || form.feishuAppId || "") || "-"} />
                 <SettingsRow label="授权 open_id" value={maskSecret(feishuView?.openId || "") || "-"} />
                 <SettingsRow label="租户" value={feishuView?.tenantBrand || "-"} />
-                {feishuView?.userCode && <p className="mt-2 rounded-xl border border-orange-400/30 bg-orange-400/10 px-3 py-2 font-mono text-xs text-ops-gold">授权码：{feishuView.userCode}</p>}
-                {feishuView?.verificationUrl && <a className="mt-2 rounded-xl border border-blue-400/30 bg-blue-400/10 px-3 py-2 text-xs font-black text-blue-100" href={feishuView.verificationUrl} target="_blank" rel="noreferrer">打开飞书授权页</a>}
+                {feishuView?.userCode && <Notice tone="orange">授权码：{feishuView.userCode}</Notice>}
+                {feishuView?.verificationUrl && <a className="mt-2 block min-w-0 rounded-xl border border-blue-400/30 bg-blue-400/10 px-3 py-2 text-xs font-black text-blue-100 [overflow-wrap:anywhere]" href={feishuView.verificationUrl} target="_blank" rel="noreferrer">打开飞书授权页</a>}
                 {(feishuView?.error || startFeishuBinding.error || feishuBinding.error || sendFeishuTestCard.error) && (
                   <Notice tone="red">{String(feishuView?.error || (startFeishuBinding.error as Error)?.message || (feishuBinding.error as Error)?.message || (sendFeishuTestCard.error as Error)?.message)}</Notice>
                 )}
@@ -1669,14 +1667,10 @@ function SettingsBlueprintPage({ status, settings }: { status?: SystemStatus; se
               </div>
               <p className="mt-3 text-xs leading-6 text-ops-muted">{updateProgress.detail || (updateView?.updateAvailable ? "发现远端新 commit，可一键升级。" : "当前部署已经与远端目标分支一致。")}</p>
               {!!updateView?.blockers?.length && (
-                <div className="mt-3 rounded-xl border border-orange-400/30 bg-orange-400/10 px-3 py-2 text-xs leading-6 text-ops-gold">
-                  {updateView.blockers.join("；")}
-                </div>
+                <Notice tone="orange">{updateView.blockers.join("；")}</Notice>
               )}
               {(updateStatus.error || applyUpdate.error || restartService.error) && (
-                <div className="mt-3 rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-xs leading-6 text-red-100">
-                  {String((updateStatus.error as Error)?.message || (applyUpdate.error as Error)?.message || (restartService.error as Error)?.message)}
-                </div>
+                <Notice tone="red">{String((updateStatus.error as Error)?.message || (applyUpdate.error as Error)?.message || (restartService.error as Error)?.message)}</Notice>
               )}
               <div className="mt-4 grid grid-cols-3 gap-3 max-sm:grid-cols-1">
                 <SettingsButton disabled={updateStatus.isFetching} onClick={() => queryClient.invalidateQueries({ queryKey: ["update-status"] })}>检查更新</SettingsButton>
@@ -2062,9 +2056,7 @@ function MachineStatusPage({ initial }: { initial?: SystemStatus }) {
       </div>
 
       {(status.error || metrics.error || logs.error || restartService.error) && (
-        <div className="rounded-2xl border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm text-red-100">
-          {String((status.error as Error)?.message || (metrics.error as Error)?.message || (logs.error as Error)?.message || (restartService.error as Error)?.message)}
-        </div>
+        <Notice tone="red">{String((status.error as Error)?.message || (metrics.error as Error)?.message || (logs.error as Error)?.message || (restartService.error as Error)?.message)}</Notice>
       )}
 
       <div className="grid grid-cols-4 gap-4 max-2xl:grid-cols-2 max-md:grid-cols-1">
@@ -2187,7 +2179,7 @@ function MachineStatusPage({ initial }: { initial?: SystemStatus }) {
             points={metricPoints}
           />
         </div>
-        <p className="mt-4 flex items-center gap-2 rounded-2xl border border-blue-400/20 bg-blue-400/10 px-4 py-3 text-xs leading-6 text-blue-100">
+        <p className="mt-4 flex min-w-0 items-center gap-2 rounded-2xl border border-blue-400/20 bg-blue-400/10 px-4 py-3 text-xs leading-6 text-blue-100 [overflow-wrap:anywhere]">
           <span className="grid size-5 place-items-center rounded-full bg-blue-400/20 font-mono">i</span>
           所有指标每 {refreshSeconds || "手动"} 秒更新一次；若数据异常，请检查网络、录制目录和相关服务状态。
         </p>
@@ -2205,7 +2197,7 @@ function MachineHeroCard({ icon, tone, label, value, detail }: { icon: ReactNode
         <div className="min-w-0">
           <span className="block text-sm text-ops-muted">{label}</span>
           <strong className="mt-1 block truncate text-2xl font-black tracking-[-0.04em] max-sm:text-xl">{value}</strong>
-          <span className="mt-1 block truncate text-xs text-ops-muted">{detail}</span>
+          <span className="mt-1 block truncate text-xs text-ops-muted" title={typeof detail === "string" ? detail : undefined}>{detail}</span>
         </div>
       </div>
     </article>
@@ -2216,7 +2208,7 @@ function MachinePanel({ title, icon, children, className = "" }: { title: string
   return (
     <section className={`glass relative min-w-0 overflow-hidden rounded-3xl p-5 ${className}`}>
       <div className="mb-4 flex items-center justify-between gap-3">
-        <h3 className="flex items-center gap-2 text-lg font-black tracking-[-0.04em]">
+        <h3 className="flex min-w-0 items-center gap-2 truncate text-lg font-black tracking-[-0.04em]">
           {icon && <span className="text-ops-muted">{icon}</span>}
           {title}
         </h3>
@@ -2627,21 +2619,21 @@ function SystemLogsPage({ initialLogs }: { initialLogs: SystemLogEvent[] }) {
       </div>
 
       {summary.data && (
-        <div className="rounded-3xl border border-orange-400/30 bg-orange-400/10 p-5 text-sm leading-7 text-ops-gold">
+        <div className="min-w-0 rounded-3xl border border-orange-400/30 bg-orange-400/10 p-5 text-sm leading-7 text-ops-gold">
           <div className="flex items-start justify-between gap-4 max-sm:flex-col">
-            <div>
+            <div className="min-w-0">
               <strong className="block text-base text-ops-gold">排障摘要</strong>
-              <p className="mt-2 text-slate-100">{summary.data.summary}</p>
+              <p className="mt-2 text-slate-100 [overflow-wrap:anywhere]">{summary.data.summary}</p>
             </div>
             <span className="rounded-full border border-orange-400/30 bg-black/20 px-3 py-1 font-mono text-xs">共 {summary.data.total || 0} 条</span>
           </div>
           <ul className="mt-3 grid gap-2 text-slate-200">
-            {(summary.data.suggestions || []).map((item) => <li key={item} className="flex gap-2"><CheckCircle className="mt-0.5 shrink-0 text-ops-green" size={16} />{item}</li>)}
+            {(summary.data.suggestions || []).map((item) => <li key={item} className="flex min-w-0 gap-2"><CheckCircle className="mt-0.5 shrink-0 text-ops-green" size={16} /><span className="min-w-0 [overflow-wrap:anywhere]">{item}</span></li>)}
           </ul>
         </div>
       )}
-      {summary.error && <p className="rounded-2xl border border-red-400/30 bg-red-400/10 px-5 py-4 text-sm text-red-100">{String((summary.error as Error).message || summary.error)}</p>}
-      {logs.error && <p className="rounded-2xl border border-red-400/30 bg-red-400/10 px-5 py-4 text-sm text-red-100">日志读取失败：{String((logs.error as Error).message || logs.error)}</p>}
+      {summary.error && <Notice tone="red">{String((summary.error as Error).message || summary.error)}</Notice>}
+      {logs.error && <Notice tone="red">日志读取失败：{String((logs.error as Error).message || logs.error)}</Notice>}
 
       <div className="grid grid-cols-[minmax(0,1fr)_440px] gap-4 max-2xl:grid-cols-[minmax(0,1fr)_390px] max-xl:grid-cols-1">
         <section className="glass min-w-0 overflow-hidden rounded-3xl">
@@ -2680,9 +2672,9 @@ function SystemLogsPage({ initialLogs }: { initialLogs: SystemLogEvent[] }) {
               </div>
             )}
           </div>
-          <div className="flex items-center justify-between gap-4 border-t border-white/10 px-5 py-4 max-md:flex-col max-md:items-stretch">
+          <div className="flex min-w-0 items-center justify-between gap-4 border-t border-white/10 px-5 py-4 max-md:flex-col max-md:items-stretch">
             <p className="text-sm text-ops-muted">共 <span className="font-mono text-slate-200">{total.toLocaleString("zh-CN")}</span> 条日志</p>
-            <div className="flex flex-wrap items-center justify-end gap-2 max-md:justify-between">
+            <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 max-md:justify-between">
               <button className="ops-mini-button" type="button" disabled={currentPage <= 1} onClick={() => gotoPage(currentPage - 1)}><CaretLeft size={15} />上一页</button>
               {logPaginationItems(currentPage, pageCount).map((item, index) => item === "gap" ? (
                 <span key={`gap-${index}`} className="px-2 font-mono text-ops-muted">...</span>
@@ -2807,7 +2799,7 @@ function LogDetailPanel({ event, copied, onCopy, onSummarize }: { event?: System
                 {copied ? "已复制" : "复制"}
               </button>
             </div>
-            <pre className="max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-5 text-slate-300">{JSON.stringify(event, null, 2)}</pre>
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-5 text-slate-300 [overflow-wrap:anywhere]">{JSON.stringify(event, null, 2)}</pre>
           </div>
 
           <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/[0.08] p-4">
@@ -2818,9 +2810,9 @@ function LogDetailPanel({ event, copied, onCopy, onSummarize }: { event?: System
             {remediation.length ? (
               <ul className="grid gap-2 text-sm leading-6 text-slate-200">
                 {remediation.map((item) => (
-                  <li key={item} className="flex gap-2">
+                  <li key={item} className="flex min-w-0 gap-2">
                     <CheckCircle className="mt-0.5 shrink-0 text-ops-green" size={16} />
-                    <span>{item}</span>
+                    <span className="min-w-0 [overflow-wrap:anywhere]">{item}</span>
                   </li>
                 ))}
               </ul>
@@ -2850,7 +2842,7 @@ function LogDetailField({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="grid grid-cols-[92px_minmax(0,1fr)] items-start gap-4 text-sm">
       <span className="text-ops-muted">{label}</span>
-      <strong className="min-w-0 break-words font-mono text-sm font-semibold text-slate-200">{value}</strong>
+      <strong className="min-w-0 break-words font-mono text-sm font-semibold text-slate-200 [overflow-wrap:anywhere]">{value}</strong>
     </div>
   );
 }
@@ -2862,7 +2854,7 @@ function LogCodeBlock({ label, value, copied, onCopy }: { label: string; value: 
         <span className="text-xs font-bold text-ops-muted">{label}</span>
         {onCopy && <button type="button" className="ops-mini-button" onClick={onCopy}><CopySimple size={15} />{copied ? "已复制" : "复制"}</button>}
       </div>
-      <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded-2xl border border-white/10 bg-black/28 p-3 font-mono text-[11px] leading-5 text-slate-300">{value || "-"}</pre>
+      <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded-2xl border border-white/10 bg-black/28 p-3 font-mono text-[11px] leading-5 text-slate-300 [overflow-wrap:anywhere]">{value || "-"}</pre>
     </div>
   );
 }

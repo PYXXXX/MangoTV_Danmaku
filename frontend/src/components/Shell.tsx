@@ -39,7 +39,7 @@ export function Shell({ activePage, title, subtitle, badges, children, onNavigat
     setDrawerOpen(false);
   };
   return (
-    <div className="relative grid min-h-dvh grid-cols-[300px_minmax(0,1fr)] text-[#fff7ea] max-xl:grid-cols-1">
+    <div className="relative grid min-h-dvh grid-cols-[300px_minmax(0,1fr)] overflow-x-hidden text-[#fff7ea] max-xl:grid-cols-1">
       <div className="glass sticky top-0 z-30 hidden min-h-16 items-center justify-between gap-3 rounded-none border-x-0 border-t-0 px-4 py-3 max-sm:flex">
         <div className="flex min-w-0 items-center gap-3">
           <img
@@ -97,7 +97,7 @@ export function Shell({ activePage, title, subtitle, badges, children, onNavigat
               ].join(" ")}
             >
               <span className="grid size-9 place-items-center rounded-xl bg-white/[0.05] text-ops-orange">{item.icon}</span>
-              <span>
+              <span className="min-w-0">
                 <b className="block text-sm font-extrabold">{item.label}</b>
                 <small className="mt-1 block text-xs text-ops-muted">{item.helper}</small>
               </span>
@@ -168,7 +168,7 @@ export function Shell({ activePage, title, subtitle, badges, children, onNavigat
                   ].join(" ")}
                 >
                   <span className="grid size-9 place-items-center rounded-xl bg-white/[0.05] text-ops-orange">{item.icon}</span>
-                  <span>
+                  <span className="min-w-0">
                     <b className="block text-sm font-extrabold">{item.label}</b>
                     <small className="mt-1 block text-xs text-ops-muted">{item.helper}</small>
                   </span>
@@ -192,7 +192,7 @@ export function Shell({ activePage, title, subtitle, badges, children, onNavigat
         </div>
       )}
 
-      <section className="min-w-0">
+      <section className="min-w-0 overflow-x-hidden">
         <header className="sticky top-0 z-10 flex min-h-[70px] items-center justify-between gap-6 border-b border-white/10 bg-[#070a0d]/80 px-7 backdrop-blur-2xl max-lg:static max-lg:flex-col max-lg:items-start max-lg:py-4 max-sm:min-h-0 max-sm:px-4 max-sm:py-3">
           <div className="flex min-w-0 items-baseline gap-4">
             <h1 className="whitespace-nowrap text-2xl font-black tracking-[-0.055em] max-sm:text-xl">{title}</h1>
@@ -208,7 +208,7 @@ export function Shell({ activePage, title, subtitle, badges, children, onNavigat
             </button>
           </div>
         </header>
-        <main data-testid={`studio-page-${activePage}`} className="mx-auto w-full max-w-[1720px] px-7 py-7 max-sm:px-4 max-sm:py-5">{children}</main>
+        <main data-testid={`studio-page-${activePage}`} className="mx-auto w-full max-w-[1720px] min-w-0 overflow-x-hidden px-7 py-7 max-sm:px-4 max-sm:py-5">{children}</main>
       </section>
     </div>
   );
@@ -223,33 +223,33 @@ export function StatusBadge({ tone = "neutral", children }: { tone?: "green" | "
     neutral: "border-white/10 bg-white/[0.04] text-slate-300"
   }[tone];
   return (
-    <span className={`inline-flex min-h-9 items-center gap-2 rounded-full border px-3 text-sm font-extrabold ${toneClass}`}>
+    <span className={`inline-flex min-h-9 max-w-full items-center gap-2 rounded-full border px-3 text-sm font-extrabold ${toneClass}`}>
       <span className="size-2 rounded-full bg-current shadow-[0_0_0_6px_rgba(255,255,255,.08)]" />
-      {children}
+      <span className="min-w-0 truncate">{children}</span>
     </span>
   );
 }
 
 export function PageHeading({ kicker, title, description, action }: { kicker: string; title: string; description: string; action?: ReactNode }) {
   return (
-    <div className="mb-6 flex items-start justify-between gap-6 max-md:flex-col">
-      <div>
+    <div className="mb-6 flex min-w-0 items-start justify-between gap-6 max-md:flex-col">
+      <div className="min-w-0">
         <p className="mb-3 font-mono text-xs font-black uppercase tracking-[0.18em] text-ops-orange">{kicker}</p>
         <h2 className="text-4xl font-black tracking-[-0.06em]">{title}</h2>
-        <p className="mt-3 max-w-3xl text-sm leading-7 text-ops-muted">{description}</p>
+        <p className="mt-3 max-w-3xl text-sm leading-7 text-ops-muted [overflow-wrap:anywhere]">{description}</p>
       </div>
-      {action}
+      {action && <div className="max-w-full shrink-0">{action}</div>}
     </div>
   );
 }
 
 export function Card({ title, children, action, className = "" }: { title?: string; children: ReactNode; action?: ReactNode; className?: string }) {
   return (
-    <section className={`glass relative overflow-hidden rounded-3xl p-5 ${className}`}>
+    <section className={`glass relative min-w-0 overflow-hidden rounded-3xl p-5 ${className}`}>
       {(title || action) && (
-        <div className="mb-4 flex items-start justify-between gap-4">
-          {title ? <h3 className="text-lg font-black tracking-[-0.035em]">{title}</h3> : <span />}
-          {action}
+        <div className="mb-4 flex min-w-0 items-start justify-between gap-4">
+          {title ? <h3 className="min-w-0 truncate text-lg font-black tracking-[-0.035em]">{title}</h3> : <span />}
+          {action && <div className="max-w-full shrink-0">{action}</div>}
         </div>
       )}
       {children}
