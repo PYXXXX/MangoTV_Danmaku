@@ -225,8 +225,14 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                 calls.append({"detect": url, "quality": quality})
                 return {"ok": True, "quality": "1080P", "actualQuality": "1080P"}
 
-            async def fake_start_round(name, url=None, activity=None):
-                calls.append({"start": name, "url": url, "activity": activity})
+            async def fake_start_round(name, url=None, activity=None, *, record_video=None, collect_danmaku=True):
+                calls.append({
+                    "start": name,
+                    "url": url,
+                    "activity": activity,
+                    "record_video": record_video,
+                    "collect_danmaku": collect_danmaku,
+                })
                 return SimpleNamespace(id="round-monitor", name=name, activity=activity)
 
             async def fake_notify(text):
@@ -239,14 +245,193 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                 status = await service.monitor_tick_once()
                 self.assertEqual(calls, [
                     {"detect": "https://www.mgtv.com/z/1001668.html", "quality": "1080P"},
-                    {"start": "全程录制", "url": "https://www.mgtv.com/z/1001668.html", "activity": "歌手 2026"},
+                    {
+                        "start": "全程录制",
+                        "url": "https://www.mgtv.com/z/1001668.html",
+                        "activity": "歌手 2026",
+                        "record_video": True,
+                        "collect_danmaku": True,
+                    },
                 ])
                 self.assertEqual(status["state"]["status"], "running")
                 self.assertEqual(status["state"]["roundId"], "round-monitor")
-                self.assertEqual(notices, ["已检测到直播并自动开始：歌手 2026 / 全程录制"])
+                self.assertEqual(notices, ["活动监控：已自动开始：歌手 2026 / 全程录制"])
 
                 await service.monitor_tick_once()
                 self.assertEqual(len([item for item in calls if "start" in item]), 1)
+            finally:
+                service.collector.fingerprints.close()
+
+    async def test_start_round_respects_video_and_danmaku_switches(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "mgtv": {
+                    "url": "https://www.mgtv.com/z/1001668.html",
+                    "dedup_db_path": str(Path(temp) / "fingerprints.sqlite3"),
+                },
+                "recording": {"enabled": False, "preferred_quality": "1080P", "directory": str(Path(temp) / "recordings")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {"enabled": False},
+            }
+            service = VoteService(config)
+            calls = []
+
+            async def fake_resolve(url, persist=False):
+                calls.append({"resolve": url, "persist": persist})
+                return {"ok": True, "pageUrl": "https://www.mgtv.com/z/1001668/5366.html"}
+
+            async def fake_detect(url=None, quality=None):
+                calls.append({"detect": url, "quality": quality})
+                service.config.setdefault("recording", {})["stream_url"] = "https://stream.example/live.m3u8"
+                return {"ok": True, "streamUrl": "https://stream.example/live.m3u8", "quality": "1080P"}
+
+            async def fake_record(meta, source_url="", force=False):
+                calls.append({"record": meta.name, "source": source_url, "force": force})
+                return {"status": "recording"}
+
+            async def fake_collect(round_id, url):
+                calls.append({"collect": round_id, "url": url})
+
+            service.resolve_mgtv_live_url = fake_resolve
+            service.detect_mgtv_recording_source = fake_detect
+            service.recorder.start = fake_record
+            service.collector.start = fake_collect
+            try:
+                first = await service.start_round("弹幕场", record_video=False, collect_danmaku=True)
+                self.assertFalse(any("record" in item for item in calls))
+                self.assertTrue(any("collect" in item for item in calls))
+                await service.end_round(publish=False)
+
+                calls.clear()
+                second = await service.start_round("视频场", record_video=True, collect_danmaku=False)
+                self.assertNotEqual(first.id, second.id)
+                self.assertTrue(any("record" in item and item["force"] for item in calls))
+                self.assertFalse(any("collect" in item for item in calls))
+            finally:
+                service.collector.fingerprints.close()
+
+    async def test_push_feishu_control_card_sends_to_configured_targets(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "mgtv": {"dedup_db_path": str(Path(temp) / "fingerprints.sqlite3")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {
+                    "enabled": True,
+                    "allowed_open_ids": ["ou_operator"],
+                    "allowed_chat_ids": ["oc_control_room"],
+                },
+            }
+            service = VoteService(config)
+            sent = []
+
+            async def fake_send_card(receive_id, receive_id_type, card):
+                sent.append((receive_id, receive_id_type, card))
+
+            service.feishu.send_card = fake_send_card
+            try:
+                result = await service.push_feishu_control_card()
+                self.assertEqual(result["count"], 2)
+                self.assertEqual([(item[0], item[1]) for item in sent], [("oc_control_room", "chat_id"), ("ou_operator", "open_id")])
+                self.assertIn("WebUI 已同步控制卡片", str(sent[0][2]))
+            finally:
+                service.collector.fingerprints.close()
+
+    async def test_system_logs_include_persisted_events(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "mgtv": {"dedup_db_path": str(Path(temp) / "fingerprints.sqlite3")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {"enabled": False},
+            }
+            service = VoteService(config)
+            try:
+                service.add_system_event("info", "test", "持久化事件", "token=secret")
+                events = service.system_logs(20)["events"]
+                rendered = json.dumps(events, ensure_ascii=False)
+                self.assertIn("持久化事件", rendered)
+                self.assertNotIn("secret", rendered)
+            finally:
+                service.collector.fingerprints.close()
+
+    async def test_feishu_recording_actions_create_marker_clip_and_analysis(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "mgtv": {"dedup_db_path": str(Path(temp) / "fingerprints.sqlite3")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {
+                    "enabled": True,
+                    "allowed_open_ids": ["ou_operator"],
+                    "allowed_chat_ids": ["oc_control_room"],
+                },
+            }
+            service = VoteService(config)
+            try:
+                meta = await service.store.create_round("歌手 2026", "全程录制", "", service.default_candidates, "all")
+                await service.store.stop_active()
+                service.user_selection["ou_operator"] = meta.id
+                service.recorder.records[meta.id] = {
+                    "roundId": meta.id,
+                    "activity": meta.activity,
+                    "roundName": meta.name,
+                    "status": "finished",
+                    "path": str(Path(temp) / "missing.mp4"),
+                    "markers": [],
+                    "clips": [],
+                }
+
+                card = await service.handle_feishu_card_action(
+                    "add_marker",
+                    "ou_operator",
+                    "oc_control_room",
+                    form_value={"at_seconds": "12.5", "label": "口播"},
+                )
+                self.assertEqual(service.recorder.records[meta.id]["markers"][0]["label"], "口播")
+                self.assertIn("已添加标记", str(card))
+
+                async def fake_create_clip(round_id, start_seconds, end_seconds, label=""):
+                    clip = {
+                        "id": "clip1",
+                        "label": label or "片段",
+                        "startSeconds": start_seconds,
+                        "endSeconds": end_seconds,
+                        "path": str(Path(temp) / "clip.mp4"),
+                    }
+                    service.recorder.records[round_id].setdefault("clips", []).append(clip)
+                    return clip
+
+                service.recorder.create_clip = fake_create_clip
+                card = await service.handle_feishu_card_action(
+                    "create_clip",
+                    "ou_operator",
+                    "oc_control_room",
+                    form_value={"start_seconds": "10", "end_seconds": "20", "label": "片段一"},
+                )
+                self.assertEqual(service.recorder.records[meta.id]["clips"][0]["label"], "片段一")
+                self.assertIn("已截取片段", str(card))
             finally:
                 service.collector.fingerprints.close()
 

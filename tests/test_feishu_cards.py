@@ -1,7 +1,7 @@
 import unittest
 import asyncio
 
-from server.feishu_cards import build_control_card, build_round_list_card
+from server.feishu_cards import build_control_card, build_recording_card, build_round_list_card
 from server.feishu_ws import FeishuLongConnection
 
 
@@ -59,7 +59,9 @@ class FeishuCardTest(unittest.TestCase):
         self.assertIn("120", rendered)
         self.assertIn("打开公开结果页", rendered)
         self.assertIn("发送当前场次 PNG", rendered)
+        self.assertIn("录制后处理", rendered)
         self.assertIn("send_png", actions)
+        self.assertIn("show_recording", actions)
 
     def test_control_card_contains_confirmed_delete_actions_for_stopped_round(self):
         card = build_control_card(self.state, "r0", "状态已刷新", "https://example.com/results")
@@ -107,6 +109,37 @@ class FeishuCardTest(unittest.TestCase):
         self.assertEqual(selector["initial_option"], "r0")
         self.assertEqual(len(selector["options"]), 2)
         self.assertEqual(card["header"]["title"]["content"], "场次管理")
+
+    def test_recording_card_contains_post_processing_forms(self):
+        state = {
+            "activeSessionId": None,
+            "sessions": [
+                {
+                    "id": "r0",
+                    "activity": "歌手 2026",
+                    "displayName": "全程录制",
+                    "status": "stopped",
+                    "messageCount": 10,
+                    "reviewCount": 0,
+                    "candidates": [{"id": "c1", "name": "甲"}],
+                    "results": {"rough": {"voteCounts": {"c1": 1}}, "precise": None},
+                    "recording": {
+                        "status": "finished",
+                        "hasVideo": True,
+                        "videoUrl": "/api/rounds/r0/recording/video",
+                        "markers": [{"label": "口播", "atSeconds": 12}],
+                        "clips": [{"id": "clip1", "label": "片段一", "startSeconds": 10, "endSeconds": 20}],
+                    },
+                }
+            ],
+        }
+        card = build_recording_card(state, "r0")
+        rendered = str(card)
+        self.assertIn("录制后处理", rendered)
+        self.assertIn("recording_marker_form", rendered)
+        self.assertIn("recording_clip_form", rendered)
+        self.assertIn("analyze_latest_clip", rendered)
+        self.assertIn("打开回看视频", rendered)
 
     def test_long_connection_requires_credentials_only_when_enabled(self):
         loop = asyncio.new_event_loop()

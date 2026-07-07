@@ -98,6 +98,52 @@ def start_round_form(default_activity: str, next_round_name: str, default_url: s
     }
 
 
+def recording_marker_form() -> dict[str, Any]:
+    return {
+        "tag": "form",
+        "name": "recording_marker_form",
+        "elements": [
+            {"tag": "markdown", "content": "**添加录屏标记**\n在回看播放器里确认秒数后，可在这里填写。"},
+            {"tag": "markdown", "content": "时间点（秒）"},
+            text_input("at_seconds", "例如：128.5"),
+            {"tag": "markdown", "content": "标记名称"},
+            text_input("label", "例如：主持人口播 / 高能片段"),
+            {
+                "tag": "button",
+                "text": plain_text("添加标记"),
+                "type": "primary",
+                "name": "add_marker_submit",
+                "form_action_type": "submit",
+                "value": {"action": "add_marker"},
+            },
+        ],
+    }
+
+
+def recording_clip_form() -> dict[str, Any]:
+    return {
+        "tag": "form",
+        "name": "recording_clip_form",
+        "elements": [
+            {"tag": "markdown", "content": "**截取片段并生成回看素材**\n填写开始/结束秒数后，系统会用 ffmpeg 截取视频片段。"},
+            {"tag": "markdown", "content": "开始秒数"},
+            text_input("start_seconds", "例如：120"),
+            {"tag": "markdown", "content": "结束秒数"},
+            text_input("end_seconds", "例如：180"),
+            {"tag": "markdown", "content": "片段名称"},
+            text_input("label", "例如：第一段竞演回放"),
+            {
+                "tag": "button",
+                "text": plain_text("截取片段"),
+                "type": "primary",
+                "name": "create_clip_submit",
+                "form_action_type": "submit",
+                "value": {"action": "create_clip"},
+            },
+        ],
+    }
+
+
 def select_session(state: dict[str, Any], selected_round_id: str | None) -> dict[str, Any] | None:
     sessions = state.get("sessions") or []
     return (
@@ -223,7 +269,10 @@ def build_control_card(
         button("发布粗略结果", "publish_rough", "primary"),
     ))
     if session:
-        elements.append(action_row(button("发送当前场次 PNG", "send_png", "default")))
+        elements.append(action_row(
+            button("发送当前场次 PNG", "send_png", "default"),
+            button("录制后处理", "show_recording", "default"),
+        ))
         if session.get("status") != "running":
             elements.append(action_row(
                 button(
@@ -248,6 +297,59 @@ def build_control_card(
     return {
         "config": {"wide_screen_mode": True, "enable_forward": False},
         "header": {"template": template, "title": plain_text("直播弹幕人气控制台")},
+        "elements": elements,
+    }
+
+
+def build_recording_card(
+    state: dict[str, Any],
+    selected_round_id: str | None = None,
+    notice: str = "",
+) -> dict[str, Any]:
+    session = select_session(state, selected_round_id)
+    defaults = state.get("defaults") if isinstance(state.get("defaults"), dict) else {}
+    public_base_url = str(defaults.get("publicBaseUrl") or "").rstrip("/")
+    elements: list[dict[str, Any]] = []
+    if notice:
+        elements.append({"tag": "markdown", "content": f"**操作结果**\n{notice}"})
+        elements.append({"tag": "hr"})
+    if not session:
+        elements.append({"tag": "markdown", "content": "**暂无场次**\n请先开始或选择一个场次。"})
+    else:
+        recording = session.get("recording") or {}
+        clips = recording.get("clips") or []
+        markers = recording.get("markers") or []
+        status = recording.get("status") or "未录制"
+        has_video = "是" if recording.get("hasVideo") else "否"
+        elements.append({
+            "tag": "markdown",
+            "content": (
+                f"**{session_title(session)}｜录制后处理**\n"
+                f"录制状态：**{status}**\n"
+                f"视频可回看：**{has_video}**\n"
+                f"标记：**{len(markers)}** 个，片段：**{len(clips)}** 个"
+            ),
+        })
+        video_url = str(recording.get("videoUrl") or "")
+        if video_url.startswith("/") and public_base_url:
+            video_url = public_base_url + video_url
+        if video_url:
+            elements.append({
+                "tag": "action",
+                "actions": [{"tag": "button", "text": plain_text("打开回看视频"), "type": "default", "url": video_url}],
+            })
+        if clips:
+            lines = ["**最近片段**"]
+            for clip in clips[-5:]:
+                lines.append(f"- {clip.get('label') or '未命名片段'}：{clip.get('startSeconds', 0)}s–{clip.get('endSeconds', 0)}s")
+            elements.append({"tag": "markdown", "content": "\n".join(lines)})
+            elements.append(action_row(button("生成最近片段分析场次", "analyze_latest_clip", "primary")))
+        elements.append(recording_marker_form())
+        elements.append(recording_clip_form())
+    elements.append(action_row(button("返回控制台", "control", "primary"), button("刷新状态", "show_recording")))
+    return {
+        "config": {"wide_screen_mode": True, "enable_forward": False},
+        "header": {"template": "purple", "title": plain_text("录制后处理")},
         "elements": elements,
     }
 

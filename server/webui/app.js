@@ -20,6 +20,8 @@ const el = {
   postActivityName: $("#postActivityName"),
   postRoundName: $("#postRoundName"),
   postLiveUrl: $("#postLiveUrl"),
+  postRecordVideo: $("#postRecordVideo"),
+  postRecordDanmaku: $("#postRecordDanmaku"),
   endRound: $("#endRound"),
   publish: $("#publish"),
   preciseForm: $("#preciseForm"),
@@ -339,6 +341,19 @@ async function sendCommand(text) {
   addLog(payload.reply || "操作完成");
   await load();
   return payload.reply;
+}
+
+async function startRoundApi({ activity, name, url, recordVideo, collectDanmaku }) {
+  const payload = await postJson("/api/rounds/start", {
+    activity,
+    name,
+    url,
+    recordVideo,
+    collectDanmaku
+  });
+  addLog("已开始：" + payload.activity + " / " + payload.name);
+  await load();
+  return payload;
 }
 
 async function deleteJson(url) {
@@ -788,19 +803,26 @@ el.startForm.addEventListener("submit", async (event) => {
   const activity = el.activityName.value.trim() || defaultActivityName();
   const name = el.roundName.value.trim() || defaultRoundName();
   const url = el.liveUrl.value.trim();
-  await sendCommand("开始 " + activity + "|" + name + (url ? (" " + url) : ""));
-  el.activityName.value = defaultActivityName();
-  el.roundName.value = "";
+  try {
+    await startRoundApi({ activity, name, url, recordVideo: false, collectDanmaku: true });
+    el.activityName.value = defaultActivityName();
+    el.roundName.value = "";
+  } catch (error) {
+    addLog("开始实时场次失败：" + error.message);
+  }
 });
 el.postRecordForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const activity = el.postActivityName.value.trim() || defaultActivityName();
   const name = el.postRoundName.value.trim() || defaultFullRecordingName();
   const url = el.postLiveUrl.value.trim() || configuredDefaults().mgtvUrl || "";
+  const recordVideo = Boolean(el.postRecordVideo && el.postRecordVideo.checked);
+  const collectDanmaku = Boolean(el.postRecordDanmaku && el.postRecordDanmaku.checked);
+  if (!recordVideo && !collectDanmaku) return addLog("请至少选择录制视频或采集弹幕中的一项");
   try {
-    await sendCommand("开始 " + activity + "|" + name + (url ? (" " + url) : ""));
+    await startRoundApi({ activity, name, url, recordVideo, collectDanmaku });
     el.postRoundName.value = "";
-    addLog("全程录制/弹幕场次已启动。结束后可在下方回看、打标和截片段。");
+    addLog((recordVideo ? "录屏" : "") + (recordVideo && collectDanmaku ? " + " : "") + (collectDanmaku ? "弹幕采集" : "") + "场次已启动。");
   } catch (error) {
     addLog("开始全程录制失败：" + error.message);
   }
@@ -1001,9 +1023,19 @@ async function runSourceCheck() {
 
 el.monitorCheck.addEventListener("click", runSourceCheck);
 el.detectFromOps.addEventListener("click", runSourceCheck);
-el.syncFeishu.addEventListener("click", () => addLog("飞书卡片会随下一次飞书交互自动刷新；如需主动推送，请在飞书内点击控制卡片。"));
+el.syncFeishu.addEventListener("click", async () => {
+  el.syncFeishu.disabled = true;
+  try {
+    const payload = await postJson("/api/feishu/push-card", {});
+    addLog("已同步飞书控制卡片：" + (payload.count || 0) + " 个会话");
+  } catch (error) {
+    addLog("同步飞书失败：" + error.message);
+  } finally {
+    el.syncFeishu.disabled = false;
+  }
+});
 el.copyPublicLink.addEventListener("click", async () => {
-  const url = "https://pyxxxx.github.io/MangoTV_Danmaku/";
+  const url = configuredDefaults().publicResultsUrl || "https://pyxxxx.github.io/MangoTV_Danmaku/";
   try {
     await navigator.clipboard.writeText(url);
     addLog("已复制公开链接：" + url);

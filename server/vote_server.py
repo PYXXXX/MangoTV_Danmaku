@@ -38,7 +38,7 @@ try:
     from server import feishu_binding
     from server.precise_results import parse_precise_result, validate_precise_result
     from server.result_image import render_result_png
-    from server.feishu_cards import build_control_card, build_round_list_card
+    from server.feishu_cards import build_control_card, build_recording_card, build_round_list_card
     from server.mgtv_auth import MgtvAuthManager
     from server.operator_auth import OperatorAuth, safe_next_url
     from server.runtime_settings import (
@@ -53,7 +53,7 @@ except ModuleNotFoundError:  # Support `python server/vote_server.py`.
     import feishu_binding
     from precise_results import parse_precise_result, validate_precise_result
     from result_image import render_result_png
-    from feishu_cards import build_control_card, build_round_list_card
+    from feishu_cards import build_control_card, build_recording_card, build_round_list_card
     from mgtv_auth import MgtvAuthManager
     from operator_auth import OperatorAuth, safe_next_url
     from runtime_settings import SettingsValidationError, build_settings_update, has_real_value, public_settings, save_config_atomic
@@ -1138,9 +1138,9 @@ class RecordingManager:
             records.append(item)
         return sorted(records, key=lambda item: item.get("startedAt") or "", reverse=True)
 
-    async def start(self, meta: RoundMeta, source_url: str = "") -> dict[str, Any] | None:
+    async def start(self, meta: RoundMeta, source_url: str = "", *, force: bool = False) -> dict[str, Any] | None:
         self._sync_directory_for_config()
-        if not self.enabled():
+        if not force and not self.enabled():
             return None
         source = source_url or self.default_source_url()
         record_dir = self.round_dir(meta.id)
@@ -1370,6 +1370,7 @@ class VoteService:
         self.monitor_auto_started = False
         self.monitor_last_url = ""
         self.monitor_state: dict[str, Any] = self._initial_monitor_state()
+        self.monitor_last_notified_key = ""
         self.add_system_event("info", "service", "服务已启动", "直播运营工作台后端进程已初始化。")
 
     def add_system_event(
@@ -1393,6 +1394,13 @@ class VoteService:
                 event[key] = self._redact_log_text(str(value)) if isinstance(value, str) else value
         self.system_events.append(event)
         self.system_events = self.system_events[-300:]
+        try:
+            log_path = self.store.directory / "system-events.jsonl"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+        except OSError:
+            pass
 
     @staticmethod
     def _redact_log_text(value: str) -> str:
@@ -1438,10 +1446,13 @@ class VoteService:
 
     def _set_monitor_state(self, **updates: Any) -> None:
         state = dict(self.monitor_state or self._initial_monitor_state())
+        previous_status = state.get("status") or ""
         state.update(updates)
         state["taskRunning"] = bool(self.monitor_task is not None and not self.monitor_task.done())
         state["autoStarted"] = bool(self.monitor_auto_started)
         self.monitor_state = state
+        if updates and previous_status and previous_status != state.get("status"):
+            self.add_system_event("info", "monitor", "活动监控状态变化", f"{previous_status} → {state.get('status')}: {state.get('message') or ''}")
 
     def monitor_status_view(self) -> dict[str, Any]:
         self._set_monitor_state()
@@ -1557,6 +1568,8 @@ class VoteService:
         state["defaults"] = {
             "activity": str((self.config.get("vote") or {}).get("activity") or "未分类活动"),
             "mgtvUrl": str((self.config.get("mgtv") or {}).get("url") or ""),
+            "publicBaseUrl": self.public_base_url(),
+            "publicResultsUrl": str((self.config.get("feishu") or {}).get("public_results_url") or self.public_base_url() or ""),
         }
         recordings = {item.get("roundId"): item for item in self.recorder.public_records()}
         for session in state.get("sessions") or []:
@@ -1707,7 +1720,11 @@ class VoteService:
         }
 
     def system_logs(self, limit: int = 120) -> dict[str, Any]:
-        events = list(reversed(self.system_events[-max(1, min(300, limit)):]))
+        wanted = max(1, min(300, limit))
+        events = self._persisted_system_events(wanted)
+        if not events:
+            events = list(self.system_events[-wanted:])
+        events = list(reversed(events[-wanted:]))
         if self.update_progress.get("logs"):
             update_events = [
                 {
@@ -1726,6 +1743,30 @@ class VoteService:
             "events": events[:limit],
             "sources": sorted({str(event.get("source") or "service") for event in events}),
         }
+
+    def _persisted_system_events(self, limit: int) -> list[dict[str, Any]]:
+        path = self.store.directory / "system-events.jsonl"
+        if not path.exists():
+            return []
+        lines: list[str] = []
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if line.strip():
+                        lines.append(line)
+                        if len(lines) > limit:
+                            lines = lines[-limit:]
+        except OSError:
+            return []
+        events: list[dict[str, Any]] = []
+        for line in lines:
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict):
+                events.append(item)
+        return events
 
     def start_background_tasks(self, loop: asyncio.AbstractEventLoop) -> None:
         if self.monitor_task is None or self.monitor_task.done():
@@ -1765,6 +1806,14 @@ class VoteService:
         monitor = self.monitor_config()
         if not monitor["feishuNotify"] or not self.feishu.enabled():
             return
+        targets = self.feishu_push_targets()
+        if not targets:
+            self.add_system_event("warn", "feishu", "活动监控未推送飞书", "未配置 allowed_chat_ids 或 allowed_open_ids")
+            return
+        receive_id, receive_type = targets[0]
+        await self.feishu.send_card(receive_id, receive_type, self.feishu_card("", text))
+
+    def feishu_push_targets(self) -> list[tuple[str, str]]:
         feishu = self.config.get("feishu") or {}
         chat_ids = feishu.get("allowed_chat_ids") or []
         open_ids = feishu.get("allowed_open_ids") or []
@@ -1774,12 +1823,33 @@ class VoteService:
             open_ids = [item.strip() for item in open_ids.split(",") if item.strip()]
         chat_ids = [item for item in chat_ids if item and item != "*"]
         open_ids = [item for item in open_ids if item and item != "*"]
-        receive_id = str((chat_ids or open_ids or [""])[0] or "")
-        if not receive_id:
-            self.add_system_event("warn", "feishu", "活动监控未推送飞书", "未配置 allowed_chat_ids 或 allowed_open_ids")
+        return [(str(chat_id), "chat_id") for chat_id in chat_ids] + [(str(open_id), "open_id") for open_id in open_ids]
+
+    async def push_feishu_control_card(self, notice: str = "WebUI 已同步控制卡片。") -> dict[str, Any]:
+        if not self.feishu.enabled():
+            raise RuntimeError("飞书 Bot 未启用")
+        targets = self.feishu_push_targets()
+        if not targets:
+            raise RuntimeError("未配置可主动推送的 allowed_chat_ids 或 allowed_open_ids")
+        sent: list[dict[str, str]] = []
+        card = self.feishu_card("", notice)
+        for receive_id, receive_type in targets:
+            await self.feishu.send_card(receive_id, receive_type, card)
+            sent.append({"receiveId": receive_id, "receiveIdType": receive_type})
+        self.add_system_event("info", "feishu", "已主动同步飞书控制卡片", f"targets={len(sent)}")
+        return {"ok": True, "sent": sent, "count": len(sent)}
+
+    async def notify_monitor_status_once(self, *, force: bool = False) -> None:
+        monitor = self.monitor_config()
+        state = self.monitor_state or {}
+        status = str(state.get("status") or "")
+        message = str(state.get("message") or "")
+        key = f"{status}|{message}|{state.get('roundId') or ''}"
+        if not force and (not monitor["feishuNotify"] or key == self.monitor_last_notified_key):
             return
-        receive_type = "chat_id" if chat_ids else "open_id"
-        await self.feishu.send_card(receive_id, receive_type, self.feishu_card("", text))
+        self.monitor_last_notified_key = key
+        if status in {"waiting", "source_ready", "running", "error"} or force:
+            await self.notify_monitor(f"活动监控：{message or status}")
 
     async def monitor_tick_once(self) -> dict[str, Any]:
         config = self.monitor_config()
@@ -1797,6 +1867,7 @@ class VoteService:
                 lastError="",
                 roundId="",
             )
+            await self.notify_monitor_status_once()
             return self.monitor_status_view()
         if not url:
             self._set_monitor_state(
@@ -1807,6 +1878,7 @@ class VoteService:
                 lastCheckAt=now_iso(),
                 lastError="缺少活动链接",
             )
+            await self.notify_monitor_status_once()
             return self.monitor_status_view()
 
         active = self.store.find_round(self.store.active_round_id)
@@ -1820,6 +1892,7 @@ class VoteService:
                 lastCheckAt=now_iso(),
                 lastError="",
             )
+            await self.notify_monitor_status_once()
             return self.monitor_status_view()
 
         self._set_monitor_state(
@@ -1846,6 +1919,7 @@ class VoteService:
                         lastError=str(detected.get("error") or ""),
                         quality=quality,
                     )
+                    await self.notify_monitor_status_once()
                     return self.monitor_status_view()
             else:
                 resolved = await self.resolve_mgtv_live_url(url, persist=True)
@@ -1857,6 +1931,7 @@ class VoteService:
                         message=str(resolved.get("error") or "直播机位暂不可用，等待下一次检测。"),
                         lastError=str(resolved.get("error") or ""),
                     )
+                    await self.notify_monitor_status_once()
                     return self.monitor_status_view()
         except Exception as exc:
             self.monitor_auto_started = False
@@ -1865,6 +1940,7 @@ class VoteService:
                 message=f"直播源暂不可用，等待下一次检测：{exc}",
                 lastError=str(exc),
             )
+            await self.notify_monitor_status_once()
             return self.monitor_status_view()
 
         self._set_monitor_state(
@@ -1877,16 +1953,24 @@ class VoteService:
 
         should_auto_start = bool(config["autoRecordVideo"] or config["autoRecordDanmaku"])
         if not should_auto_start:
+            await self.notify_monitor_status_once()
             return self.monitor_status_view()
         if self.monitor_auto_started:
             self._set_monitor_state(
                 status="armed",
                 message="本次直播已自动启动过场次；如需重新开始，请先关闭再开启监控。",
             )
+            await self.notify_monitor_status_once()
             return self.monitor_status_view()
 
         name = normalize(config["roundName"]) or f"{activity} 全程录制"
-        meta = await self.start_round(name, url, activity)
+        meta = await self.start_round(
+            name,
+            url,
+            activity,
+            record_video=config["autoRecordVideo"],
+            collect_danmaku=config["autoRecordDanmaku"],
+        )
         self.monitor_auto_started = True
         self._set_monitor_state(
             status="running",
@@ -1899,7 +1983,7 @@ class VoteService:
         )
         self.add_system_event("info", "monitor", "活动监控已自动开始场次", f"{meta.activity} / {meta.name}", roundId=meta.id)
         try:
-            await self.notify_monitor(f"已检测到直播并自动开始：{meta.activity} / {meta.name}")
+            await self.notify_monitor_status_once(force=True)
         except Exception as exc:
             self.add_system_event("warn", "feishu", "活动监控飞书通知失败", str(exc), roundId=meta.id)
         return self.monitor_status_view()
@@ -2420,6 +2504,8 @@ class VoteService:
         try:
             if action == "show_rounds":
                 return build_round_list_card(self.public_state(), self.user_selection.get(open_id))
+            if action == "show_recording":
+                return build_recording_card(self.public_state(), self.user_selection.get(open_id))
             if action == "control":
                 return self.feishu_card(open_id)
             if action == "select_round":
@@ -2468,6 +2554,46 @@ class VoteService:
                     self.user_selection[open_id] = target.id
                     label = "精确结果" if result_type == "precise" else "粗略结果"
                     notice = f"已发送 {target.name} 的{label} PNG 到当前会话。"
+            elif action == "add_marker":
+                target = self.store.find_round(self.user_selection.get(open_id))
+                if target is None:
+                    target = self.store.find_round(None)
+                if target is None:
+                    return build_recording_card(self.public_state(), notice="暂无可标记的场次。")
+                values = form_value if isinstance(form_value, dict) else {}
+                at_seconds = float(values.get("at_seconds") or 0)
+                label = normalize(values.get("label") or "") or f"飞书标记 {at_seconds:.1f}s"
+                marker = self.recorder.add_marker(target.id, label, at_seconds)
+                self.user_selection[open_id] = target.id
+                return build_recording_card(self.public_state(), target.id, f"已添加标记：{marker['label']} @ {marker['atSeconds']:.1f}s")
+            elif action == "create_clip":
+                target = self.store.find_round(self.user_selection.get(open_id))
+                if target is None:
+                    target = self.store.find_round(None)
+                if target is None:
+                    return build_recording_card(self.public_state(), notice="暂无可截取的场次。")
+                values = form_value if isinstance(form_value, dict) else {}
+                start_seconds = float(values.get("start_seconds") or 0)
+                end_seconds = float(values.get("end_seconds") or 0)
+                label = normalize(values.get("label") or "")
+                clip = await self.recorder.create_clip(target.id, start_seconds, end_seconds, label)
+                self.user_selection[open_id] = target.id
+                return build_recording_card(self.public_state(), target.id, f"已截取片段：{clip['label']}")
+            elif action == "analyze_latest_clip":
+                target = self.store.find_round(self.user_selection.get(open_id))
+                if target is None:
+                    target = self.store.find_round(None)
+                if target is None:
+                    return build_recording_card(self.public_state(), notice="暂无可分析的场次。")
+                record = self.recorder.record_for(target.id)
+                clips = (record or {}).get("clips") or []
+                if not clips:
+                    return build_recording_card(self.public_state(), target.id, "当前场次暂无片段，请先截取。")
+                clip = clips[-1]
+                meta = await self.create_analysis_round_from_clip(target.id, str(clip.get("id") or ""), "")
+                self.user_selection[open_id] = meta.id
+                notice = f"已生成分析场次：{meta.activity} / {meta.name}（{meta.messageCount} 条弹幕）"
+                return build_recording_card(self.public_state(), meta.id, notice)
             elif action == "delete_round":
                 target = self.store.find_round(self.user_selection.get(open_id))
                 if target is None:
@@ -2497,17 +2623,28 @@ class VoteService:
             notice = f"操作失败：{exc}"
         return self.feishu_card(open_id, notice)
 
-    async def start_round(self, name: str, url: str | None = None, activity: str | None = None) -> RoundMeta:
+    async def start_round(
+        self,
+        name: str,
+        url: str | None = None,
+        activity: str | None = None,
+        *,
+        record_video: bool | None = None,
+        collect_danmaku: bool = True,
+    ) -> RoundMeta:
         url = url or self.config.get("mgtv", {}).get("url")
         if not url:
             raise ValueError("未配置直播 URL")
+        if record_video is False and collect_danmaku is False:
+            raise ValueError("至少需要启用弹幕采集或视频录制中的一项")
         resolution = await self.resolve_mgtv_live_url(str(url), persist=True)
         if not resolution.get("ok"):
             raise ValueError(str(resolution.get("error") or "直播 URL 无法解析出可采集的机位"))
         url = str(resolution.get("pageUrl") or url)
         recording = self.config.get("recording") or {}
+        should_record_video = bool(recording.get("enabled")) if record_video is None else bool(record_video)
         recording_source = str(recording.get("stream_url") or "")
-        if recording.get("enabled"):
+        if should_record_video:
             detected = await self.detect_mgtv_recording_source(url, str(recording.get("preferred_quality") or "auto"))
             if not detected.get("ok"):
                 raise ValueError(str(detected.get("error") or "录制源检测失败"))
@@ -2516,9 +2653,19 @@ class VoteService:
             await self.end_round(publish=True)
         activity = activity or self.config.get("vote", {}).get("activity") or "未分类活动"
         meta = await self.store.create_round(activity, name, url, self.default_candidates, self.default_policy)
-        await self.recorder.start(meta, recording_source)
-        await self.collector.start(meta.id, url)
-        self.add_system_event("info", "collector", "场次已开始", f"{meta.activity} / {meta.name}", roundId=meta.id)
+        if should_record_video:
+            record = await self.recorder.start(meta, recording_source, force=True)
+            if record and record.get("status") in {"failed", "skipped"}:
+                self.add_system_event("warn", "recorder", "录屏未能启动", record.get("error") or record.get("status") or "", roundId=meta.id)
+        if collect_danmaku:
+            await self.collector.start(meta.id, url)
+        self.add_system_event(
+            "info",
+            "collector",
+            "场次已开始",
+            f"{meta.activity} / {meta.name} · video={'on' if should_record_video else 'off'} · danmaku={'on' if collect_danmaku else 'off'}",
+            roundId=meta.id,
+        )
         return meta
 
     async def end_round(self, publish: bool = True) -> RoundMeta | None:
@@ -3018,6 +3165,33 @@ def create_app(service: VoteService) -> web.Application:
         reply = await service.handle_command(data.get("text", ""))
         return web.json_response({"reply": reply}, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
 
+    async def start_round_api(request: web.Request) -> web.Response:
+        data = await request.json()
+        try:
+            meta = await service.start_round(
+                str(data.get("name") or ""),
+                str(data.get("url") or "") or None,
+                str(data.get("activity") or "") or None,
+                record_video=bool(data.get("recordVideo")) if "recordVideo" in data else None,
+                collect_danmaku=bool(data.get("collectDanmaku", True)),
+            )
+        except (ValueError, RuntimeError) as exc:
+            return web.json_response({"error": str(exc)}, status=409, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response(
+            {"ok": True, "roundId": meta.id, "activity": meta.activity, "name": meta.name, "pageUrl": meta.pageUrl},
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def push_feishu_card(_: web.Request) -> web.Response:
+        try:
+            result = await service.push_feishu_control_card()
+        except RuntimeError as exc:
+            return web.json_response({"error": str(exc)}, status=409, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=502, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response(result, dumps=lambda payload: json.dumps(payload, ensure_ascii=False), headers={"Cache-Control": "no-store"})
+
     async def recordings(_: web.Request) -> web.Response:
         return web.json_response(
             {
@@ -3229,6 +3403,10 @@ def create_app(service: VoteService) -> web.Application:
             action_name = str(value.get("action") or "")
             if not action_name and action.get("name") == "start_round_submit":
                 action_name = "start_custom"
+            elif not action_name and action.get("name") == "add_marker_submit":
+                action_name = "add_marker"
+            elif not action_name and action.get("name") == "create_clip_submit":
+                action_name = "create_clip"
             form_value = action.get("form_value") or action.get("formValue")
             operator = event.get("operator") or {}
             context = event.get("context") or {}
@@ -3279,6 +3457,7 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_get("/api/update/status", update_status)
     app.router.add_post("/api/update/apply", apply_update)
     app.router.add_get("/api/recordings", recordings)
+    app.router.add_post("/api/rounds/start", start_round_api)
     app.router.add_get("/api/rounds/{round_id}.jsonl", round_export)
     app.router.add_get("/api/rounds/{round_id}/raw.jsonl", round_raw_export)
     app.router.add_get("/api/rounds/{round_id}/result.png", round_result_png)
@@ -3295,6 +3474,7 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_delete("/api/rounds/{round_id}", delete_round)
     app.router.add_delete("/api/activities/{activity}", delete_activity)
     app.router.add_post("/api/command", command)
+    app.router.add_post("/api/feishu/push-card", push_feishu_card)
     app.router.add_post("/feishu/events", feishu_events)
     return app
 
