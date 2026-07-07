@@ -1395,25 +1395,30 @@ function SettingsBlueprintPage({ status, settings }: { status?: SystemStatus; se
   const githubRepoLabel = form.githubOwner || form.githubRepo ? `${form.githubOwner || "-"}/${form.githubRepo || "-"} (${form.githubBranch || "main"})` : "-";
   const updateBadgeTone = updateView?.inProgress ? "orange" : updateView?.updateAvailable ? "blue" : updateView?.dirty ? "red" : "green";
   const updateBadgeText = updateView?.inProgress ? "升级中" : updateView?.updateAvailable ? "发现新版本" : updateView?.dirty ? "工作区有改动" : "已是最新";
-  const hotReloadItems = [
-    "弹幕轮询间隔",
-    "重连间隔",
-    "去重缓存上限",
-    "飞书白名单",
-    "GitHub 发布路径",
-    "运营登录策略",
-    "公开页面 URL",
-    "自动切片配置"
-  ];
-  const nextRoundItems = [
-    "默认活动名称",
-    "候选人与别名",
-    "多人弹幕策略",
-    "默认清晰度",
-    "录屏直播流 URL",
-    "room_id / camera_id"
-  ];
-  const restartImpactItems = restartFields.length ? restartFields : ["监听地址与端口", "主数据目录", "服务进程级目录"];
+  const changedImpact = useMemo(() => {
+    if (!Object.keys(form).length) return { hot: [] as string[], next: [] as string[], restart: [] as string[] };
+    return getSettingsChangeImpact(form, config);
+  }, [form, config]);
+  const impactCards = [
+    {
+      tone: "green" as const,
+      title: "立即生效（热重载）",
+      items: changedImpact.hot,
+      note: changedImpact.hot.length ? "保存后会立即热应用；采集中任务按当前运行策略保持稳定。" : undefined
+    },
+    {
+      tone: "blue" as const,
+      title: "下一场生效",
+      items: changedImpact.next,
+      note: changedImpact.next.length ? "这些配置会影响新建场次或下一次录制，不会强行改动进行中的任务。" : undefined
+    },
+    {
+      tone: "orange" as const,
+      title: "需要安全重启",
+      items: changedImpact.restart,
+      note: changedImpact.restart.length ? "重启期间服务会短暂不可用，建议空窗期执行。" : undefined
+    }
+  ].filter((card) => card.items.length);
   return (
     <section className="grid gap-4">
       <PageHeading
@@ -1673,7 +1678,9 @@ function SettingsBlueprintPage({ status, settings }: { status?: SystemStatus; se
                 <Notice tone="red">{String((updateStatus.error as Error)?.message || (applyUpdate.error as Error)?.message || (restartService.error as Error)?.message)}</Notice>
               )}
               <div className="mt-4 grid grid-cols-3 gap-3 max-sm:grid-cols-1">
-                <SettingsButton disabled={updateStatus.isFetching} onClick={() => queryClient.invalidateQueries({ queryKey: ["update-status"] })}>检查更新</SettingsButton>
+                <SettingsButton disabled={updateStatus.isPending} onClick={() => void updateStatus.refetch()}>
+                  {updateStatus.isFetching && !updateStatus.data ? "检查中" : "检查更新"}
+                </SettingsButton>
                 <SettingsButton variant="primary" disabled={!updateView?.canApply || updateView?.inProgress || applyUpdate.isPending} onClick={() => applyUpdate.mutate()}>一键升级</SettingsButton>
                 <SettingsButton variant="orange" disabled={!restartRequired || restartService.isPending} onClick={() => restartService.mutate()}>安全重启</SettingsButton>
               </div>
@@ -1682,9 +1689,11 @@ function SettingsBlueprintPage({ status, settings }: { status?: SystemStatus; se
         </SettingsColumn>
 
         <aside className="grid content-start gap-4 max-[1680px]:col-span-3 max-2xl:col-span-2 max-lg:col-span-1">
-          <SettingsImpactCard tone="green" title="立即生效（热重载）" count={hotReloadItems.length} items={hotReloadItems} />
-          <SettingsImpactCard tone="blue" title="下一场生效" count={nextRoundItems.length} items={nextRoundItems} />
-          <SettingsImpactCard tone="orange" title="需要安全重启" count={restartImpactItems.length} items={restartImpactItems} note={restartRequired ? "重启期间服务会短暂不可用，建议空窗期执行。" : "当前暂无待重启配置。"} />
+          {impactCards.length
+            ? impactCards.map((card) => (
+              <SettingsImpactCard key={card.title} tone={card.tone} title={card.title} count={card.items.length} items={card.items} note={card.note} />
+            ))
+            : <SettingsImpactEmpty />}
         </aside>
       </div>
 
@@ -1732,6 +1741,79 @@ function parseCandidates(text: string) {
 
 function splitIds(text: string) {
   return String(text || "").split(/[,，\s]+/).map((item) => item.trim()).filter(Boolean);
+}
+
+function getSettingsChangeImpact(form: Record<string, any>, config: Record<string, any>) {
+  const vote = config.vote || {};
+  const mgtv = config.mgtv || {};
+  const recording = config.recording || {};
+  const github = config.github || {};
+  const feishu = config.feishu || {};
+  const operatorAuth = config.operator_auth || {};
+  const listen = config.listen || {};
+  const storage = config.storage || {};
+  const hot: string[] = [];
+  const next: string[] = [];
+  const restart: string[] = [];
+  const add = (bucket: string[], label: string, changed: boolean) => {
+    if (changed && !bucket.includes(label)) bucket.push(label);
+  };
+
+  add(next, "默认活动名称", textChanged(form.voteActivity, vote.activity || "歌手 2026"));
+  add(next, "候选人与别名", multilineChanged(form.candidatesText, candidatesToText(vote.candidates || [])));
+  add(next, "多人弹幕策略", textChanged(form.votePolicy || "all", vote.multi_candidate_policy || "all"));
+  add(next, "默认直播 URL", textChanged(form.mgtvUrl, mgtv.url || ""));
+  add(next, "历史弹幕接口", textChanged(form.historyApi, mgtv.history_api || "https://lb.bz.mgtv.com/get_history"));
+  add(next, "room_id / camera_id", textChanged(form.roomId, mgtv.room_id || "") || textChanged(form.cameraId, mgtv.camera_id || "") || textChanged(form.flag || "liveshow", mgtv.flag || "liveshow"));
+  add(next, "默认清晰度", textChanged(form.preferredQuality || "auto", recording.preferred_quality || "auto"));
+  add(next, "录屏直播流 URL", normalizeText(form.streamUrl) !== "" && textChanged(form.streamUrl, recording.stream_url || ""));
+
+  add(hot, "弹幕轮询间隔", numberChanged(form.pollSeconds, mgtv.poll_seconds || 2));
+  add(hot, "重连间隔", numberChanged(form.reconnectSeconds, mgtv.reconnect_seconds || 5));
+  add(hot, "去重缓存上限", numberChanged(form.dedupHotCacheSize, mgtv.dedup_hot_cache_size || 200000) || numberChanged(form.dedupMaxRecords, mgtv.dedup_max_records || 100000000));
+  add(hot, "SQLite 去重路径", textChanged(form.dedupDbPath, mgtv.dedup_db_path || "server/data/fingerprints.sqlite3"));
+  add(hot, "默认录屏开关", Boolean(form.recordingEnabled) !== Boolean(recording.enabled));
+  add(hot, "自动切片配置", Boolean(form.autoSplitEnabled !== false) !== Boolean(recording.auto_split_enabled !== false) || numberChanged(Math.max(5, Number(form.autoSplitMinutes || 60)) * 60, recording.auto_split_seconds || 3600));
+  add(hot, "ffmpeg 路径", textChanged(form.ffmpegPath || "ffmpeg", recording.ffmpeg_path || "ffmpeg"));
+  add(hot, "录制目录", textChanged(form.recordingDirectory, recording.directory || "server/data/recordings"));
+  add(hot, "GitHub 发布路径", Boolean(form.githubEnabled) !== Boolean(github.enabled) || textChanged(form.githubOwner, github.owner || "") || textChanged(form.githubRepo, github.repo || "") || textChanged(form.githubBranch || "main", github.branch || "main") || textChanged(form.githubPath || "site/data/results.json", github.path || "site/data/results.json"));
+  add(hot, "GitHub 发布 Token", normalizeText(form.githubToken) !== "");
+  add(hot, "飞书连接配置", Boolean(form.feishuEnabled) !== Boolean(feishu.enabled) || textChanged(form.feishuMode || "websocket", feishu.connection_mode || "websocket") || textChanged(form.feishuAppId, feishu.app_id || "") || normalizeText(form.feishuAppSecret) !== "" || normalizeText(form.feishuVerificationToken) !== "");
+  add(hot, "飞书白名单", !sameTokenList(splitIds(form.feishuOpenIds || ""), feishu.allowed_open_ids || []) || !sameTokenList(splitIds(form.feishuChatIds || ""), feishu.allowed_chat_ids || []));
+  add(hot, "公开页面 URL", textChanged(form.publicResultsUrl, feishu.public_results_url || ""));
+  add(hot, "运营登录策略", Boolean(form.authEnabled) !== Boolean(operatorAuth.enabled) || normalizeText(form.newPassword) !== "" || numberChanged(form.sessionHours, operatorAuth.session_hours || 12) || Boolean(form.secureCookie) !== Boolean(operatorAuth.secure_cookie) || numberChanged(form.maxFailures, operatorAuth.max_failures || 5) || numberChanged(form.failureWindowSeconds, operatorAuth.failure_window_seconds || 300));
+
+  add(restart, "监听地址与端口", textChanged(form.listenHost || "127.0.0.1", listen.host || "127.0.0.1") || numberChanged(form.listenPort, listen.port || 8080));
+  add(restart, "外部访问地址", textChanged(form.publicBaseUrl, listen.public_base_url || ""));
+  add(restart, "主数据目录", textChanged(form.storageDirectory, storage.directory || "server/data"));
+
+  return { hot, next, restart };
+}
+
+function normalizeText(value: unknown) {
+  return String(value ?? "").trim();
+}
+
+function textChanged(current: unknown, previous: unknown) {
+  return normalizeText(current) !== normalizeText(previous);
+}
+
+function multilineChanged(current: unknown, previous: unknown) {
+  const normalize = (value: unknown) => String(value ?? "").split(/\n+/).map((line) => line.trim()).filter(Boolean).join("\n");
+  return normalize(current) !== normalize(previous);
+}
+
+function numberChanged(current: unknown, previous: unknown) {
+  const currentNumber = Number(current);
+  const previousNumber = Number(previous);
+  return Number.isFinite(currentNumber) && Number.isFinite(previousNumber) ? currentNumber !== previousNumber : normalizeText(current) !== normalizeText(previous);
+}
+
+function sameTokenList(current: unknown[], previous: unknown[]) {
+  const normalize = (items: unknown[]) => items.map((item) => String(item || "").trim()).filter(Boolean).sort();
+  const left = normalize(current);
+  const right = normalize(previous);
+  return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
 function buildSettingsPayload(form: Record<string, any>) {
@@ -1894,15 +1976,29 @@ function SettingsImpactCard({ tone, title, count, items, note }: { tone: "green"
       ? "border-blue-400/20 bg-blue-400/10 text-blue-200 marker:text-blue-300"
       : "border-orange-400/25 bg-orange-400/10 text-ops-gold marker:text-ops-orange";
   return (
-    <section className={`rounded-3xl border p-4 ${toneClass}`}>
+    <section className={`min-w-0 rounded-3xl border p-4 ${toneClass}`}>
       <div className="flex items-center justify-between gap-3">
-        <strong className="text-base font-black tracking-[-0.03em]">{title}</strong>
+        <strong className="min-w-0 truncate text-base font-black tracking-[-0.03em]">{title}</strong>
         <span className="rounded-full bg-white/10 px-3 py-1 font-mono text-xs font-black">{count} 项</span>
       </div>
       <ul className="mt-4 grid gap-2 pl-4 text-xs leading-6 marker:content-['•']">
-        {items.map((item) => <li key={item} className="pl-2">{item}</li>)}
+        {items.map((item) => <li key={item} className="min-w-0 pl-2 [overflow-wrap:anywhere]">{item}</li>)}
       </ul>
-      {note && <p className="mt-4 text-xs leading-6 opacity-75">{note}</p>}
+      {note && <p className="mt-4 text-xs leading-6 opacity-75 [overflow-wrap:anywhere]">{note}</p>}
+    </section>
+  );
+}
+
+function SettingsImpactEmpty() {
+  return (
+    <section className="min-w-0 rounded-3xl border border-white/10 bg-white/[0.035] p-4 text-slate-200">
+      <div className="flex items-center justify-between gap-3">
+        <strong className="text-base font-black tracking-[-0.03em]">暂无未保存修改</strong>
+        <span className="rounded-full bg-white/10 px-3 py-1 font-mono text-xs font-black text-ops-muted">0 项</span>
+      </div>
+      <p className="mt-4 text-xs leading-6 text-ops-muted">
+        修改左侧配置后，这里只显示被你改动过的项目，并按“热重载 / 下一场 / 安全重启”标出影响。
+      </p>
     </section>
   );
 }
