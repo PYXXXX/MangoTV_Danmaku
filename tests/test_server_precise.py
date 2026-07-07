@@ -120,6 +120,73 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 service.collector.fingerprints.close()
 
+    async def test_feishu_start_modes_pass_explicit_collection_flags(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "mgtv": {
+                    "url": "https://www.mgtv.com/z/1001668/5366.html",
+                    "dedup_db_path": str(Path(temp) / "fingerprints.sqlite3"),
+                },
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {
+                    "enabled": True,
+                    "allowed_open_ids": ["ou_operator"],
+                    "allowed_chat_ids": ["oc_control_room"],
+                },
+            }
+            service = VoteService(config)
+            calls = []
+
+            async def fake_start_round(name, url=None, activity=None, *, record_video=None, collect_danmaku=True):
+                calls.append({
+                    "name": name,
+                    "url": url,
+                    "activity": activity,
+                    "record_video": record_video,
+                    "collect_danmaku": collect_danmaku,
+                })
+                return SimpleNamespace(id=f"round-{len(calls)}", name=name, activity=activity)
+
+            service.start_round = fake_start_round
+            try:
+                await service.handle_feishu_card_action(
+                    "start_realtime",
+                    "ou_operator",
+                    "oc_control_room",
+                    form_value={"round_name": "第一轮"},
+                )
+                service.store.active_round_id = ""
+                await service.handle_feishu_card_action(
+                    "start_record",
+                    "ou_operator",
+                    "oc_control_room",
+                    form_value={"round_name": "全程录制"},
+                )
+                self.assertEqual(calls, [
+                    {
+                        "name": "第一轮",
+                        "url": None,
+                        "activity": "歌手 2026",
+                        "record_video": False,
+                        "collect_danmaku": True,
+                    },
+                    {
+                        "name": "全程录制",
+                        "url": None,
+                        "activity": "歌手 2026",
+                        "record_video": True,
+                        "collect_danmaku": True,
+                    },
+                ])
+            finally:
+                service.collector.fingerprints.close()
+
     async def test_round_result_png_export_and_public_url(self):
         with tempfile.TemporaryDirectory() as temp:
             config = {

@@ -38,7 +38,15 @@ try:
     from server import feishu_binding
     from server.precise_results import parse_precise_result, validate_precise_result
     from server.result_image import render_result_png
-    from server.feishu_cards import build_control_card, build_recording_card, build_round_list_card
+    from server.feishu_cards import (
+        build_control_card,
+        build_monitor_card,
+        build_ops_card,
+        build_publish_card,
+        build_recording_card,
+        build_round_list_card,
+        build_system_card,
+    )
     from server.mgtv_auth import MgtvAuthManager
     from server.operator_auth import OperatorAuth, safe_next_url
     from server.runtime_settings import (
@@ -53,7 +61,15 @@ except ModuleNotFoundError:  # Support `python server/vote_server.py`.
     import feishu_binding
     from precise_results import parse_precise_result, validate_precise_result
     from result_image import render_result_png
-    from feishu_cards import build_control_card, build_recording_card, build_round_list_card
+    from feishu_cards import (
+        build_control_card,
+        build_monitor_card,
+        build_ops_card,
+        build_publish_card,
+        build_recording_card,
+        build_round_list_card,
+        build_system_card,
+    )
     from mgtv_auth import MgtvAuthManager
     from operator_auth import OperatorAuth, safe_next_url
     from runtime_settings import SettingsValidationError, build_settings_update, has_real_value, public_settings, save_config_atomic
@@ -2454,7 +2470,17 @@ class VoteService:
     def feishu_card(self, open_id: str, notice: str = "") -> dict[str, Any]:
         public_url = str(self.config.get("feishu", {}).get("public_results_url") or "")
         selected_id = self.user_selection.get(open_id)
-        return build_control_card(self.public_state(), selected_id, notice, public_url)
+        return build_control_card(self.public_state(), selected_id, notice, public_url, self.monitor_status_view())
+
+    def feishu_ops_card(self, open_id: str, notice: str = "") -> dict[str, Any]:
+        return build_ops_card(self.public_state(), self.user_selection.get(open_id), notice)
+
+    def feishu_publish_card(self, open_id: str, notice: str = "") -> dict[str, Any]:
+        public_url = str(self.config.get("feishu", {}).get("public_results_url") or "")
+        return build_publish_card(self.public_state(), self.user_selection.get(open_id), notice, public_url)
+
+    def feishu_recording_card(self, open_id: str, notice: str = "") -> dict[str, Any]:
+        return build_recording_card(self.public_state(), self.user_selection.get(open_id), notice)
 
     async def handle_feishu_text(
         self,
@@ -2504,8 +2530,16 @@ class VoteService:
         try:
             if action == "show_rounds":
                 return build_round_list_card(self.public_state(), self.user_selection.get(open_id))
+            if action == "show_monitor":
+                return build_monitor_card(self.public_state(), self.monitor_status_view())
+            if action == "show_ops":
+                return self.feishu_ops_card(open_id)
+            if action == "show_publish":
+                return self.feishu_publish_card(open_id)
+            if action == "show_system":
+                return build_system_card(self.system_status())
             if action == "show_recording":
-                return build_recording_card(self.public_state(), self.user_selection.get(open_id))
+                return self.feishu_recording_card(open_id)
             if action == "control":
                 return self.feishu_card(open_id)
             if action == "select_round":
@@ -2520,25 +2554,34 @@ class VoteService:
                     notice = "已有场次正在采集，请先结束本轮。"
                 else:
                     name = f"第 {len(self.store.round_order) + 1} 轮"
-                    meta = await self.start_round(name)
+                    meta = await self.start_round(name, record_video=False, collect_danmaku=True)
                     self.user_selection[open_id] = meta.id
                     notice = f"已开始：{meta.activity} / {meta.name}"
-            elif action == "start_custom":
+                return self.feishu_ops_card(open_id, notice)
+            elif action in {"start_custom", "start_realtime", "start_record"}:
                 if self.store.active_round_id:
                     notice = "已有场次正在采集，请先结束本轮。"
                 else:
                     activity, name, url = self.feishu_start_form_defaults(form_value)
-                    meta = await self.start_round(name, url or None, activity)
+                    if action == "start_record":
+                        meta = await self.start_round(name, url or None, activity, record_video=True, collect_danmaku=True)
+                    elif action == "start_realtime":
+                        meta = await self.start_round(name, url or None, activity, record_video=False, collect_danmaku=True)
+                    else:
+                        meta = await self.start_round(name, url or None, activity)
                     self.user_selection[open_id] = meta.id
                     notice = f"已开始：{meta.activity} / {meta.name}"
+                return self.feishu_ops_card(open_id, notice)
             elif action == "end_round":
                 meta = await self.end_round(publish=True)
                 notice = "当前没有进行中的场次。" if not meta else f"已结束并发布粗略结果：{meta.name}"
                 if meta:
                     self.user_selection[open_id] = meta.id
+                return self.feishu_publish_card(open_id, notice)
             elif action == "publish_rough":
                 url = await self.publisher.publish(force=True, result_kind="rough")
                 notice = f"粗略结果发布完成：{url}"
+                return self.feishu_publish_card(open_id, notice)
             elif action == "send_png":
                 target = self.store.find_round(self.user_selection.get(open_id))
                 if target is None:
@@ -2554,12 +2597,13 @@ class VoteService:
                     self.user_selection[open_id] = target.id
                     label = "精确结果" if result_type == "precise" else "粗略结果"
                     notice = f"已发送 {target.name} 的{label} PNG 到当前会话。"
+                return self.feishu_publish_card(open_id, notice)
             elif action == "add_marker":
                 target = self.store.find_round(self.user_selection.get(open_id))
                 if target is None:
                     target = self.store.find_round(None)
                 if target is None:
-                    return build_recording_card(self.public_state(), notice="暂无可标记的场次。")
+                    return self.feishu_recording_card(open_id, "暂无可标记的场次。")
                 values = form_value if isinstance(form_value, dict) else {}
                 at_seconds = float(values.get("at_seconds") or 0)
                 label = normalize(values.get("label") or "") or f"飞书标记 {at_seconds:.1f}s"
@@ -2571,7 +2615,7 @@ class VoteService:
                 if target is None:
                     target = self.store.find_round(None)
                 if target is None:
-                    return build_recording_card(self.public_state(), notice="暂无可截取的场次。")
+                    return self.feishu_recording_card(open_id, "暂无可截取的场次。")
                 values = form_value if isinstance(form_value, dict) else {}
                 start_seconds = float(values.get("start_seconds") or 0)
                 end_seconds = float(values.get("end_seconds") or 0)
@@ -2584,7 +2628,7 @@ class VoteService:
                 if target is None:
                     target = self.store.find_round(None)
                 if target is None:
-                    return build_recording_card(self.public_state(), notice="暂无可分析的场次。")
+                    return self.feishu_recording_card(open_id, "暂无可分析的场次。")
                 record = self.recorder.record_for(target.id)
                 clips = (record or {}).get("clips") or []
                 if not clips:
@@ -2605,6 +2649,7 @@ class VoteService:
                     if self.user_selection.get(open_id) == meta.id:
                         self.user_selection.pop(open_id, None)
                     notice = f"已删除场次：{meta.activity} / {meta.name}。公开结果状态：{url}"
+                return self.feishu_publish_card(open_id, notice)
             elif action == "delete_activity":
                 target = self.store.find_round(self.user_selection.get(open_id))
                 if target is None:
@@ -2617,6 +2662,7 @@ class VoteService:
                     if self.user_selection.get(open_id) in {meta.id for meta in metas}:
                         self.user_selection.pop(open_id, None)
                     notice = f"已删除活动：{activity}，共 {len(metas)} 个场次。公开结果状态：{url}"
+                return self.feishu_publish_card(open_id, notice)
             elif action != "refresh":
                 notice = "未识别的卡片操作。"
         except Exception as exc:
@@ -3403,6 +3449,10 @@ def create_app(service: VoteService) -> web.Application:
             action_name = str(value.get("action") or "")
             if not action_name and action.get("name") == "start_round_submit":
                 action_name = "start_custom"
+            elif not action_name and action.get("name") == "start_realtime_submit":
+                action_name = "start_realtime"
+            elif not action_name and action.get("name") == "start_record_submit":
+                action_name = "start_record"
             elif not action_name and action.get("name") == "add_marker_submit":
                 action_name = "add_marker"
             elif not action_name and action.get("name") == "create_clip_submit":

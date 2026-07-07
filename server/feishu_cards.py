@@ -47,12 +47,23 @@ def text_input(name: str, placeholder: str, default_value: str = "") -> dict[str
     return field
 
 
-def start_round_form(default_activity: str, next_round_name: str, default_url: str = "") -> dict[str, Any]:
+def start_round_form(
+    default_activity: str,
+    next_round_name: str,
+    default_url: str = "",
+    *,
+    form_name: str = "start_round_form",
+    submit_name: str = "start_round_submit",
+    action: str = "start_custom",
+    title: str = "自定义开始场次",
+    intro: str = "活动名已按系统配置预填；场次名和直播 URL 可按需修改。",
+    submit_text: str = "按表单开始采集",
+) -> dict[str, Any]:
     return {
         "tag": "form",
-        "name": "start_round_form",
+        "name": form_name,
         "elements": [
-            {"tag": "markdown", "content": "**自定义开始场次**\n活动名已按系统配置预填；场次名和直播 URL 可按需修改。"},
+            {"tag": "markdown", "content": f"**{title}**\n{intro}"},
             {"tag": "markdown", "content": "活动名称"},
             text_input("activity", "例如：歌手 2026", default_activity),
             {"tag": "markdown", "content": "场次名称"},
@@ -70,11 +81,11 @@ def start_round_form(default_activity: str, next_round_name: str, default_url: s
                         "elements": [
                             {
                                 "tag": "button",
-                                "text": plain_text("按表单开始采集"),
+                                "text": plain_text(submit_text),
                                 "type": "primary",
-                                "name": "start_round_submit",
+                                "name": submit_name,
                                 "form_action_type": "submit",
-                                "value": {"action": "start_custom"},
+                                "value": {"action": action},
                             }
                         ],
                     },
@@ -96,6 +107,50 @@ def start_round_form(default_activity: str, next_round_name: str, default_url: s
             },
         ],
     }
+
+
+def nav_row(active: str = "") -> dict[str, Any]:
+    labels = [
+        ("活动监控", "show_monitor"),
+        ("运营工作区", "show_ops"),
+        ("录制后处理", "show_recording"),
+        ("发布与结果", "show_publish"),
+        ("系统状态", "show_system"),
+    ]
+    return action_row(*[
+        button(label, action, "primary" if active == action else "default")
+        for label, action in labels
+    ])
+
+
+def notice_elements(notice: str) -> list[dict[str, Any]]:
+    if not notice:
+        return []
+    return [{"tag": "markdown", "content": f"**操作结果**\n{notice}"}, {"tag": "hr"}]
+
+
+def card_note() -> dict[str, Any]:
+    return {"tag": "note", "elements": [plain_text("坚持全卡片交互：按钮需要飞书企业自建应用已配置 card.action.trigger 卡片回调；若提示未配置，请联系管理员。")]}
+
+
+def bytes_human(value: Any) -> str:
+    try:
+        size = float(value or 0)
+    except (TypeError, ValueError):
+        size = 0
+    units = ["B", "KB", "MB", "GB", "TB"]
+    unit = 0
+    while size >= 1024 and unit < len(units) - 1:
+        size /= 1024
+        unit += 1
+    if unit == 0:
+        return f"{int(size)} {units[unit]}"
+    return f"{size:.1f} {units[unit]}"
+
+
+def public_url_from_state(state: dict[str, Any], fallback: str = "") -> str:
+    defaults = state.get("defaults") if isinstance(state.get("defaults"), dict) else {}
+    return str(fallback or defaults.get("publicResultsUrl") or defaults.get("publicBaseUrl") or "")
 
 
 def recording_marker_form() -> dict[str, Any]:
@@ -207,37 +262,37 @@ def build_control_card(
     selected_round_id: str | None = None,
     notice: str = "",
     public_url: str = "",
+    monitor: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     session = select_session(state, selected_round_id)
     defaults = state.get("defaults") if isinstance(state.get("defaults"), dict) else {}
     default_activity = str(defaults.get("activity") or "未分类活动")
-    default_url = str(defaults.get("mgtvUrl") or "")
-    next_round_name = f"第 {len(state.get('sessions') or []) + 1} 轮"
     active_id = state.get("activeSessionId")
     running = next((item for item in state.get("sessions") or [] if item.get("id") == active_id and item.get("status") == "running"), None)
-    selected_is_active = bool(session and running and session.get("id") == running.get("id"))
     template, status_text, status_hint = top_status(state, session)
-    elements: list[dict[str, Any]] = []
+    monitor_config = (monitor or {}).get("config") or {}
+    monitor_state = (monitor or {}).get("state") or {}
+    elements: list[dict[str, Any]] = [nav_row()]
     elements.append({
         "tag": "markdown",
         "content": (
-            f"**{status_text}｜{session_title(session)}**\n"
+            f"**{status_text}｜{default_activity}**\n"
             f"{status_hint}\n"
-            f"{'采集时间：' + session_time_range(session) if session_time_range(session) else ''}\n"
-            f"最近更新时间：{state.get('updatedAt') or '等待同步'}"
+            f"当前场次：{session_title(session)}\n"
+            f"最近更新时间：{state.get('updatedAt') or '等待同步'}\n"
+            f"活动监控：{'已开启' if monitor_config.get('enabled') else '未开启'}"
+            f"{'｜' + str(monitor_state.get('message') or '') if monitor_state.get('message') else ''}"
         ),
     })
     elements.append({"tag": "hr"})
-    if notice:
-        elements.append({"tag": "markdown", "content": f"**操作结果**\n{notice}"})
-        elements.append({"tag": "hr"})
+    elements.extend(notice_elements(notice))
     if not session:
         elements.append({
             "tag": "markdown",
             "content": (
-                "**下一步**\n"
+                "**建议下一步**\n"
                 f"默认活动：**{default_activity}**\n"
-                "可直接点“开始默认场次”，也可以在下面表单里修改活动名、场次名或直播 URL 后开始。"
+                "如果你正在实时盯直播，进“运营工作区”开一轮；如果需要无人值守，先到“活动监控”检查监控和录制策略。"
             ),
         })
     else:
@@ -253,25 +308,165 @@ def build_control_card(
             ),
         })
         elements.extend([{"tag": "hr"}, {"tag": "markdown", "content": ranking_markdown(session)}])
+    primary = button("进入运营工作区", "show_ops", "primary")
     if running:
-        elements.append(action_row(
-            button("结束并发布粗略结果", "end_round", "danger"),
-            button("刷新状态", "refresh", "default"),
-        ))
+        elements.append(action_row(primary, button("结束并发布粗略结果", "end_round", "danger"), button("刷新", "refresh")))
     else:
-        elements.append(action_row(
-            button("开始默认场次", "start_default", "primary"),
-            button("刷新状态", "refresh", "default"),
-        ))
-        elements.append(start_round_form(default_activity, next_round_name, default_url))
+        elements.append(action_row(primary, button("开始默认实时场次", "start_realtime", "primary"), button("刷新", "refresh")))
     elements.append(action_row(
         button("查看/切换场次", "show_rounds"),
-        button("发布粗略结果", "publish_rough", "primary"),
+        button("发布与结果", "show_publish"),
+        button("录制后处理", "show_recording"),
     ))
-    if session:
+    public_url = public_url_from_state(state, public_url)
+    if public_url:
+        elements.append({
+            "tag": "action",
+            "actions": [{"tag": "button", "text": plain_text("打开公开结果页"), "type": "default", "url": public_url}],
+        })
+    elements.append(card_note())
+    return {
+        "config": {"wide_screen_mode": True, "enable_forward": False},
+        "header": {"template": template, "title": plain_text("直播运营工作台")},
+        "elements": elements,
+    }
+
+
+def build_ops_card(
+    state: dict[str, Any],
+    selected_round_id: str | None = None,
+    notice: str = "",
+) -> dict[str, Any]:
+    session = select_session(state, selected_round_id)
+    defaults = state.get("defaults") if isinstance(state.get("defaults"), dict) else {}
+    default_activity = str(defaults.get("activity") or "未分类活动")
+    default_url = str(defaults.get("mgtvUrl") or "")
+    next_round_name = f"第 {len(state.get('sessions') or []) + 1} 轮"
+    active_id = state.get("activeSessionId")
+    running = next((item for item in state.get("sessions") or [] if item.get("id") == active_id and item.get("status") == "running"), None)
+    elements: list[dict[str, Any]] = [nav_row("show_ops")]
+    elements.extend(notice_elements(notice))
+    if running:
+        elements.append({
+            "tag": "markdown",
+            "content": (
+                f"**实时运营中｜{session_title(running)}**\n"
+                f"{'采集时间：' + session_time_range(running) if session_time_range(running) else '采集时间：刚刚开始'}\n"
+                f"弹幕样本：**{int(running.get('messageCount') or 0)}**，语义待审：**{int(running.get('reviewCount') or 0)}**"
+            ),
+        })
+        elements.append(action_row(button("结束并发布粗略结果", "end_round", "danger"), button("刷新工作区", "show_ops")))
+    else:
+        elements.append({
+            "tag": "markdown",
+            "content": (
+                "**实时运营**\n"
+                "适合你正在看直播的场景：开一轮、实时切片弹幕、结束后发布粗略结果。\n\n"
+                "**录制采集**\n"
+                "适合无人值守：同时录制视频和完整弹幕，之后在“录制后处理”里打标、切片和分析。"
+            ),
+        })
         elements.append(action_row(
-            button("发送当前场次 PNG", "send_png", "default"),
-            button("录制后处理", "show_recording", "default"),
+            button("开始默认实时场次", "start_realtime", "primary"),
+            button("开始默认录制采集", "start_record", "default"),
+            button("刷新工作区", "show_ops"),
+        ))
+        elements.append(start_round_form(
+            default_activity,
+            next_round_name,
+            default_url,
+            form_name="start_realtime_form",
+            submit_name="start_realtime_submit",
+            action="start_realtime",
+            title="开始实时运营场次",
+            intro="只采集和分析弹幕，不主动录制视频。活动名默认来自系统配置。",
+            submit_text="开始实时场次",
+        ))
+        elements.append(start_round_form(
+            default_activity,
+            f"全程录制 {len(state.get('sessions') or []) + 1}",
+            default_url,
+            form_name="start_record_form",
+            submit_name="start_record_submit",
+            action="start_record",
+            title="开始全程录制与弹幕",
+            intro="会同时开启视频录制和弹幕采集；录制源以系统配置/自动检测结果为准。",
+            submit_text="开始录制采集",
+        ))
+    if session:
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "markdown", "content": f"**当前选中**\n{session_title(session)}"})
+        elements.append(action_row(button("发送结果 PNG", "send_png"), button("发布与结果", "show_publish"), button("切换场次", "show_rounds")))
+    elements.append(card_note())
+    return {
+        "config": {"wide_screen_mode": True, "enable_forward": False},
+        "header": {"template": "blue", "title": plain_text("运营工作区")},
+        "elements": elements,
+    }
+
+
+def build_monitor_card(
+    state: dict[str, Any],
+    monitor: dict[str, Any],
+    notice: str = "",
+) -> dict[str, Any]:
+    config = monitor.get("config") if isinstance(monitor.get("config"), dict) else {}
+    status = monitor.get("state") if isinstance(monitor.get("state"), dict) else {}
+    elements: list[dict[str, Any]] = [nav_row("show_monitor")]
+    elements.extend(notice_elements(notice))
+    elements.append({
+        "tag": "markdown",
+        "content": (
+            f"**活动监控｜{config.get('activity') or '未分类活动'}**\n"
+            f"状态：**{status.get('message') or status.get('status') or '未启动'}**\n"
+            f"活动链接：{config.get('url') or '未配置'}\n"
+            f"自动检测直播源：{'开启' if config.get('autoDetectSource') else '关闭'}\n"
+            f"自动录制视频：{'开启' if config.get('autoRecordVideo') else '关闭'}｜弹幕采集：{'开启' if config.get('autoRecordDanmaku') else '关闭'}\n"
+            f"飞书通知：{'开启' if config.get('feishuNotify') else '关闭'}｜轮询间隔：{config.get('pollSeconds') or '-'} 秒"
+        ),
+    })
+    if status.get("lastCheckAt") or status.get("lastError"):
+        elements.append({
+            "tag": "markdown",
+            "content": f"最近检查：{status.get('lastCheckAt') or '-'}\n最近错误：{status.get('lastError') or '无'}",
+        })
+    elements.append(action_row(button("刷新监控状态", "show_monitor", "primary"), button("进入运营工作区", "show_ops")))
+    elements.append({"tag": "note", "elements": [plain_text("监控策略请在 WebUI 系统配置中调整；飞书侧负责查看状态与接收提醒。")]})
+    return {
+        "config": {"wide_screen_mode": True, "enable_forward": False},
+        "header": {"template": "turquoise" if config.get("enabled") else "grey", "title": plain_text("活动监控")},
+        "elements": elements,
+    }
+
+
+def build_publish_card(
+    state: dict[str, Any],
+    selected_round_id: str | None = None,
+    notice: str = "",
+    public_url: str = "",
+) -> dict[str, Any]:
+    session = select_session(state, selected_round_id)
+    elements: list[dict[str, Any]] = [nav_row("show_publish")]
+    elements.extend(notice_elements(notice))
+    if not session:
+        elements.append({"tag": "markdown", "content": "**暂无可发布场次**\n请先在运营工作区开始并结束一轮。"})
+    else:
+        label, _ = result_counts(session)
+        precise_ready = bool((session.get("results") or {}).get("precise"))
+        elements.append({
+            "tag": "markdown",
+            "content": (
+                f"**{session_title(session)}**\n"
+                f"{'采集时间：' + session_time_range(session) if session_time_range(session) else ''}\n"
+                f"当前结果：**{label}**｜精确结果：{'已发布' if precise_ready else '未上传'}\n"
+                f"弹幕样本：**{int(session.get('messageCount') or 0)}**｜有效候选人：**{len(session.get('candidates') or [])}**"
+            ),
+        })
+        elements.append({"tag": "markdown", "content": ranking_markdown(session)})
+        elements.append(action_row(
+            button("发送当前场次 PNG", "send_png", "primary"),
+            button("发布粗略结果", "publish_rough", "default"),
+            button("切换场次", "show_rounds", "default"),
         ))
         if session.get("status") != "running":
             elements.append(action_row(
@@ -279,24 +474,68 @@ def build_control_card(
                     "删除所选场次",
                     "delete_round",
                     "danger",
-                    confirm=danger_confirm("删除所选场次？", "删除后该场次会从运营端、飞书和公开结果中移除，不能在面板内恢复。"),
+                    confirm=danger_confirm("删除所选场次？", "删除后会立即同步公开页，运营端和飞书也会移除此场次。"),
                 ),
                 button(
                     "删除当前活动",
                     "delete_activity",
                     "danger",
-                    confirm=danger_confirm("删除当前活动？", "会删除当前活动下全部已结束场次；若仍有采集中场次，系统会拒绝删除。"),
+                    confirm=danger_confirm("删除当前活动？", "会删除当前活动下全部已结束场次，并立即同步公开页；若仍有采集中场次，系统会拒绝删除。"),
                 ),
             ))
+    public_url = public_url_from_state(state, public_url)
     if public_url:
         elements.append({
             "tag": "action",
             "actions": [{"tag": "button", "text": plain_text("打开公开结果页"), "type": "default", "url": public_url}],
         })
-    elements.append({"tag": "note", "elements": [plain_text("按钮需要飞书企业自建应用已配置 card.action.trigger 卡片回调；若按钮提示未配置，请联系管理员。")]})
+    elements.append(card_note())
     return {
         "config": {"wide_screen_mode": True, "enable_forward": False},
-        "header": {"template": template, "title": plain_text("直播弹幕人气控制台")},
+        "header": {"template": "green", "title": plain_text("发布与结果")},
+        "elements": elements,
+    }
+
+
+def build_system_card(system: dict[str, Any], notice: str = "") -> dict[str, Any]:
+    services = system.get("services") if isinstance(system.get("services"), dict) else {}
+    memory = system.get("memory") if isinstance(system.get("memory"), dict) else {}
+    cpu = system.get("cpu") if isinstance(system.get("cpu"), dict) else {}
+    disk = system.get("disk") if isinstance(system.get("disk"), dict) else {}
+    health = system.get("health") if isinstance(system.get("health"), dict) else {}
+    data_disk = disk.get("data") if isinstance(disk.get("data"), dict) else {}
+    recording_disk = disk.get("recordings") if isinstance(disk.get("recordings"), dict) else {}
+    service_lines = []
+    for key, label in [
+        ("monitor", "活动监控"),
+        ("collector", "弹幕采集"),
+        ("recorder", "直播录制"),
+        ("feishu", "飞书 Bot"),
+        ("github", "GitHub 发布"),
+        ("updater", "程序升级"),
+    ]:
+        item = services.get(key) if isinstance(services.get(key), dict) else {}
+        service_lines.append(f"- {label}：**{item.get('status') or 'unknown'}**{('｜' + str(item.get('message'))) if item.get('message') else ''}")
+    elements: list[dict[str, Any]] = [nav_row("show_system")]
+    elements.extend(notice_elements(notice))
+    elements.append({
+        "tag": "markdown",
+        "content": (
+            f"**机器状态｜{health.get('status') or 'unknown'}**\n"
+            f"系统时间：{system.get('systemTime') or '-'}\n"
+            f"运行时长：{int(system.get('uptimeSeconds') or 0)} 秒\n"
+            f"CPU：{cpu.get('count') or '-'} 核｜负载：{cpu.get('loadPercent') if cpu.get('loadPercent') is not None else '-'}%\n"
+            f"内存：进程 {bytes_human(memory.get('processRssBytes'))} / 总计 {bytes_human(memory.get('totalBytes'))}\n"
+            f"数据盘可用：{bytes_human(data_disk.get('freeBytes'))}｜录制盘可用：{bytes_human(recording_disk.get('freeBytes'))}"
+        ),
+    })
+    if health.get("restartRequired"):
+        elements.append({"tag": "markdown", "content": f"**需重启生效配置**\n{', '.join(health.get('restartFields') or [])}"})
+    elements.append({"tag": "markdown", "content": "**服务状态**\n" + "\n".join(service_lines)})
+    elements.append(action_row(button("刷新系统状态", "show_system", "primary"), button("返回首页", "control")))
+    return {
+        "config": {"wide_screen_mode": True, "enable_forward": False},
+        "header": {"template": "red" if health.get("status") == "error" else ("orange" if health.get("status") == "warning" else "green"), "title": plain_text("系统状态")},
         "elements": elements,
     }
 
@@ -309,10 +548,8 @@ def build_recording_card(
     session = select_session(state, selected_round_id)
     defaults = state.get("defaults") if isinstance(state.get("defaults"), dict) else {}
     public_base_url = str(defaults.get("publicBaseUrl") or "").rstrip("/")
-    elements: list[dict[str, Any]] = []
-    if notice:
-        elements.append({"tag": "markdown", "content": f"**操作结果**\n{notice}"})
-        elements.append({"tag": "hr"})
+    elements: list[dict[str, Any]] = [nav_row("show_recording")]
+    elements.extend(notice_elements(notice))
     if not session:
         elements.append({"tag": "markdown", "content": "**暂无场次**\n请先开始或选择一个场次。"})
     else:
@@ -346,7 +583,7 @@ def build_recording_card(
             elements.append(action_row(button("生成最近片段分析场次", "analyze_latest_clip", "primary")))
         elements.append(recording_marker_form())
         elements.append(recording_clip_form())
-    elements.append(action_row(button("返回控制台", "control", "primary"), button("刷新状态", "show_recording")))
+    elements.append(action_row(button("返回运营工作区", "show_ops", "primary"), button("刷新状态", "show_recording"), button("发布与结果", "show_publish")))
     return {
         "config": {"wide_screen_mode": True, "enable_forward": False},
         "header": {"template": "purple", "title": plain_text("录制后处理")},
@@ -360,7 +597,7 @@ def build_round_list_card(
     notice: str = "",
 ) -> dict[str, Any]:
     sessions = state.get("sessions") or []
-    elements: list[dict[str, Any]] = []
+    elements: list[dict[str, Any]] = [nav_row()]
     if notice:
         elements.append({"tag": "markdown", "content": notice})
     if not sessions:
@@ -390,7 +627,7 @@ def build_round_list_card(
         if selected_round_id and any(item.get("value") == selected_round_id for item in options):
             selector["initial_option"] = selected_round_id
         elements.append({"tag": "action", "actions": [selector]})
-    elements.append(action_row(button("返回控制台", "control", "primary"), button("刷新状态", "refresh")))
+    elements.append(action_row(button("返回首页", "control", "primary"), button("运营工作区", "show_ops"), button("发布与结果", "show_publish")))
     return {
         "config": {"wide_screen_mode": True, "enable_forward": False},
         "header": {"template": "blue", "title": plain_text("场次管理")},

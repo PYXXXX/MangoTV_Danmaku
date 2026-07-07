@@ -1,7 +1,15 @@
 import unittest
 import asyncio
 
-from server.feishu_cards import build_control_card, build_recording_card, build_round_list_card
+from server.feishu_cards import (
+    build_control_card,
+    build_monitor_card,
+    build_ops_card,
+    build_publish_card,
+    build_recording_card,
+    build_round_list_card,
+    build_system_card,
+)
 from server.feishu_ws import FeishuLongConnection
 
 
@@ -41,7 +49,7 @@ class FeishuCardTest(unittest.TestCase):
     def test_control_card_contains_safe_operations(self):
         card = build_control_card(self.state, "r1", "状态已刷新", "https://example.com/results")
         self.assertEqual(card["header"]["template"], "orange")
-        self.assertEqual(card["header"]["title"]["content"], "直播弹幕人气控制台")
+        self.assertEqual(card["header"]["title"]["content"], "直播运营工作台")
         actions = [
             action["value"]["action"]
             for element in card["elements"]
@@ -49,7 +57,10 @@ class FeishuCardTest(unittest.TestCase):
             if action.get("tag") == "button" and action.get("value")
         ]
         self.assertIn("end_round", actions)
-        self.assertIn("publish_rough", actions)
+        self.assertIn("show_publish", actions)
+        self.assertIn("show_monitor", actions)
+        self.assertIn("show_ops", actions)
+        self.assertIn("show_system", actions)
         self.assertNotIn("start_default", actions)
         rendered = str(card)
         self.assertIn("● 采集中", rendered)
@@ -58,13 +69,11 @@ class FeishuCardTest(unittest.TestCase):
         self.assertIn("card.action.trigger", rendered)
         self.assertIn("120", rendered)
         self.assertIn("打开公开结果页", rendered)
-        self.assertIn("发送当前场次 PNG", rendered)
         self.assertIn("录制后处理", rendered)
-        self.assertIn("send_png", actions)
         self.assertIn("show_recording", actions)
 
     def test_control_card_contains_confirmed_delete_actions_for_stopped_round(self):
-        card = build_control_card(self.state, "r0", "状态已刷新", "https://example.com/results")
+        card = build_publish_card(self.state, "r0", "状态已刷新", "https://example.com/results")
         rendered = str(card)
         actions = [
             action["value"]["action"]
@@ -87,14 +96,46 @@ class FeishuCardTest(unittest.TestCase):
             },
             "sessions": [],
         }
-        card = build_control_card(state)
+        card = build_ops_card(state)
         rendered = str(card)
-        self.assertIn("start_round_form", rendered)
-        self.assertIn("start_round_submit", rendered)
-        self.assertIn("start_custom", rendered)
+        self.assertIn("start_realtime_form", rendered)
+        self.assertIn("start_record_form", rendered)
+        self.assertIn("start_realtime", rendered)
+        self.assertIn("start_record", rendered)
         self.assertIn("歌手 2026", rendered)
         self.assertIn("第 1 轮", rendered)
         self.assertIn("https://www.mgtv.com/z/1001668/5366.html", rendered)
+
+    def test_monitor_publish_and_system_cards_match_workspace_navigation(self):
+        monitor_card = build_monitor_card(self.state, {
+            "config": {
+                "enabled": True,
+                "activity": "歌手 2026",
+                "url": "https://www.mgtv.com/z/1001668.html",
+                "autoDetectSource": True,
+                "autoRecordVideo": True,
+                "autoRecordDanmaku": True,
+                "feishuNotify": True,
+                "pollSeconds": 30,
+            },
+            "state": {"status": "waiting", "message": "等待直播开始"},
+        })
+        publish_card = build_publish_card(self.state, "r1", public_url="https://example.com/results")
+        system_card = build_system_card({
+            "systemTime": "2026-07-07T15:00:00+08:00",
+            "uptimeSeconds": 60,
+            "cpu": {"count": 2, "loadPercent": 12.5},
+            "memory": {"processRssBytes": 1024 * 1024, "totalBytes": 4 * 1024 * 1024 * 1024},
+            "disk": {"data": {"freeBytes": 10}, "recordings": {"freeBytes": 20}},
+            "services": {"monitor": {"status": "waiting"}, "collector": {"status": "idle"}, "recorder": {"status": "idle"}},
+            "health": {"status": "ok", "restartRequired": False, "restartFields": []},
+        })
+        rendered = str(monitor_card) + str(publish_card) + str(system_card)
+        self.assertIn("活动监控", rendered)
+        self.assertIn("发布与结果", rendered)
+        self.assertIn("系统状态", rendered)
+        self.assertIn("发送当前场次 PNG", rendered)
+        self.assertIn("刷新系统状态", rendered)
 
     def test_round_list_uses_select_callback(self):
         card = build_round_list_card(self.state, "r0")
