@@ -205,6 +205,8 @@ def build_settings_update(
             "preferred_quality": str(source.get("preferred_quality") or "auto").strip() or "auto",
             "ffmpeg_path": str(source.get("ffmpeg_path") or "").strip(),
             "directory": str(source.get("directory") or "").strip(),
+            "auto_split_enabled": as_bool(source.get("auto_split_enabled", target.get("auto_split_enabled", True))),
+            "auto_split_seconds": as_int(source.get("auto_split_seconds", target.get("auto_split_seconds", 3600)), "自动切片间隔", 300, 12 * 3600),
         })
         supplied_stream_url = str(source.get("stream_url") or "").strip()
         if supplied_stream_url:

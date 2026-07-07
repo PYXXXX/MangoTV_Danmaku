@@ -93,6 +93,7 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
             }
             service = VoteService(config)
             calls = []
+            recording_calls = []
 
             async def fake_start_round(name, url=None, activity=None):
                 calls.append({"name": name, "url": url, "activity": activity})
@@ -142,6 +143,7 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
             }
             service = VoteService(config)
             calls = []
+            recording_calls = []
 
             async def fake_start_round(name, url=None, activity=None, *, record_video=None, collect_danmaku=True):
                 calls.append({
@@ -153,7 +155,18 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                 })
                 return SimpleNamespace(id=f"round-{len(calls)}", name=name, activity=activity)
 
+            async def fake_start_independent_recording(name, url=None, activity=None, *, record_video=True, collect_danmaku=True):
+                recording_calls.append({
+                    "name": name,
+                    "url": url,
+                    "activity": activity,
+                    "record_video": record_video,
+                    "collect_danmaku": collect_danmaku,
+                })
+                return SimpleNamespace(id=f"recording-{len(recording_calls)}", name=name, activity=activity)
+
             service.start_round = fake_start_round
+            service.start_independent_recording = fake_start_independent_recording
             try:
                 await service.handle_feishu_card_action(
                     "start_realtime",
@@ -176,6 +189,8 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                         "record_video": False,
                         "collect_danmaku": True,
                     },
+                ])
+                self.assertEqual(recording_calls, [
                     {
                         "name": "全程录制",
                         "url": None,
@@ -186,6 +201,7 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                 ])
             finally:
                 service.collector.fingerprints.close()
+                service.recording_collector.fingerprints.close()
 
     async def test_round_result_png_export_and_public_url(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -298,9 +314,9 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                 calls.append({"detect": url, "quality": quality})
                 return {"ok": True, "quality": "1080P", "actualQuality": "1080P"}
 
-            async def fake_start_round(name, url=None, activity=None, *, record_video=None, collect_danmaku=True):
+            async def fake_start_independent_recording(name, url=None, activity=None, *, record_video=None, collect_danmaku=True):
                 calls.append({
-                    "start": name,
+                    "start_independent": name,
                     "url": url,
                     "activity": activity,
                     "record_video": record_video,
@@ -312,14 +328,14 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                 notices.append(text)
 
             service.detect_mgtv_recording_source = fake_detect
-            service.start_round = fake_start_round
+            service.start_independent_recording = fake_start_independent_recording
             service.notify_monitor = fake_notify
             try:
                 status = await service.monitor_tick_once()
                 self.assertEqual(calls, [
                     {"detect": "https://www.mgtv.com/z/1001668.html", "quality": "1080P"},
                     {
-                        "start": "全程录制",
+                        "start_independent": "全程录制",
                         "url": "https://www.mgtv.com/z/1001668.html",
                         "activity": "歌手 2026",
                         "record_video": True,
@@ -328,10 +344,10 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                 ])
                 self.assertEqual(status["state"]["status"], "running")
                 self.assertEqual(status["state"]["roundId"], "round-monitor")
-                self.assertEqual(notices, ["活动监控：已自动开始：歌手 2026 / 全程录制"])
+                self.assertEqual(notices, ["活动监控：已自动开始独立录制：歌手 2026 / 全程录制"])
 
                 await service.monitor_tick_once()
-                self.assertEqual(len([item for item in calls if "start" in item]), 1)
+                self.assertEqual(len([item for item in calls if "start_independent" in item]), 1)
             finally:
                 service.collector.fingerprints.close()
 
@@ -466,12 +482,14 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                 meta = await service.store.create_round("歌手 2026", "全程录制", "", service.default_candidates, "all")
                 await service.store.stop_active()
                 service.user_selection["ou_operator"] = meta.id
+                video_path = Path(temp) / "recording.mp4"
+                video_path.write_bytes(b"complete-video")
                 service.recorder.records[meta.id] = {
                     "roundId": meta.id,
                     "activity": meta.activity,
                     "roundName": meta.name,
                     "status": "finished",
-                    "path": str(Path(temp) / "missing.mp4"),
+                    "path": str(video_path),
                     "markers": [],
                     "clips": [],
                 }
@@ -633,7 +651,74 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 service.collector.fingerprints.close()
 
-    async def test_recording_manager_skips_when_enabled_without_stream_url_and_accepts_markers(self):
+    async def test_independent_recording_can_start_while_realtime_round_is_running(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "recording": {"enabled": True, "stream_url": "https://stream.example/live.m3u8", "directory": str(Path(temp) / "recordings")},
+                "mgtv": {"url": "https://www.mgtv.com/z/1001668/5366.html", "dedup_db_path": str(Path(temp) / "fingerprints.sqlite3")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {"enabled": False},
+            }
+            service = VoteService(config)
+            try:
+                realtime = await service.store.create_round("歌手 2026", "实时第一轮", config["mgtv"]["url"], service.default_candidates, "all")
+
+                async def fake_resolve(url, *, persist=False):
+                    return {"ok": True, "pageUrl": url, "cameraId": "5366", "activityId": "1001668"}
+
+                async def fake_detect(url, quality="auto"):
+                    service.config.setdefault("recording", {})["stream_url"] = "https://stream.example/live.m3u8"
+                    return {"ok": True, "streamUrl": "hidden", "quality": quality}
+
+                async def fake_recorder_start(meta, source_url="", *, force=False):
+                    service.recorder.records[meta.id] = {
+                        "roundId": meta.id,
+                        "activity": meta.activity,
+                        "roundName": meta.name,
+                        "status": "recording",
+                        "path": str(Path(temp) / "recordings" / meta.id / "recording.mp4"),
+                        "startedAt": meta.startedAt,
+                        "endedAt": "",
+                        "markers": [],
+                        "clips": [],
+                    }
+                    return service.recorder.records[meta.id]
+
+                started_recording_collector: list[str] = []
+
+                async def fake_recording_collector_start(round_id, url):
+                    started_recording_collector.append(round_id)
+
+                service.resolve_mgtv_live_url = fake_resolve
+                service.detect_mgtv_recording_source = fake_detect
+                service.recorder.start = fake_recorder_start
+                service.recording_collector.start = fake_recording_collector_start
+
+                recording = await service.start_independent_recording("全程录制", config["mgtv"]["url"], "歌手 2026")
+
+                self.assertEqual(service.store.active_round_id, realtime.id)
+                self.assertEqual(service.store.require_round(realtime.id).status, "running")
+                self.assertNotEqual(recording.id, realtime.id)
+                self.assertEqual(recording.kind, "recording")
+                self.assertEqual(recording.visibility, "private")
+                self.assertEqual(started_recording_collector, [recording.id])
+                self.assertEqual(service.recorder.records[recording.id]["status"], "recording")
+                public_ids = [item["id"] for item in service.public_state()["sessions"]]
+                admin_ids = [item["id"] for item in service.public_state(include_private=True)["sessions"]]
+                self.assertIn(realtime.id, public_ids)
+                self.assertNotIn(recording.id, public_ids)
+                self.assertIn(recording.id, admin_ids)
+            finally:
+                service.collector.fingerprints.close()
+                service.recording_collector.fingerprints.close()
+
+    async def test_recording_manager_skips_when_enabled_without_stream_url_blocks_post_processing(self):
         with tempfile.TemporaryDirectory() as temp:
             config = {
                 "storage": {"directory": str(Path(temp) / "data")},
@@ -653,9 +738,8 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                 record = await service.recorder.start(meta, "")
                 self.assertEqual(record["status"], "skipped")
                 self.assertIn("未配置录制源", record["error"])
-                marker = service.recorder.add_marker(meta.id, "高能片段", 12.5)
-                self.assertEqual(marker["label"], "高能片段")
-                self.assertEqual(marker["atSeconds"], 12.5)
+                with self.assertRaisesRegex(RuntimeError, "完整视频|录制"):
+                    service.recorder.add_marker(meta.id, "高能片段", 12.5)
                 self.assertEqual(service.recorder.public_records()[0]["clipCount"], 0)
             finally:
                 service.collector.fingerprints.close()
@@ -741,12 +825,83 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
 
                 derived = await service.create_analysis_round_from_clip(meta.id, "clip-1")
                 self.assertEqual(derived.status, "stopped")
+                self.assertEqual(derived.kind, "analysis")
+                self.assertEqual(derived.visibility, "public")
+                self.assertEqual(derived.sourceRoundId, meta.id)
                 self.assertEqual(derived.messageCount, 1)
                 self.assertEqual(derived.voteCounts["c1"], 1)
                 self.assertIn("第一段", derived.name)
+                self.assertIn(derived.id, [item["id"] for item in service.public_state()["sessions"]])
                 derived_export = service.store.export_round_jsonl(derived.id)
                 self.assertIn('"sourceRoundId"', derived_export)
                 self.assertIn("甲中间", derived_export)
+            finally:
+                service.collector.fingerprints.close()
+
+    async def test_recording_finalize_creates_auto_splits_after_complete_video(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "recording": {
+                    "enabled": True,
+                    "directory": str(Path(temp) / "recordings"),
+                    "auto_split_enabled": True,
+                    "auto_split_seconds": 3600,
+                },
+                "mgtv": {"dedup_db_path": str(Path(temp) / "fingerprints.sqlite3")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {"enabled": False},
+            }
+            service = VoteService(config)
+            try:
+                meta = await service.store.create_round("歌手 2026", "全程录制", "", service.default_candidates, "all")
+                await service.store.stop_active()
+                video_path = Path(temp) / "recording.mp4"
+                video_path.write_bytes(b"complete-video")
+                service.recorder.records[meta.id] = {
+                    "roundId": meta.id,
+                    "activity": meta.activity,
+                    "roundName": meta.name,
+                    "status": "finished",
+                    "path": str(video_path),
+                    "startedAt": "2026-07-05T01:00:00Z",
+                    "endedAt": "2026-07-05T03:05:00Z",
+                    "autoSplitSeconds": 3600,
+                    "autoSplitStatus": "pending",
+                    "markers": [],
+                    "clips": [],
+                }
+
+                async def fake_probe_duration(_path):
+                    return 7500.0
+
+                async def fake_create_clip(round_id, start_seconds, end_seconds, label="", *, kind="manual"):
+                    clip = {
+                        "id": f"clip-{len(service.recorder.records[round_id].get('clips') or []) + 1}",
+                        "label": label,
+                        "startSeconds": start_seconds,
+                        "endSeconds": end_seconds,
+                        "kind": kind,
+                        "path": str(Path(temp) / f"{label}.mp4"),
+                    }
+                    service.recorder.records[round_id].setdefault("clips", []).append(clip)
+                    return clip
+
+                service.recorder.probe_duration = fake_probe_duration
+                service.recorder.create_clip = fake_create_clip
+                await service.recorder.finalize_recording(meta.id)
+
+                clips = service.recorder.records[meta.id]["clips"]
+                self.assertEqual([clip["kind"] for clip in clips], ["auto", "auto", "auto"])
+                self.assertEqual(clips[0]["startSeconds"], 0.0)
+                self.assertEqual(clips[0]["endSeconds"], 3600.0)
+                self.assertEqual(clips[-1]["endSeconds"], 7500.0)
+                self.assertEqual(service.recorder.records[meta.id]["autoSplitStatus"], "done")
             finally:
                 service.collector.fingerprints.close()
 
@@ -776,6 +931,7 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                     "ok": True,
                     "streamUrl": "https://secure.example.com/live.m3u8?token=secret",
                     "actualQuality": "1080P",
+                    "availableQualities": ["1080P", "720P"],
                     "message": "已检测到播放源。",
                 }
 
@@ -786,6 +942,8 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("secret", json.dumps(result))
                 saved = json.loads(config_path.read_text(encoding="utf-8"))
                 self.assertEqual(saved["recording"]["stream_url"], "https://secure.example.com/live.m3u8?token=secret")
+                self.assertEqual(saved["recording"]["available_qualities"], ["1080P", "720P"])
+                self.assertEqual(service.monitor_status_view()["state"]["availableQualities"], ["1080P", "720P"])
                 self.assertEqual(service.recorder.config["stream_url"], "https://secure.example.com/live.m3u8?token=secret")
             finally:
                 service.collector.fingerprints.close()
