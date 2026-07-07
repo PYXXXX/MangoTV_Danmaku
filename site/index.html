@@ -4,10 +4,22 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="直播运营工作台公开结果页" />
-    <title>直播弹幕投票公开结果</title>
+    <title>公开结果页 · 直播运营工作台</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
+    <nav class="public-nav" aria-label="公开结果页导航">
+      <a class="public-brand" href="./">
+        <span class="public-mark"></span>
+        <strong>公开结果页</strong>
+      </a>
+      <div>
+        <a id="publicActivityNav" href="#ranking">直播活动</a>
+        <a href="#timeline">场次列表</a>
+        <a href="#dataSource">数据说明</a>
+        <a class="github-link" href="https://github.com/PYXXXX/MangoTV_Danmaku" target="_blank" rel="noreferrer">GitHub</a>
+      </div>
+    </nav>
     <main>
       <header class="hero">
         <div class="hero-copy">
@@ -20,7 +32,7 @@
             <span id="updatedBadge">尚未同步</span>
           </div>
         </div>
-        <aside class="current-card">
+        <aside class="current-card" aria-label="当前场次领先信息">
           <span>当前场次</span>
           <strong id="currentRound">等待发布</strong>
           <small id="currentRoundMeta">暂无场次时间</small>
@@ -45,9 +57,9 @@
       </section>
 
       <section class="content-grid">
-        <section class="result-panel">
+        <section id="ranking" class="result-panel">
           <div class="section-heading">
-            <h2>结果排行</h2>
+            <h2>实时弹幕投票排名</h2>
             <span id="liveState"><i></i><span>等待同步</span></span>
           </div>
           <div id="ranking" class="ranking" aria-live="polite">
@@ -65,10 +77,14 @@
             <h2>场次时间线</h2>
             <div id="timeline" class="timeline"></div>
           </section>
-          <section class="side-card">
+          <section id="dataSource" class="side-card">
             <h2>数据来源</h2>
             <p>数据来源：<a href="https://pyxxxx.github.io/MangoTV_Danmaku/">https://pyxxxx.github.io/MangoTV_Danmaku/</a></p>
             <p>统计数据不代表湖南卫视 &amp; 芒果 TV 立场，仅供娱乐参考。</p>
+          </section>
+          <section class="side-card recent-card">
+            <h2>最近发布</h2>
+            <div id="recentPublish">等待发布记录</div>
           </section>
         </aside>
       </section>

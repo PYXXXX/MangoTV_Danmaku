@@ -12,10 +12,12 @@ const elements = {
   liveState: document.querySelector("#liveState"),
   liveText: document.querySelector("#liveState span"),
   program: document.querySelector("#program"),
+  publicActivityNav: document.querySelector("#publicActivityNav"),
   exportPng: document.querySelector("#exportPng"),
   exportPngSide: document.querySelector("#exportPngSide"),
   copyShare: document.querySelector("#copyShare"),
   timeline: document.querySelector("#timeline"),
+  recentPublish: document.querySelector("#recentPublish"),
   messages: document.querySelector("#messages"),
   votes: document.querySelector("#votes"),
   reviews: document.querySelector("#reviews"),
@@ -130,6 +132,25 @@ function renderTimeline(sessions, selectedId) {
     });
     return button;
   }) : [Object.assign(document.createElement("div"), { className: "empty", textContent: "暂无场次" })]));
+}
+
+function renderRecentPublish(sessions) {
+  if (!elements.recentPublish) return;
+  const rows = sessions
+    .slice()
+    .sort((a, b) => String(b.updatedAt || b.endedAt || b.startedAt || "").localeCompare(String(a.updatedAt || a.endedAt || a.startedAt || "")))
+    .slice(0, 5);
+  if (!rows.length) {
+    elements.recentPublish.textContent = "等待发布记录";
+    return;
+  }
+  elements.recentPublish.replaceChildren(...rows.map((session) => {
+    const line = document.createElement("p");
+    const result = session.results?.precise ? "精确结果已发布" : "粗略结果已发布";
+    const time = session.endedAt || session.updatedAt || session.startedAt || publicState?.publishedAt || "";
+    line.textContent = `${sessionDisplayName(session)} · ${result}${time ? ` · ${new Date(time).toLocaleTimeString("zh-CN", { hour12: false })}` : ""}`;
+    return line;
+  }));
 }
 
 function sessionDisplayName(session) {
@@ -349,6 +370,7 @@ function render() {
   elements.exportPng.disabled = false;
   if (elements.exportPngSide) elements.exportPngSide.disabled = false;
   elements.pageTitle.textContent = `${session.activity || selectedActivity || "直播活动"} · 直播弹幕投票统计`;
+  if (elements.publicActivityNav) elements.publicActivityNav.textContent = session.activity || selectedActivity || "直播活动";
   elements.currentRound.textContent = sessionDisplayName(session);
   elements.currentRoundMeta.textContent = sessionTimeRange(session) || (session.status === "running" ? "正在采集" : "暂无场次时间");
   elements.resultBadge.textContent = current.type === "precise" ? "精确结果" : "粗略结果";
@@ -358,6 +380,7 @@ function render() {
     : "尚未同步";
   renderWinner(rows, total);
   renderTimeline(filtered, session.id);
+  renderRecentPublish(sessions);
   const active = session.status === "running";
   elements.liveState.classList.toggle("active", active);
   elements.liveText.textContent = current.type === "precise" ? "精确结果 · 已清洗" : (active ? "LIVE · 粗略统计中" : "粗略结果 · 本轮已结束");

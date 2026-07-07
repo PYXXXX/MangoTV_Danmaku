@@ -439,6 +439,43 @@
                   </div>
                 </details>
               </section>
+
+              <aside class="settings-column impact-column" aria-label="本次修改影响">
+                <h3>本次修改影响</h3>
+                <div class="impact-card hot">
+                  <strong>立即生效（热重载）</strong>
+                  <span id="hotReloadCount">多数配置</span>
+                  <ul>
+                    <li>弹幕轮询间隔</li>
+                    <li>重连间隔</li>
+                    <li>去重缓存与上限</li>
+                    <li>飞书白名单</li>
+                    <li>GitHub 结果文件路径</li>
+                    <li>活动监控策略</li>
+                    <li>公开页面 URL</li>
+                  </ul>
+                </div>
+                <div class="impact-card next">
+                  <strong>下一场生效</strong>
+                  <span id="nextRoundCount">场次启动配置</span>
+                  <ul>
+                    <li>默认清晰度</li>
+                    <li>录屏直播流 URL</li>
+                    <li>历史弹幕接口</li>
+                    <li>room_id / camera_id</li>
+                    <li>多人弹幕策略</li>
+                  </ul>
+                </div>
+                <div class="impact-card restart">
+                  <strong>需要安全重启</strong>
+                  <span id="restartImpactCount">基础服务参数</span>
+                  <ul>
+                    <li>监听地址与端口</li>
+                    <li>主数据目录</li>
+                  </ul>
+                  <p>重启期间服务会短暂不可用，建议在空闲时执行。</p>
+                </div>
+              </aside>
             </div>
             <div class="settings-footer">
               <p id="settingsFeedback" class="panel-copy">敏感字段不会回显；留空表示保留服务器现值。</p>
