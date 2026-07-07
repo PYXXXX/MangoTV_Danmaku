@@ -1,4 +1,4 @@
-# Live Ops Studio API 契约草案
+# Live Ops Studio API 契约
 
 本文档定义新版前端依赖的稳定 API。旧接口在迁移期保留，但新前端不应再依赖文本命令式接口完成核心操作。
 
@@ -299,7 +299,93 @@ multipart 上传。
 
 ### `GET /api/system/status`
 
-保留当前接口，字段逐步补齐。
+机器状态页主接口。响应会尽量返回真实系统观测值；宿主机不暴露某项能力时返回 `available=false` 或空值，不伪造数据。
+
+```json
+{
+  "ok": true,
+  "generatedAt": "2026-07-07T09:00:00.000Z",
+  "systemTime": "2026-07-07T17:00:00+08:00",
+  "timezone": "Asia/Shanghai",
+  "platform": "Linux-...",
+  "python": "3.12.0",
+  "host": {
+    "hostname": "ops-studio-01",
+    "paths": {
+      "repoRoot": "/opt/MangoTV_Danmaku",
+      "config": "/var/lib/mgtv-danmaku/config.json",
+      "storage": "/var/lib/mgtv-danmaku/data",
+      "recordings": "/var/lib/mgtv-danmaku/data/recordings"
+    },
+    "cpu": {
+      "model": "Intel(R) Xeon(R)",
+      "architecture": "x86_64",
+      "temperature": {
+        "available": false,
+        "celsius": null,
+        "error": "未发现可读取的 CPU 温度传感器"
+      }
+    }
+  },
+  "backup": {
+    "available": true,
+    "latestAt": "2026-07-07T08:59:00.000Z",
+    "name": "config.json.bak",
+    "sizeBytes": 2048,
+    "count": 1
+  },
+  "startedAt": "2026-07-07T08:00:00.000Z",
+  "uptimeSeconds": 3600,
+  "process": {
+    "pid": 1234,
+    "name": "mgtv-danmaku",
+    "rssBytes": 104857600
+  },
+  "cpu": {
+    "count": 2,
+    "loadPercent": 38.0,
+    "loadAverage": [0.76, 0.62, 0.51],
+    "model": "Intel(R) Xeon(R)",
+    "architecture": "x86_64",
+    "temperatureAvailable": false,
+    "temperatureCelsius": null
+  },
+  "memory": {
+    "totalBytes": 4294967296,
+    "availableBytes": 2147483648,
+    "usedBytes": 2147483648,
+    "processRssBytes": 104857600
+  },
+  "network": {
+    "available": true,
+    "rxBytes": 123456789,
+    "txBytes": 987654321
+  },
+  "disk": {
+    "data": {"ok": true, "path": "/var/lib/mgtv-danmaku/data", "totalBytes": 1, "usedBytes": 1, "freeBytes": 1},
+    "recordings": {"ok": true, "path": "/var/lib/mgtv-danmaku/data/recordings", "totalBytes": 1, "usedBytes": 1, "freeBytes": 1}
+  },
+  "services": {
+    "collector": {"status": "running", "activeRoundId": "round_1"},
+    "recorder": {"status": "recording", "activeCount": 1, "enabled": true},
+    "feishu": {"status": "connected"},
+    "github": {"status": "enabled"},
+    "updater": {"status": "idle"},
+    "monitor": {"status": "running", "enabled": true, "taskRunning": true},
+    "recordingSource": {"configured": true, "quality": "1080P", "availableQualities": ["1080P", "720P"], "detectedAt": "..."}
+  },
+  "health": {
+    "status": "ok",
+    "restartRequired": false,
+    "restartFields": [],
+    "recentErrorCount": 0
+  }
+}
+```
+
+### `GET /api/system/host`
+
+返回主机与路径详情，供机器状态页、诊断面板和运维排查使用。字段与 `status.host` 基本一致，并额外包含 `backup`。
 
 ### `GET /api/system/metrics?window=15m`
 
@@ -319,10 +405,6 @@ multipart 上传。
 }
 ```
 
-### `GET /api/system/services`
-
-### `GET /api/system/alerts`
-
 ## 系统日志
 
 ### `GET /api/system/logs`
@@ -341,18 +423,87 @@ multipart 上传。
 
 ```json
 {
-  "items": [],
+  "ok": true,
+  "generatedAt": "2026-07-07T09:00:00.000Z",
+  "items": [
+    {
+      "id": "log_9f3f4e2b7c6a",
+      "time": "2026-07-07T07:27:45.001Z",
+      "level": "ERROR",
+      "source": "recorder",
+      "sourceLabel": "录制进程",
+      "summary": "ffmpeg 退出码异常",
+      "detail": "ffmpeg exited with code 1",
+      "roundId": "round_20260707_01",
+      "host": "ops-studio-01",
+      "errorMessage": "ffmpeg exited with code 1",
+      "remediation": [
+        "查看同一来源前后 5 条日志，确认异常发生前后的状态变化。",
+        "检查录制目录剩余空间与写入权限。"
+      ]
+    }
+  ],
+  "events": [],
+  "total": 1248,
+  "cursor": 0,
+  "limit": 20,
   "nextCursor": "",
-  "sources": ["WebUI", "录制进程"],
-  "levels": ["INFO", "WARN", "ERROR"]
+  "previousCursor": "",
+  "sources": ["recorder"],
+  "availableSources": ["service", "monitor", "collector", "recorder", "feishu", "github", "updater"],
+  "sourceLabels": {
+    "recorder": "录制进程"
+  },
+  "levels": ["ERROR"],
+  "availableLevels": ["INFO", "WARN", "ERROR"],
+  "levelCounts": {"ERROR": 1},
+  "sourceCounts": {"recorder": 1},
+  "timeline": [
+    {
+      "id": "log_9f3f4e2b7c6a",
+      "time": "2026-07-07T07:27:45.001Z",
+      "level": "ERROR",
+      "source": "recorder",
+      "sourceLabel": "录制进程",
+      "summary": "ffmpeg 退出码异常",
+      "roundId": "round_20260707_01"
+    }
+  ]
 }
 ```
 
-### `GET /api/system/logs/{log_id}`
-
 ### `GET /api/system/logs/export`
 
+导出当前筛选条件下的 JSON 日志文件。
+
 ### `POST /api/system/logs/summary`
+
+请求体与日志查询参数一致：
+
+```json
+{
+  "level": "ERROR",
+  "source": "recorder",
+  "q": "ffmpeg",
+  "from": "2026-07-07T07:00:00.000Z",
+  "to": "2026-07-07T08:00:00.000Z"
+}
+```
+
+响应：
+
+```json
+{
+  "ok": true,
+  "generatedAt": "2026-07-07T09:00:00.000Z",
+  "total": 1,
+  "levelCounts": {"ERROR": 1},
+  "sourceCounts": {"recorder": 1},
+  "latestError": {},
+  "summary": "筛选范围内共有 1 条日志；ERROR 1 条，WARN 0 条，INFO 0 条。",
+  "suggestions": ["先按来源过滤同一模块，查看错误前后 5 条事件。"]
+}
+```
 
 ## 配置
 

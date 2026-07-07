@@ -33,7 +33,9 @@
     "stream_url": "",
     "preferred_quality": "1080P",
     "ffmpeg_path": "ffmpeg",
-    "directory": "server/data/recordings"
+    "directory": "server/data/recordings",
+    "auto_split_enabled": true,
+    "auto_split_seconds": 3600
   },
   "monitor": {
     "enabled": false,

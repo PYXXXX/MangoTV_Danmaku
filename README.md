@@ -6,6 +6,16 @@
 
 生产环境请从 [完整部署手册](docs/DEPLOYMENT.md) 开始；该文档统一包含服务器、运营端密码、芒果 TV 扫码登录、直播录制、弹幕后处理、GitHub Pages、飞书 Bot、systemd、HTTPS、备份升级和排障步骤。
 
+## 当前产品形态
+
+新版运营 Studio 已按五个后台页面组织，前后端均使用结构化 API 对齐：
+
+- **活动监控**：配置活动名与官方活动页，监控开播、自动检测直播源/清晰度，可按策略启动独立录制和飞书通知。
+- **运营工作区**：实时开轮次、结束发布、删除同步、导出 PNG/JSONL，并提供录制后回看、打标、切片和生成分析场次。
+- **系统配置**：集中管理芒果 TV 登录、弹幕采集、录制、GitHub Pages、飞书 Bot、运营安全和程序升级；可热重载的配置会即时应用。
+- **机器状态**：展示系统时间、进程、CPU/内存/网络/磁盘、服务状态、指标趋势和最近告警。
+- **系统日志**：按时间、级别、来源和关键词检索日志，支持分页、详情、时间线、导出和排障摘要。
+
 核心能力：
 
 1. **实时运营**：按活动/场次实时采集弹幕、去重计票、展示粗略结果，并可在运营端或飞书卡片中开始、结束、发布。
@@ -101,6 +111,10 @@ python tools/setup_operator_password.py
 - `GET /api/results.json`：当前公开聚合结果，格式与 `site/data/results.json` 一致。
 - `GET /api/update/status`：检查当前 commit、远端 commit 与升级进度。
 - `POST /api/update/apply`：空闲时启动后台快进升级、更新依赖并自动重启。
+- `GET /api/studio/bootstrap`：新版运营 Studio 聚合引导状态。
+- `GET /api/system/status`：机器状态页主数据，包含 CPU、内存、磁盘、网络、服务状态和健康状态。
+- `GET /api/system/metrics?window=15m`：机器状态趋势数据。
+- `GET /api/system/logs`：系统日志分页、筛选、统计和时间线。
 - `GET /api/feishu/binding`：读取飞书一键绑定状态（不返回 App Secret）。
 - `POST /api/feishu/binding/start`：发起飞书授权绑定，返回授权链接与授权码。
 - `GET /api/rounds/{round_id}.jsonl`：导出某个场次的 JSONL 切片，包含 meta 与该场次消息。

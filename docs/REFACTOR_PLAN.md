@@ -1,6 +1,15 @@
-# Live Ops Studio 完整重构方案
+# Live Ops Studio 重构归档
 
-本文档是 `codex/live-ops-studio-refactor` 分支的实施蓝图。目标不是继续美化旧 WebUI，而是把项目重构为“直播运营工作台”：活动监控、直播录制、弹幕采集、后处理分析、飞书协同、公开发布、机器监控和日志排障的一体化系统。
+本文档记录 `codex/live-ops-studio-refactor` 分支的重构目标与落地状态。该分支已于 PR #5 合入 `main`，项目已从“弹幕投票统计”升级为“直播运营工作台”：活动监控、直播录制、弹幕采集、后处理分析、飞书协同、公开发布、机器监控和日志排障的一体化系统。
+
+## 当前状态
+
+- 管理端五个页面已落地：活动监控、运营工作区、系统配置、机器状态、系统日志。
+- 前端已迁移到 `frontend/` 的 TypeScript + React + Vite + Tailwind CSS v4 工程。
+- 后端已补齐新版 Studio 使用的结构化 API，并保留旧 WebUI 与旧接口兼容。
+- 飞书 Bot 已对齐新版状态模型，继续采用卡片交互。
+- 公开结果页继续通过 GitHub Pages 发布聚合结果，原始弹幕和昵称不公开。
+- 验证命令：`python -m py_compile server/vote_server.py`、`npm --prefix frontend run typecheck`、`npm --prefix frontend run build`、`.venv/bin/python -m unittest discover -s tests -v`。
 
 ## 目标
 
@@ -97,51 +106,51 @@
 
 不使用 AI 生成真实艺人头像。候选人头像应来自授权素材或运营上传。
 
-## 后端重构阶段
+## 后端重构阶段归档
 
-### Phase 1：契约和兼容层
+### Phase 1：契约和兼容层（已完成）
 
 - 新增 typed API 文档。
 - 保留旧 `/api/results.json`、`/api/command`、`/api/settings`。
 - 增加新版聚合接口，减少前端多接口拼状态。
 
-### Phase 2：活动与场次实体
+### Phase 2：活动与场次实体（已完成）
 
 - 引入 activity store。
 - 场次操作从文本命令迁移到 typed endpoint。
 - 删除、发布、重命名全部结构化。
 
-### Phase 3：录制后处理
+### Phase 3：录制后处理（已完成）
 
 - markers/clips 增删改查。
 - 录制时间轴。
 - 弹幕密度序列。
 - 片段分析任务状态。
 
-### Phase 4：系统观测
+### Phase 4：系统观测（已完成）
 
 - 周期采集系统指标。
 - 日志分页过滤。
 - 告警和事件时间线。
 
-### Phase 5：飞书统一状态模型
+### Phase 5：飞书统一状态模型（已完成）
 
 - 飞书卡片读取同一套 activity/round/recording/status API。
 - 卡片 action 不再直接散落在旧控制逻辑中。
 
-## 迁移策略
+## 迁移策略归档
 
-1. 开发期：新前端和旧 WebUI 并存。
-2. 新前端构建产物存在时，`/` 和 `/admin` 服务新前端。
-3. 旧接口保留到新版管理端所有功能完全覆盖。
-4. 数据从现有 JSON/JSONL 平滑迁移到 SQLite 应用库。
-5. 最后移除旧静态 WebUI。
+1. 新前端和旧 WebUI 当前并存。
+2. 新前端构建产物存在时，`/`、`/admin`、`/studio` 服务新前端。
+3. 旧版 WebUI 保留在 `/legacy` 作为临时备用入口。
+4. 旧接口继续保留，飞书、公开页和测试均已覆盖新版核心路径。
+5. 后续如要删除旧静态 WebUI，应先确认生产环境无 `/legacy` 依赖。
 
 ## 验收标准
 
-- `npm run build` 通过。
-- `npm run typecheck` 通过。
+- `npm --prefix frontend run build` 通过。
+- `npm --prefix frontend run typecheck` 通过。
 - Python 全量测试通过。
 - 管理端五页和公开页均可打开。
 - 公开页能独立部署到 GitHub Pages。
-- 所有核心操作都有加载态、错误态、空状态和确认态。
+- 核心操作具备加载态、错误态、空状态和确认态。
