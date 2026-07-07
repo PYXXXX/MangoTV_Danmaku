@@ -21,6 +21,7 @@ import secrets
 import shutil
 import signal
 import sqlite3
+import subprocess
 import time
 import unicodedata
 import copy
@@ -87,6 +88,10 @@ def normalize(text: str) -> str:
 
 def safe_id() -> str:
     return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
+
+
+class RecordingNotReadyError(RuntimeError):
+    pass
 
 
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
@@ -250,6 +255,8 @@ class RoundMeta:
     activity: str
     baseName: str
     name: str
+    kind: str
+    visibility: str
     status: str
     startedAt: str
     updatedAt: str
@@ -265,6 +272,7 @@ class RoundMeta:
     sliceEndSeq: int | None = None
     sliceStartTime: str = ""
     sliceEndTime: str | None = None
+    sourceRoundId: str = ""
     preciseResult: dict[str, Any] | None = None
     precisePublishedAt: str | None = None
 
@@ -334,10 +342,13 @@ class StateStore:
             candidates = [Candidate(**candidate) for candidate in item.get("candidates", [])]
             item.setdefault("activity", "未分类活动")
             item.setdefault("baseName", item.get("name", "未命名场次"))
+            item.setdefault("kind", "realtime")
+            item.setdefault("visibility", "public")
             item.setdefault("sliceStartSeq", 1)
             item.setdefault("sliceEndSeq", None if item.get("status") == "running" else self.global_seq)
             item.setdefault("sliceStartTime", item.get("startedAt", ""))
             item.setdefault("sliceEndTime", item.get("stoppedAt"))
+            item.setdefault("sourceRoundId", "")
             item.setdefault("preciseResult", None)
             item.setdefault("precisePublishedAt", None)
             item["name"] = strip_embedded_time_range(item.get("name", ""), item.get("baseName", ""))
@@ -372,16 +383,31 @@ class StateStore:
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         tmp.replace(self.meta_path)
 
-    async def create_round(self, activity: str, name: str, url: str, candidates: list[Candidate], policy: str) -> RoundMeta:
+    async def create_round(
+        self,
+        activity: str,
+        name: str,
+        url: str,
+        candidates: list[Candidate],
+        policy: str,
+        *,
+        activate: bool = True,
+        kind: str = "realtime",
+        visibility: str = "public",
+    ) -> RoundMeta:
         async with self.lock:
             round_id = safe_id()
             base_name = normalize(name) or f"第 {len(self.round_order) + 1} 轮"
             started_at = now_iso()
+            round_kind = normalize(kind) or "realtime"
+            round_visibility = "private" if normalize(visibility) == "private" else "public"
             meta = RoundMeta(
                 id=round_id,
                 activity=normalize(activity) or "未分类活动",
                 baseName=base_name,
                 name=base_name,
+                kind=round_kind,
+                visibility=round_visibility,
                 status="running",
                 startedAt=started_at,
                 updatedAt=started_at,
@@ -398,7 +424,22 @@ class StateStore:
             )
             self.rounds[round_id] = meta
             self.round_order.insert(0, round_id)
-            self.active_round_id = round_id
+            if activate:
+                self.active_round_id = round_id
+            await self.save()
+            return meta
+
+    async def stop_round(self, round_id: str) -> RoundMeta:
+        async with self.lock:
+            meta = self.require_round(round_id)
+            meta.status = "stopped"
+            meta.stoppedAt = now_iso()
+            meta.updatedAt = meta.stoppedAt
+            meta.sliceEndSeq = self.global_seq
+            meta.sliceEndTime = meta.stoppedAt
+            meta.name = meta.baseName
+            if self.active_round_id == round_id:
+                self.active_round_id = None
             await self.save()
             return meta
 
@@ -425,6 +466,8 @@ class StateStore:
                 activity=normalize(activity) or "未分类活动",
                 baseName=base_name,
                 name=base_name,
+                kind="analysis",
+                visibility="public",
                 status="stopped",
                 startedAt=slice_start_time,
                 updatedAt=created_at,
@@ -438,6 +481,7 @@ class StateStore:
                 sliceEndSeq=max(seq_values) if seq_values else self.global_seq,
                 sliceStartTime=slice_start_time,
                 sliceEndTime=slice_end_time,
+                sourceRoundId=source_round_id,
             )
             output_records = []
             for item in records:
@@ -464,18 +508,8 @@ class StateStore:
         async with self.lock:
             if not self.active_round_id:
                 return None
-            meta = self.rounds.get(self.active_round_id)
-            if not meta:
-                return None
-            meta.status = "stopped"
-            meta.stoppedAt = now_iso()
-            meta.updatedAt = meta.stoppedAt
-            meta.sliceEndSeq = self.global_seq
-            meta.sliceEndTime = meta.stoppedAt
-            meta.name = meta.baseName
-            self.active_round_id = None
-            await self.save()
-            return meta
+            round_id = self.active_round_id
+        return await self.stop_round(round_id)
 
     async def rename_round(self, round_id: str, name: str) -> RoundMeta:
         async with self.lock:
@@ -556,7 +590,14 @@ class StateStore:
 
     def find_round(self, query: str | None) -> RoundMeta | None:
         if not query:
-            return self.rounds.get(self.active_round_id or "") or (self.rounds.get(self.round_order[0]) if self.round_order else None)
+            active = self.rounds.get(self.active_round_id or "")
+            if active:
+                return active
+            for round_id in self.round_order:
+                meta = self.rounds[round_id]
+                if meta.visibility == "public" and meta.kind != "recording":
+                    return meta
+            return self.rounds.get(self.round_order[0]) if self.round_order else None
         query = normalize(query)
         if query in self.rounds:
             return self.rounds[query]
@@ -688,10 +729,12 @@ class StateStore:
             lines.extend(line.rstrip("\n") for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
         return "\n".join(lines) + "\n"
 
-    def public_state(self) -> dict[str, Any]:
+    def public_state(self, *, include_private: bool = False) -> dict[str, Any]:
         sessions = []
         for round_id in self.round_order:
             meta = self.rounds[round_id]
+            if not include_private and meta.visibility == "private":
+                continue
             rough_result = {
                 "resultType": "rough",
                 "voteCounts": meta.voteCounts,
@@ -706,6 +749,9 @@ class StateStore:
                 "baseName": meta.baseName,
                 "name": meta.name,
                 "displayName": meta.baseName,
+                "kind": meta.kind,
+                "visibility": meta.visibility,
+                "sourceRoundId": meta.sourceRoundId,
                 "timeRange": format_beijing_display_range(meta.sliceStartTime, meta.sliceEndTime),
                 "compactTimeRange": format_beijing_range(meta.sliceStartTime, meta.sliceEndTime) if meta.sliceEndTime else "",
                 "status": meta.status,
@@ -724,10 +770,22 @@ class StateStore:
                 "sliceStartTime": meta.sliceStartTime,
                 "sliceEndTime": meta.sliceEndTime,
             })
+        included_ids = {item["id"] for item in sessions}
+        active_session_id = self.active_round_id if self.active_round_id in included_ids else None
+        if active_session_id is None:
+            public_round = next(
+                (
+                    item
+                    for item in sessions
+                    if item.get("visibility") == "public" and item.get("kind") in {"realtime", "analysis"}
+                ),
+                None,
+            )
+            active_session_id = str(public_round.get("id")) if public_round else (str(sessions[0].get("id")) if sessions else None)
         return {
             "schemaVersion": 1,
             "publishedAt": now_iso(),
-            "activeSessionId": self.active_round_id or (self.round_order[0] if self.round_order else None),
+            "activeSessionId": active_session_id,
             "sessions": sessions,
         }
 
@@ -796,7 +854,7 @@ class GithubPublisher:
                     sha = (await response.json()).get("sha")
                 elif response.status != 404:
                     raise RuntimeError(f"GitHub 查询失败：{response.status} {await response.text()}")
-            content = json.dumps(self.store.public_state(), ensure_ascii=False, indent=2) + "\n"
+            content = json.dumps(self.store.public_state(include_private=False), ensure_ascii=False, indent=2) + "\n"
             payload = {
                 "message": f"data: publish {result_kind} vote results {now_iso()}",
                 "branch": branch,
@@ -1101,8 +1159,25 @@ class RecordingManager:
     def ffmpeg_path(self) -> str:
         return str(self.config.get("ffmpeg_path") or shutil.which("ffmpeg") or "ffmpeg")
 
+    def ffprobe_path(self) -> str:
+        configured = self.ffmpeg_path()
+        if configured.endswith("ffmpeg"):
+            sibling = configured[:-6] + "ffprobe"
+            if shutil.which(sibling) or Path(sibling).exists():
+                return sibling
+        return str(shutil.which("ffprobe") or "ffprobe")
+
     def default_source_url(self) -> str:
         return str(self.config.get("stream_url") or self.config.get("source_url") or "")
+
+    def auto_split_seconds(self) -> int:
+        if self.config.get("auto_split_enabled", True) is False:
+            return 0
+        try:
+            seconds = int(self.config.get("auto_split_seconds") or self.config.get("split_interval_seconds") or 3600)
+        except (TypeError, ValueError):
+            seconds = 3600
+        return max(0, min(seconds, 12 * 3600))
 
     def load(self) -> None:
         if not self.meta_path.exists():
@@ -1140,19 +1215,46 @@ class RecordingManager:
             round_id = quote(str(item.get("roundId") or ""), safe="")
             item["hasVideo"] = path.exists()
             item["videoUrl"] = f"/api/rounds/{round_id}/recording/video" if path.exists() else ""
+            item["canPostProcess"] = self.can_post_process(item)
+            item["postProcessReason"] = self.post_process_reason(item)
             clips = []
             for clip in item.get("clips") or []:
-                clip_item = dict(clip)
-                clip_id = quote(str(clip_item.get("id") or ""), safe="")
-                clip_item.setdefault("url", f"/api/rounds/{round_id}/recording/clips/{clip_id}.mp4")
-                clip_item["danmakuUrl"] = f"/api/rounds/{round_id}/recording/clips/{clip_id}.jsonl"
-                clip_item["rawDanmakuUrl"] = f"/api/rounds/{round_id}/recording/clips/{clip_id}/raw.jsonl"
-                clip_item["analysisUrl"] = f"/api/rounds/{round_id}/recording/clips/{clip_id}/analysis-round"
-                clips.append(clip_item)
+                clips.append(self.public_clip(record, clip))
             item["clips"] = clips
             item["clipCount"] = len(clips)
             records.append(item)
         return sorted(records, key=lambda item: item.get("startedAt") or "", reverse=True)
+
+    def public_clip(self, record: dict[str, Any], clip: dict[str, Any]) -> dict[str, Any]:
+        clip_item = dict(clip)
+        round_id = quote(str(record.get("roundId") or ""), safe="")
+        clip_id = quote(str(clip_item.get("id") or ""), safe="")
+        clip_item.setdefault("url", f"/api/rounds/{round_id}/recording/clips/{clip_id}.mp4")
+        clip_item["danmakuUrl"] = f"/api/rounds/{round_id}/recording/clips/{clip_id}.jsonl"
+        clip_item["rawDanmakuUrl"] = f"/api/rounds/{round_id}/recording/clips/{clip_id}/raw.jsonl"
+        clip_item["analysisUrl"] = f"/api/rounds/{round_id}/recording/clips/{clip_id}/analysis-round"
+        return clip_item
+
+    def can_post_process(self, record: dict[str, Any]) -> bool:
+        return record.get("status") == "finished" and Path(str(record.get("path") or "")).exists()
+
+    def post_process_reason(self, record: dict[str, Any]) -> str:
+        if self.can_post_process(record):
+            return "录制完成，可打标与切片"
+        status = str(record.get("status") or "")
+        if status == "recording":
+            return "正在录制中，完整视频封装完成后才能打标与手动切片"
+        if status in {"pending"}:
+            return "录制准备中"
+        if status in {"failed", "interrupted"}:
+            return "录制未完整完成，不能后处理"
+        if not Path(str(record.get("path") or "")).exists():
+            return "完整视频文件不存在"
+        return "等待录制完成"
+
+    def require_post_process_ready(self, record: dict[str, Any]) -> None:
+        if not self.can_post_process(record):
+            raise RecordingNotReadyError(self.post_process_reason(record))
 
     async def start(self, meta: RoundMeta, source_url: str = "", *, force: bool = False) -> dict[str, Any] | None:
         self._sync_directory_for_config()
@@ -1171,6 +1273,8 @@ class RecordingManager:
             "startedAt": now_iso(),
             "endedAt": "",
             "error": "",
+            "autoSplitSeconds": self.auto_split_seconds(),
+            "autoSplitStatus": "disabled" if self.auto_split_seconds() <= 0 else "pending",
             "markers": [],
             "clips": [],
         }
@@ -1228,6 +1332,8 @@ class RecordingManager:
             if process.returncode not in (0, None):
                 record["error"] = (stderr or b"").decode("utf-8", errors="replace")[-1200:]
             self.save()
+            if record["status"] == "finished":
+                await self.finalize_recording(round_id)
 
     async def stop(self, round_id: str) -> dict[str, Any] | None:
         record = self.records.get(round_id)
@@ -1251,6 +1357,8 @@ class RecordingManager:
             record["status"] = "finished" if Path(str(record.get("path") or "")).exists() else record.get("status", "stopped")
             record["endedAt"] = record.get("endedAt") or now_iso()
             self.save()
+            if record["status"] == "finished":
+                await self.finalize_recording(round_id)
         return record
 
     async def stop_all(self) -> None:
@@ -1261,6 +1369,7 @@ class RecordingManager:
         record = self.records.get(round_id)
         if not record:
             raise KeyError(f"找不到录制：{round_id}")
+        self.require_post_process_ready(record)
         marker = {
             "id": safe_id(),
             "label": normalize(label) or "未命名标记",
@@ -1271,10 +1380,11 @@ class RecordingManager:
         self.save()
         return marker
 
-    async def create_clip(self, round_id: str, start_seconds: float, end_seconds: float, label: str = "") -> dict[str, Any]:
+    async def create_clip(self, round_id: str, start_seconds: float, end_seconds: float, label: str = "", *, kind: str = "manual") -> dict[str, Any]:
         record = self.records.get(round_id)
         if not record:
             raise KeyError(f"找不到录制：{round_id}")
+        self.require_post_process_ready(record)
         source = Path(str(record.get("path") or ""))
         if not source.exists():
             raise FileNotFoundError("录制文件不存在")
@@ -1308,13 +1418,79 @@ class RecordingManager:
             "label": normalize(label) or f"{start:.1f}s-{end:.1f}s",
             "startSeconds": start,
             "endSeconds": end,
+            "kind": kind,
             "path": str(output),
             "url": f"/api/rounds/{quote(round_id, safe='')}/recording/clips/{quote(clip_id, safe='')}.mp4",
             "createdAt": now_iso(),
         }
+        clip = self.public_clip(record, clip)
         record.setdefault("clips", []).append(clip)
         self.save()
         return clip
+
+    async def probe_duration(self, path: Path) -> float:
+        if not path.exists():
+            raise FileNotFoundError("录制文件不存在")
+        args = [
+            self.ffprobe_path(),
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ]
+        process = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, stderr = await process.communicate()
+        if process.returncode != 0:
+            raise RuntimeError((stderr or b"").decode("utf-8", errors="replace")[-1200:] or "ffprobe 读取时长失败")
+        try:
+            return max(0.0, float((stdout or b"0").decode("utf-8", errors="replace").strip() or 0))
+        except ValueError as exc:
+            raise RuntimeError("ffprobe 返回的视频时长无效") from exc
+
+    async def finalize_recording(self, round_id: str) -> None:
+        record = self.records.get(round_id)
+        if not record or not self.can_post_process(record):
+            return
+        if record.get("autoSplitStatus") in {"running", "done", "disabled"}:
+            return
+        interval = int(record.get("autoSplitSeconds") or self.auto_split_seconds())
+        if interval <= 0:
+            record["autoSplitStatus"] = "disabled"
+            self.save()
+            return
+        if any((clip.get("kind") or "") == "auto" for clip in record.get("clips") or []):
+            record["autoSplitStatus"] = "done"
+            self.save()
+            return
+        record["autoSplitStatus"] = "running"
+        self.save()
+        try:
+            duration = await self.probe_duration(Path(str(record.get("path") or "")))
+            record["durationSeconds"] = duration
+            if duration <= interval:
+                record["autoSplitStatus"] = "skipped"
+                record["autoSplitMessage"] = "录制时长短于自动切片间隔"
+                self.save()
+                return
+            index = 1
+            start = 0.0
+            while start < duration - 0.1:
+                end = min(duration, start + interval)
+                label = f"自动切片 {index:02d}"
+                await self.create_clip(round_id, start, end, label, kind="auto")
+                index += 1
+                start = end
+            record["autoSplitStatus"] = "done"
+            interval_label = f"{interval // 60} 分钟" if interval % 60 == 0 else f"{interval} 秒"
+            record["autoSplitMessage"] = f"已按 {interval_label} 生成 {index - 1} 个自动切片"
+            self.save()
+        except Exception as exc:
+            record["autoSplitStatus"] = "failed"
+            record["autoSplitMessage"] = str(exc)
+            self.save()
 
     def video_path(self, round_id: str) -> Path:
         record = self.records.get(round_id)
@@ -1371,6 +1547,7 @@ class VoteService:
         self.engine = VoteEngine(self.store)
         self.publisher = GithubPublisher(config.get("github", {}), self.store)
         self.collector = MgtvCollector(config.get("mgtv", {}), self.engine)
+        self.recording_collector = MgtvCollector(self._recording_collector_config(config.get("mgtv", {})), self.engine)
         self.recorder = RecordingManager(config.get("recording", {}), self.store.directory)
         self.mgtv_auth = MgtvAuthManager(config.get("mgtv_auth", {}))
         self.feishu = FeishuBot(config.get("feishu", {}))
@@ -1390,6 +1567,12 @@ class VoteService:
         self.monitor_last_notified_key = ""
         self.add_system_event("info", "service", "服务已启动", "直播运营工作台后端进程已初始化。")
 
+    def _recording_collector_config(self, config: dict[str, Any]) -> dict[str, Any]:
+        result = dict(config or {})
+        dedup_path = Path(str(result.get("dedup_db_path") or "server/data/fingerprints.sqlite3"))
+        result["dedup_db_path"] = str(dedup_path.with_name(f"{dedup_path.stem}.recording{dedup_path.suffix or '.sqlite3'}"))
+        return result
+
     def add_system_event(
         self,
         level: str,
@@ -1405,10 +1588,13 @@ class VoteService:
             "source": source or "service",
             "summary": normalize(summary),
             "detail": self._redact_log_text(detail),
+            "host": platform.node(),
         }
         for key, value in extra.items():
             if value is not None:
                 event[key] = self._redact_log_text(str(value)) if isinstance(value, str) else value
+        event["sourceLabel"] = self._log_source_label(str(event.get("source") or "service"))
+        event["id"] = self._system_event_id(event)
         self.system_events.append(event)
         self.system_events = self.system_events[-300:]
         try:
@@ -1429,6 +1615,96 @@ class VoteService:
         for pattern, replacement in patterns:
             text = re.sub(pattern, replacement, text)
         return text
+
+    @staticmethod
+    def _log_source_label(source: str) -> str:
+        labels = {
+            "service": "系统",
+            "system": "系统",
+            "monitor": "活动监控",
+            "mgtv": "直播源",
+            "collector": "弹幕采集",
+            "recording": "录制配置",
+            "recorder": "录制进程",
+            "feishu": "飞书",
+            "github": "GitHub",
+            "publisher": "公开发布",
+            "updater": "更新器",
+            "round": "场次管理",
+            "webui": "WebUI",
+            "test": "测试",
+        }
+        normalized = str(source or "service").strip().lower()
+        return labels.get(normalized, source or "系统")
+
+    @staticmethod
+    def _system_event_id(event: dict[str, Any]) -> str:
+        payload = json.dumps(
+            {
+                "time": event.get("time") or "",
+                "level": event.get("level") or "",
+                "source": event.get("source") or "",
+                "summary": event.get("summary") or "",
+                "detail": event.get("detail") or "",
+                "roundId": event.get("roundId") or "",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        return f"log_{hashlib.sha1(payload.encode('utf-8')).hexdigest()[:12]}"
+
+    @staticmethod
+    def _log_remediation(event: dict[str, Any]) -> list[str]:
+        level = str(event.get("level") or "INFO").upper()
+        source = str(event.get("source") or "").lower()
+        text = normalize(json.dumps(event, ensure_ascii=False))
+        if level != "ERROR" and "失败" not in text and "异常" not in text:
+            return []
+        suggestions = ["查看同一来源前后 5 条日志，确认异常发生前后的状态变化。"]
+        if source in {"recorder", "recording"} or "ffmpeg" in text or "录制" in text:
+            suggestions.extend([
+                "检查录制目录剩余空间与写入权限。",
+                "检查 ffmpeg 路径、直播流 URL 和当前清晰度是否可录制。",
+            ])
+        elif source in {"mgtv", "monitor"} or "直播源" in text:
+            suggestions.extend([
+                "重新检测直播源，确认活动页已开播并能解析播放流。",
+                "如 1080P 或 VIP 清晰度失败，请刷新芒果 TV 登录态后重试。",
+            ])
+        elif source in {"github", "publisher"}:
+            suggestions.extend([
+                "检查 GitHub token 权限、仓库分支和 Pages 结果文件路径。",
+                "确认当前网络可访问 GitHub API。",
+            ])
+        elif source == "feishu":
+            suggestions.extend([
+                "检查飞书 App Secret、长连接状态和 open_id/chat_id 白名单。",
+                "在目标会话发送“我的ID”确认机器人仍在会话内。",
+            ])
+        elif source == "updater":
+            suggestions.extend([
+                "确认工作区没有未提交改动，且远端分支允许 fast-forward。",
+                "查看更新日志中的 git 或依赖安装错误后再重试。",
+            ])
+        else:
+            suggestions.append("导出当前筛选日志交给运维 agent 继续分析。")
+        return suggestions[:4]
+
+    def _system_event_view(self, event: dict[str, Any]) -> dict[str, Any]:
+        view = dict(event or {})
+        view["level"] = str(view.get("level") or "INFO").upper()
+        view["source"] = str(view.get("source") or "service")
+        view["sourceLabel"] = str(view.get("sourceLabel") or self._log_source_label(view["source"]))
+        view["summary"] = str(view.get("summary") or "系统事件")
+        view["detail"] = self._redact_log_text(str(view.get("detail") or ""))
+        view["host"] = str(view.get("host") or platform.node())
+        view["id"] = str(view.get("id") or self._system_event_id(view))
+        if view["level"] == "ERROR" and not view.get("errorMessage"):
+            view["errorMessage"] = view.get("detail") or view.get("summary") or "未知错误"
+        if view.get("command"):
+            view["command"] = self._redact_log_text(str(view.get("command") or ""))
+        view["remediation"] = self._log_remediation(view)
+        return view
 
     def _initial_monitor_state(self) -> dict[str, Any]:
         return {
@@ -1602,8 +1878,8 @@ class VoteService:
     def settings_view(self) -> dict[str, Any]:
         return public_settings(self.config, self.settings_runtime())
 
-    def public_state(self) -> dict[str, Any]:
-        state = self.store.public_state()
+    def public_state(self, *, include_private: bool = False) -> dict[str, Any]:
+        state = self.store.public_state(include_private=include_private)
         state["defaults"] = {
             "activity": str((self.config.get("vote") or {}).get("activity") or "未分类活动"),
             "mgtvUrl": str((self.config.get("mgtv") or {}).get("url") or ""),
@@ -1634,6 +1910,171 @@ class VoteService:
         if platform.system() == "Darwin":
             return rss
         return rss * 1024
+
+    @staticmethod
+    def _run_text_command(args: list[str], timeout: float = 1.0) -> str:
+        try:
+            result = subprocess.run(args, check=False, capture_output=True, text=True, timeout=timeout)
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        if result.returncode != 0:
+            return ""
+        return (result.stdout or "").strip()
+
+    @staticmethod
+    def _cpu_model_name() -> str:
+        cpuinfo = Path("/proc/cpuinfo")
+        if cpuinfo.exists():
+            values: dict[str, str] = {}
+            for line in cpuinfo.read_text(encoding="utf-8", errors="ignore").splitlines():
+                key, _, value = line.partition(":")
+                if value.strip():
+                    values.setdefault(key.strip().casefold(), value.strip())
+            for key in ("model name", "hardware", "processor"):
+                if values.get(key):
+                    return values[key]
+        if platform.system() == "Darwin":
+            model = VoteService._run_text_command(["sysctl", "-n", "machdep.cpu.brand_string"])
+            if model:
+                return model
+        return platform.processor() or platform.machine() or ""
+
+    @staticmethod
+    def _read_temperature_sensor(path: Path) -> float | None:
+        try:
+            raw = path.read_text(encoding="utf-8", errors="ignore").strip()
+        except OSError:
+            return None
+        try:
+            value = float(raw)
+        except ValueError:
+            return None
+        celsius = value / 1000 if value > 1000 else value
+        if 0 < celsius < 125:
+            return round(celsius, 1)
+        return None
+
+    @staticmethod
+    def _cpu_temperature_snapshot() -> dict[str, Any]:
+        candidates: list[dict[str, Any]] = []
+        for zone in sorted(Path("/sys/class/thermal").glob("thermal_zone*")):
+            temp = VoteService._read_temperature_sensor(zone / "temp")
+            if temp is None:
+                continue
+            label = ""
+            try:
+                label = (zone / "type").read_text(encoding="utf-8", errors="ignore").strip()
+            except OSError:
+                label = zone.name
+            candidates.append({"label": label or zone.name, "celsius": temp, "source": str(zone / "temp")})
+        for sensor in sorted(Path("/sys/class/hwmon").glob("hwmon*/temp*_input")):
+            temp = VoteService._read_temperature_sensor(sensor)
+            if temp is None:
+                continue
+            label_path = sensor.with_name(sensor.name.replace("_input", "_label"))
+            label = ""
+            try:
+                label = label_path.read_text(encoding="utf-8", errors="ignore").strip()
+            except OSError:
+                label = sensor.name
+            candidates.append({"label": label or sensor.name, "celsius": temp, "source": str(sensor)})
+        if candidates:
+            preferred = next(
+                (
+                    item for item in candidates
+                    if re.search(r"cpu|package|tctl|tdie|core|soc", str(item.get("label") or ""), re.I)
+                ),
+                candidates[0],
+            )
+            return {
+                "available": True,
+                "celsius": preferred["celsius"],
+                "label": preferred["label"],
+                "source": preferred["source"],
+                "sensors": candidates[:12],
+            }
+        if platform.system() == "Darwin":
+            return {
+                "available": False,
+                "celsius": None,
+                "label": "",
+                "source": "",
+                "error": "macOS 未提供无需特权的标准 CPU 温度接口",
+            }
+        return {
+            "available": False,
+            "celsius": None,
+            "label": "",
+            "source": "",
+            "error": "未发现可读取的 CPU 温度传感器",
+        }
+
+    def _backup_snapshot(self) -> dict[str, Any]:
+        candidates: dict[str, Path] = {}
+        if self.config_path is not None:
+            backup = self.config_path.with_name(self.config_path.name + ".bak")
+            candidates[str(backup)] = backup
+            for pattern in ("*.bak", "*.backup"):
+                for path in self.config_path.parent.glob(pattern):
+                    candidates[str(path)] = path
+        for pattern in ("*.bak", "*.backup"):
+            for path in self.store.directory.glob(pattern):
+                candidates[str(path)] = path
+        records = []
+        for path in candidates.values():
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            records.append({
+                "path": str(path),
+                "name": path.name,
+                "sizeBytes": stat.st_size,
+                "updatedAt": iso_z(datetime.fromtimestamp(stat.st_mtime, timezone.utc)),
+            })
+        records.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
+        latest = records[0] if records else None
+        return {
+            "available": latest is not None,
+            "latestAt": latest.get("updatedAt") if latest else "",
+            "path": latest.get("path") if latest else "",
+            "name": latest.get("name") if latest else "",
+            "sizeBytes": latest.get("sizeBytes") if latest else 0,
+            "count": len(records),
+            "items": records[:8],
+        }
+
+    def system_host(self) -> dict[str, Any]:
+        cpu_temperature = self._cpu_temperature_snapshot()
+        backup = self._backup_snapshot()
+        return {
+            "ok": True,
+            "generatedAt": now_iso(),
+            "hostname": platform.node(),
+            "platform": platform.platform(),
+            "system": platform.system(),
+            "release": platform.release(),
+            "version": platform.version(),
+            "machine": platform.machine(),
+            "python": platform.python_version(),
+            "process": {
+                "pid": os.getpid(),
+                "name": "mgtv-danmaku",
+                "rssBytes": self._process_rss_bytes(),
+            },
+            "paths": {
+                "repoRoot": str(self.repo_root),
+                "config": str(self.config_path) if self.config_path else "",
+                "storage": str(self.store.directory),
+                "recordings": str(self.recorder.directory),
+            },
+            "cpu": {
+                "model": self._cpu_model_name(),
+                "architecture": platform.machine(),
+                "temperature": cpu_temperature,
+            },
+            "backup": backup,
+        }
 
     def _memory_snapshot(self) -> dict[str, Any]:
         total = 0
@@ -1705,6 +2146,8 @@ class VoteService:
         data_disk = self._disk_snapshot(storage_dir)
         recording_disk = self._disk_snapshot(recording_dir)
         load_average = list(os.getloadavg()) if hasattr(os, "getloadavg") else []
+        host = self.system_host()
+        cpu_temperature = (host.get("cpu") or {}).get("temperature") or {}
         feishu_thread = getattr(self.feishu_connection, "thread", None)
         active_recordings = [item for item in self.recorder.public_records() if item.get("status") == "recording"]
         update_in_progress = self.update_task is not None and not self.update_task.done()
@@ -1720,6 +2163,8 @@ class VoteService:
             "timezone": "Asia/Shanghai",
             "platform": platform.platform(),
             "python": platform.python_version(),
+            "host": host,
+            "backup": host.get("backup"),
             "startedAt": self.started_at,
             "uptimeSeconds": max(0, int((parse_iso(now_iso()) - parse_iso(self.started_at)).total_seconds())),
             "process": {
@@ -1731,6 +2176,13 @@ class VoteService:
                 "count": os.cpu_count() or 0,
                 "loadAverage": load_average,
                 "loadPercent": round((load_average[0] / max(1, os.cpu_count() or 1)) * 100, 1) if load_average else None,
+                "model": (host.get("cpu") or {}).get("model") or "",
+                "architecture": (host.get("cpu") or {}).get("architecture") or platform.machine(),
+                "temperature": cpu_temperature,
+                "temperatureCelsius": cpu_temperature.get("celsius"),
+                "temperatureAvailable": bool(cpu_temperature.get("available")),
+                "temperatureSource": cpu_temperature.get("source") or "",
+                "temperatureLabel": cpu_temperature.get("label") or "",
             },
             "memory": self._memory_snapshot(),
             "network": self._network_snapshot(),
@@ -1772,7 +2224,7 @@ class VoteService:
         memory = status.get("memory") if isinstance(status.get("memory"), dict) else {}
         network = status.get("network") if isinstance(status.get("network"), dict) else {}
         services = status.get("services") if isinstance(status.get("services"), dict) else {}
-        public = self.public_state()
+        public = self.public_state(include_private=True)
         message_total = sum(int(item.get("messageCount") or 0) for item in public.get("sessions") or [])
         total_memory = int(memory.get("totalBytes") or 0)
         used_memory = int(memory.get("usedBytes") or 0)
@@ -1845,18 +2297,53 @@ class VoteService:
                     "time": self.update_progress.get("updatedAt") or now_iso(),
                     "level": "INFO" if self.update_progress.get("stage") != "failed" else "ERROR",
                     "source": "updater",
+                    "sourceLabel": self._log_source_label("updater"),
+                    "host": platform.node(),
                     "summary": self._redact_log_text(item),
                     "detail": "",
                 }
                 for item in reversed(self.update_progress.get("logs") or [])
             ]
             events = update_events + events
+        events = [self._system_event_view(event) for event in events]
         return {
             "ok": True,
             "generatedAt": now_iso(),
             "events": events[:limit],
             "sources": sorted({str(event.get("source") or "service") for event in events}),
+            "sourceLabels": {
+                str(event.get("source") or "service"): str(event.get("sourceLabel") or self._log_source_label(str(event.get("source") or "service")))
+                for event in events
+            },
+            "levels": sorted({str(event.get("level") or "INFO").upper() for event in events}),
         }
+
+    @staticmethod
+    def log_counts(events: list[dict[str, Any]]) -> tuple[dict[str, int], dict[str, int]]:
+        level_counts: dict[str, int] = {}
+        source_counts: dict[str, int] = {}
+        for item in events:
+            level = str(item.get("level") or "INFO").upper()
+            source = str(item.get("source") or "service")
+            level_counts[level] = level_counts.get(level, 0) + 1
+            source_counts[source] = source_counts.get(source, 0) + 1
+        return level_counts, source_counts
+
+    @staticmethod
+    def log_timeline(events: list[dict[str, Any]], limit: int = 6) -> list[dict[str, Any]]:
+        chosen = list(reversed(events[:max(1, min(12, limit))]))
+        return [
+            {
+                "id": item.get("id") or "",
+                "time": item.get("time") or "",
+                "level": str(item.get("level") or "INFO").upper(),
+                "source": item.get("source") or "service",
+                "sourceLabel": item.get("sourceLabel") or item.get("source") or "系统",
+                "summary": item.get("summary") or item.get("detail") or "系统事件",
+                "roundId": item.get("roundId") or "",
+            }
+            for item in chosen
+        ]
 
     @staticmethod
     def filter_log_events(
@@ -1966,6 +2453,7 @@ class VoteService:
                 pass
         self.monitor_task = None
         self._set_monitor_state(taskRunning=False)
+        await self.recording_collector.stop()
 
     async def _monitor_loop(self) -> None:
         while True:
@@ -2149,7 +2637,7 @@ class VoteService:
             return self.monitor_status_view()
 
         name = normalize(config["roundName"]) or f"{activity} 全程录制"
-        meta = await self.start_round(
+        meta = await self.start_independent_recording(
             name,
             url,
             activity,
@@ -2159,14 +2647,14 @@ class VoteService:
         self.monitor_auto_started = True
         self._set_monitor_state(
             status="running",
-            message=f"已自动开始：{meta.activity} / {meta.name}",
+            message=f"已自动开始独立录制：{meta.activity} / {meta.name}",
             roundId=meta.id,
             activity=meta.activity,
             url=url,
             lastSuccessAt=now_iso(),
             lastError="",
         )
-        self.add_system_event("info", "monitor", "活动监控已自动开始场次", f"{meta.activity} / {meta.name}", roundId=meta.id)
+        self.add_system_event("info", "monitor", "活动监控已自动开始独立录制", f"{meta.activity} / {meta.name}", roundId=meta.id)
         try:
             await self.notify_monitor_status_once(force=True)
         except Exception as exc:
@@ -2183,7 +2671,7 @@ class VoteService:
         return slug or "default"
 
     def activities_view(self) -> dict[str, Any]:
-        public = self.public_state()
+        public = self.public_state(include_private=True)
         monitor = self.monitor_status_view()
         monitor_config = monitor.get("config") or {}
         monitor_state = monitor.get("state") or {}
@@ -2347,7 +2835,7 @@ class VoteService:
         return result
 
     def round_results_view(self, round_id: str, result_kind: str | None = None) -> dict[str, Any]:
-        public = self.public_state()
+        public = self.public_state(include_private=True)
         session = next((item for item in public.get("sessions") or [] if item.get("id") == round_id), None)
         if not session:
             raise KeyError(f"找不到场次：{round_id}")
@@ -2383,7 +2871,7 @@ class VoteService:
         }
 
     def rounds_view(self, *, activity_id: str = "", status: str = "", limit: int = 200) -> dict[str, Any]:
-        public = self.public_state()
+        public = self.public_state(include_private=True)
         sessions = list(public.get("sessions") or [])
         if activity_id:
             sessions = [
@@ -2399,7 +2887,7 @@ class VoteService:
         }
 
     def studio_bootstrap_view(self) -> dict[str, Any]:
-        public = self.public_state()
+        public = self.public_state(include_private=True)
         activities = self.activities_view()
         logs = self.system_logs(60)
         return {
@@ -2786,6 +3274,7 @@ class VoteService:
 
             runtime_mgtv = dict(new_config.get("mgtv", {}))
             self.collector.apply_config(runtime_mgtv)
+            self.recording_collector.apply_config(self._recording_collector_config(runtime_mgtv))
             self.recorder.apply_config(new_config.get("recording", {}) or {})
             self.mgtv_auth.config = new_config.get("mgtv_auth", {}) or {}
             self.pending_restart_fields = self._restart_fields_for(new_config)
@@ -2969,17 +3458,17 @@ class VoteService:
     def feishu_card(self, open_id: str, notice: str = "") -> dict[str, Any]:
         public_url = str(self.config.get("feishu", {}).get("public_results_url") or "")
         selected_id = self.user_selection.get(open_id)
-        return build_control_card(self.public_state(), selected_id, notice, public_url, self.monitor_status_view())
+        return build_control_card(self.public_state(include_private=True), selected_id, notice, public_url, self.monitor_status_view())
 
     def feishu_ops_card(self, open_id: str, notice: str = "") -> dict[str, Any]:
-        return build_ops_card(self.public_state(), self.user_selection.get(open_id), notice)
+        return build_ops_card(self.public_state(include_private=True), self.user_selection.get(open_id), notice)
 
     def feishu_publish_card(self, open_id: str, notice: str = "") -> dict[str, Any]:
         public_url = str(self.config.get("feishu", {}).get("public_results_url") or "")
         return build_publish_card(self.public_state(), self.user_selection.get(open_id), notice, public_url)
 
     def feishu_recording_card(self, open_id: str, notice: str = "") -> dict[str, Any]:
-        return build_recording_card(self.public_state(), self.user_selection.get(open_id), notice)
+        return build_recording_card(self.public_state(include_private=True), self.user_selection.get(open_id), notice)
 
     async def handle_feishu_text(
         self,
@@ -2990,7 +3479,7 @@ class VoteService:
         receive_id_type: str,
     ) -> None:
         if not self.feishu.is_allowed(open_id, chat_id):
-            await self.feishu.send_card(receive_id, receive_id_type, build_control_card(self.public_state(), notice="无操作权限。"))
+            await self.feishu.send_card(receive_id, receive_id_type, build_control_card(self.public_state(include_private=True), notice="无操作权限。"))
             return
         normalized = normalize(text)
         if normalized in {"菜单", "卡片", "控制台", "/menu"}:
@@ -3024,13 +3513,13 @@ class VoteService:
         form_value: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not self.feishu.is_allowed(open_id, chat_id):
-            return build_control_card(self.public_state(), notice="无操作权限。")
+            return build_control_card(self.public_state(include_private=True), notice="无操作权限。")
         notice = "状态已刷新。"
         try:
             if action == "show_rounds":
-                return build_round_list_card(self.public_state(), self.user_selection.get(open_id))
+                return build_round_list_card(self.public_state(include_private=True), self.user_selection.get(open_id))
             if action == "show_monitor":
-                return build_monitor_card(self.public_state(), self.monitor_status_view())
+                return build_monitor_card(self.public_state(include_private=True), self.monitor_status_view())
             if action == "show_ops":
                 return self.feishu_ops_card(open_id)
             if action == "show_publish":
@@ -3058,12 +3547,12 @@ class VoteService:
                     notice = f"已开始：{meta.activity} / {meta.name}"
                 return self.feishu_ops_card(open_id, notice)
             elif action in {"start_custom", "start_realtime", "start_record"}:
-                if self.store.active_round_id:
+                if action != "start_record" and self.store.active_round_id:
                     notice = "已有场次正在采集，请先结束本轮。"
                 else:
                     activity, name, url = self.feishu_start_form_defaults(form_value)
                     if action == "start_record":
-                        meta = await self.start_round(name, url or None, activity, record_video=True, collect_danmaku=True)
+                        meta = await self.start_independent_recording(name, url or None, activity, record_video=True, collect_danmaku=True)
                     elif action == "start_realtime":
                         meta = await self.start_round(name, url or None, activity, record_video=False, collect_danmaku=True)
                     else:
@@ -3108,7 +3597,7 @@ class VoteService:
                 label = normalize(values.get("label") or "") or f"飞书标记 {at_seconds:.1f}s"
                 marker = self.recorder.add_marker(target.id, label, at_seconds)
                 self.user_selection[open_id] = target.id
-                return build_recording_card(self.public_state(), target.id, f"已添加标记：{marker['label']} @ {marker['atSeconds']:.1f}s")
+                return build_recording_card(self.public_state(include_private=True), target.id, f"已添加标记：{marker['label']} @ {marker['atSeconds']:.1f}s")
             elif action == "create_clip":
                 target = self.store.find_round(self.user_selection.get(open_id))
                 if target is None:
@@ -3121,7 +3610,7 @@ class VoteService:
                 label = normalize(values.get("label") or "")
                 clip = await self.recorder.create_clip(target.id, start_seconds, end_seconds, label)
                 self.user_selection[open_id] = target.id
-                return build_recording_card(self.public_state(), target.id, f"已截取片段：{clip['label']}")
+                return build_recording_card(self.public_state(include_private=True), target.id, f"已截取片段：{clip['label']}")
             elif action == "analyze_latest_clip":
                 target = self.store.find_round(self.user_selection.get(open_id))
                 if target is None:
@@ -3131,12 +3620,12 @@ class VoteService:
                 record = self.recorder.record_for(target.id)
                 clips = (record or {}).get("clips") or []
                 if not clips:
-                    return build_recording_card(self.public_state(), target.id, "当前场次暂无片段，请先截取。")
+                    return build_recording_card(self.public_state(include_private=True), target.id, "当前场次暂无片段，请先截取。")
                 clip = clips[-1]
                 meta = await self.create_analysis_round_from_clip(target.id, str(clip.get("id") or ""), "")
                 self.user_selection[open_id] = meta.id
                 notice = f"已生成分析场次：{meta.activity} / {meta.name}（{meta.messageCount} 条弹幕）"
-                return build_recording_card(self.public_state(), meta.id, notice)
+                return build_recording_card(self.public_state(include_private=True), meta.id, notice)
             elif action == "delete_round":
                 target = self.store.find_round(self.user_selection.get(open_id))
                 if target is None:
@@ -3168,6 +3657,71 @@ class VoteService:
             notice = f"操作失败：{exc}"
         return self.feishu_card(open_id, notice)
 
+    async def start_independent_recording(
+        self,
+        name: str,
+        url: str | None = None,
+        activity: str | None = None,
+        *,
+        record_video: bool = True,
+        collect_danmaku: bool = True,
+    ) -> RoundMeta:
+        url = url or self.config.get("mgtv", {}).get("url")
+        if not url:
+            raise ValueError("未配置直播 URL")
+        if not record_video and not collect_danmaku:
+            raise ValueError("至少需要启用视频录制或弹幕录制中的一项")
+        if collect_danmaku and self.recording_collector.running():
+            raise ValueError("已有独立弹幕录制正在运行，请先结束后再开始新的独立录制")
+        resolution = await self.resolve_mgtv_live_url(str(url), persist=True)
+        if not resolution.get("ok"):
+            raise ValueError(str(resolution.get("error") or "直播 URL 无法解析出可采集的机位"))
+        page_url = str(resolution.get("pageUrl") or url)
+        recording = self.config.get("recording") or {}
+        recording_source = str(recording.get("stream_url") or "")
+        if record_video:
+            detected = await self.detect_mgtv_recording_source(page_url, str(recording.get("preferred_quality") or "auto"))
+            if not detected.get("ok"):
+                raise ValueError(str(detected.get("error") or "录制源检测失败"))
+            recording_source = str((self.config.get("recording") or {}).get("stream_url") or "")
+        activity = activity or self.config.get("vote", {}).get("activity") or "未分类活动"
+        meta = await self.store.create_round(
+            activity,
+            name,
+            page_url,
+            self.default_candidates,
+            self.default_policy,
+            activate=False,
+            kind="recording",
+            visibility="private",
+        )
+        if record_video:
+            record = await self.recorder.start(meta, recording_source, force=True)
+            if record and record.get("status") in {"failed", "skipped"}:
+                self.add_system_event("warn", "recorder", "独立录屏未能启动", record.get("error") or record.get("status") or "", roundId=meta.id)
+        if collect_danmaku:
+            await self.recording_collector.start(meta.id, page_url)
+        self.add_system_event(
+            "info",
+            "recorder",
+            "独立录制已开始",
+            f"{meta.activity} / {meta.name} · video={'on' if record_video else 'off'} · danmaku={'on' if collect_danmaku else 'off'}",
+            roundId=meta.id,
+        )
+        return meta
+
+    async def stop_independent_recording(self, round_id: str) -> RoundMeta:
+        meta = self.store.require_round(round_id)
+        record = self.recorder.record_for(round_id)
+        if self.recording_collector.round_id == round_id:
+            await self.recording_collector.stop()
+        if record:
+            await self.recorder.stop(round_id)
+        meta = await self.store.stop_round(round_id)
+        await self.recorder.finalize_recording(round_id)
+        self.add_system_event("info", "recorder", "独立录制已结束", f"{meta.activity} / {meta.name}", roundId=meta.id)
+        return meta
+
     async def start_round(
         self,
         name: str,
@@ -3197,7 +3751,16 @@ class VoteService:
         if self.store.active_round_id:
             await self.end_round(publish=True)
         activity = activity or self.config.get("vote", {}).get("activity") or "未分类活动"
-        meta = await self.store.create_round(activity, name, url, self.default_candidates, self.default_policy)
+        meta = await self.store.create_round(
+            activity,
+            name,
+            url,
+            self.default_candidates,
+            self.default_policy,
+            activate=True,
+            kind="realtime",
+            visibility="public",
+        )
         if should_record_video:
             record = await self.recorder.start(meta, recording_source, force=True)
             if record and record.get("status") in {"failed", "skipped"}:
@@ -3567,6 +4130,13 @@ def create_app(service: VoteService) -> web.Application:
             headers={"Cache-Control": "no-store"},
         )
 
+    async def system_host(_: web.Request) -> web.Response:
+        return web.json_response(
+            service.system_host(),
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
     async def system_metrics(request: web.Request) -> web.Response:
         return web.json_response(
             service.system_metrics(str(request.query.get("window") or "15m")),
@@ -3596,13 +4166,29 @@ def create_app(service: VoteService) -> web.Application:
             return web.json_response({"error": f"日志时间范围无效：{exc}"}, status=400, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
         total = len(events)
         page_events = events[cursor: cursor + limit]
-        payload["events"] = events
+        level_counts, source_counts = VoteService.log_counts(events)
+        available_events = payload.get("events") or []
+        available_sources = sorted({str(event.get("source") or "service") for event in available_events})
+        available_levels = sorted({str(event.get("level") or "INFO").upper() for event in available_events})
+        source_labels = dict(payload.get("sourceLabels") or {})
+        for event in available_events:
+            source = str(event.get("source") or "service")
+            source_labels[source] = str(event.get("sourceLabel") or source_labels.get(source) or VoteService._log_source_label(source))
         payload["items"] = page_events
         payload["events"] = page_events
         payload["total"] = total
+        payload["cursor"] = cursor
+        payload["limit"] = limit
         payload["nextCursor"] = str(cursor + limit) if cursor + limit < total else ""
+        payload["previousCursor"] = str(max(0, cursor - limit)) if cursor > 0 else ""
         payload["levels"] = sorted({str(event.get("level") or "INFO").upper() for event in events})
         payload["sources"] = sorted({str(event.get("source") or "service") for event in events})
+        payload["availableLevels"] = available_levels
+        payload["availableSources"] = available_sources
+        payload["sourceLabels"] = source_labels
+        payload["levelCounts"] = level_counts
+        payload["sourceCounts"] = source_counts
+        payload["timeline"] = VoteService.log_timeline(events, 6)
         return web.json_response(
             payload,
             dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
@@ -3988,6 +4574,38 @@ def create_app(service: VoteService) -> web.Application:
             headers={"Cache-Control": "no-store"},
         )
 
+    async def start_independent_recording_api(request: web.Request) -> web.Response:
+        data = await request.json()
+        try:
+            meta = await service.start_independent_recording(
+                str(data.get("name") or ""),
+                str(data.get("url") or "") or None,
+                str(data.get("activity") or "") or None,
+                record_video=bool(data.get("recordVideo", True)),
+                collect_danmaku=bool(data.get("collectDanmaku", True)),
+            )
+        except (ValueError, RuntimeError) as exc:
+            return web.json_response({"error": str(exc)}, status=409, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response(
+            {"ok": True, "roundId": meta.id, "activity": meta.activity, "name": meta.name, "pageUrl": meta.pageUrl},
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def stop_independent_recording_api(request: web.Request) -> web.Response:
+        round_id = request.match_info["round_id"]
+        try:
+            meta = await service.stop_independent_recording(round_id)
+        except KeyError as exc:
+            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except (ValueError, RuntimeError) as exc:
+            return web.json_response({"error": str(exc)}, status=409, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response(
+            {"ok": True, "roundId": meta.id, "activity": meta.activity, "name": meta.name},
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
     async def round_recording(request: web.Request) -> web.Response:
         round_id = request.match_info["round_id"]
         record = service.recorder.record_for(round_id)
@@ -4026,6 +4644,8 @@ def create_app(service: VoteService) -> web.Application:
             marker = service.recorder.add_marker(round_id, str(data.get("label") or ""), float(data.get("atSeconds") or 0))
         except KeyError as exc:
             return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except RecordingNotReadyError as exc:
+            return web.json_response({"error": str(exc)}, status=409, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
         except (TypeError, ValueError) as exc:
             return web.json_response({"error": str(exc)}, status=400, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
         return web.json_response({"ok": True, "marker": marker}, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
@@ -4042,6 +4662,8 @@ def create_app(service: VoteService) -> web.Application:
             )
         except KeyError as exc:
             return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except RecordingNotReadyError as exc:
+            return web.json_response({"error": str(exc)}, status=409, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
         except FileNotFoundError as exc:
             return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
         except (TypeError, ValueError) as exc:
@@ -4273,6 +4895,7 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_get("/healthz", health)
     app.router.add_get("/api/studio/bootstrap", studio_bootstrap)
     app.router.add_get("/api/system/status", system_status)
+    app.router.add_get("/api/system/host", system_host)
     app.router.add_get("/api/system/metrics", system_metrics)
     app.router.add_get("/api/system/logs", system_logs)
     app.router.add_get("/api/system/logs/export", system_logs_export)
@@ -4302,7 +4925,9 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_get("/api/update/status", update_status)
     app.router.add_post("/api/update/apply", apply_update)
     app.router.add_get("/api/recordings", recordings)
+    app.router.add_post("/api/recordings/start", start_independent_recording_api)
     app.router.add_get("/api/recordings/{round_id}", recording_by_round)
+    app.router.add_post("/api/recordings/{round_id}/stop", stop_independent_recording_api)
     app.router.add_get("/api/recordings/{round_id}/video", round_recording_video)
     app.router.add_get("/api/recordings/{round_id}/timeline", recording_timeline)
     app.router.add_post("/api/recordings/{round_id}/markers", add_recording_marker)
@@ -4364,6 +4989,7 @@ async def amain() -> None:
     await stop.wait()
     await service.stop_background_tasks()
     await service.collector.stop()
+    await service.recording_collector.stop()
     await service.recorder.stop_all()
     if service.feishu_connection is not None:
         await asyncio.to_thread(service.feishu_connection.stop)

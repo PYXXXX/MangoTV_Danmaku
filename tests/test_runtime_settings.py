@@ -415,11 +415,37 @@ class SettingsApiHttpTest(SettingsHttpBase):
     async def test_observability_and_alias_contracts(self):
         self.service.add_system_event("warn", "recording", "录制空间低", "/data/recordings 剩余不足")
         self.service.add_system_event("error", "recorder", "ffmpeg 失败", "ffmpeg exited with code 1")
+        self.config_path.with_name(self.config_path.name + ".bak").write_text(
+            json.dumps({"backup": True}),
+            encoding="utf-8",
+        )
 
         response = await self.client.get("/api/system/status")
         self.assertEqual(response.status, 200)
         status = await response.json()
         self.assertTrue(status["ok"])
+        self.assertIn("host", status)
+        self.assertIn("backup", status)
+        self.assertTrue(status["backup"]["available"])
+        self.assertEqual(status["backup"]["name"], "config.json.bak")
+        self.assertIn("model", status["cpu"])
+        self.assertIn("architecture", status["cpu"])
+        self.assertIn("temperature", status["cpu"])
+        self.assertIn("temperatureAvailable", status["cpu"])
+        self.assertIn("available", status["cpu"]["temperature"])
+
+        response = await self.client.get("/api/system/host")
+        self.assertEqual(response.status, 200)
+        host = await response.json()
+        self.assertTrue(host["ok"])
+        self.assertIn("hostname", host)
+        self.assertIn("paths", host)
+        self.assertIn("cpu", host)
+        self.assertIn("backup", host)
+        self.assertIn("model", host["cpu"])
+        self.assertIn("temperature", host["cpu"])
+        self.assertTrue(host["backup"]["available"])
+        self.assertEqual(host["backup"]["name"], "config.json.bak")
 
         response = await self.client.get("/api/system/metrics?window=15m")
         self.assertEqual(response.status, 200)
@@ -433,7 +459,16 @@ class SettingsApiHttpTest(SettingsHttpBase):
         logs = await response.json()
         self.assertEqual(logs["total"], 1)
         self.assertEqual(logs["events"][0]["source"], "recorder")
+        self.assertIn("id", logs["events"][0])
+        self.assertIn("host", logs["events"][0])
+        self.assertEqual(logs["events"][0]["sourceLabel"], "录制进程")
+        self.assertIn("remediation", logs["events"][0])
         self.assertIn("ERROR", logs["levels"])
+        self.assertIn("ERROR", logs["availableLevels"])
+        self.assertIn("recorder", logs["availableSources"])
+        self.assertEqual(logs["levelCounts"]["ERROR"], 1)
+        self.assertEqual(logs["sourceLabels"]["recorder"], "录制进程")
+        self.assertGreaterEqual(len(logs["timeline"]), 1)
 
         response = await self.client.get("/api/system/logs?from=not-a-date")
         self.assertEqual(response.status, 400)
@@ -605,11 +640,13 @@ class SettingsApiHttpTest(SettingsHttpBase):
             self.service.default_candidates,
             self.service.default_policy,
         )
+        video_path = Path(self.temp.name) / "complete.mp4"
+        video_path.write_bytes(b"complete-video")
         self.service.recorder.records[meta.id] = {
             "roundId": meta.id,
             "activity": meta.activity,
             "roundName": meta.name,
-            "path": str(Path(self.temp.name) / "missing.mp4"),
+            "path": str(video_path),
             "status": "finished",
             "startedAt": meta.startedAt,
             "endedAt": meta.startedAt,

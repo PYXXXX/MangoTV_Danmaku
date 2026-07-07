@@ -1,4 +1,4 @@
-import type { PublicState, StudioBootstrap, SystemLogsResponse, SystemMetricsResponse, SystemStatus } from "./types";
+import type { PublicState, StudioBootstrap, SystemHostInfo, SystemLogsResponse, SystemMetricsResponse, SystemStatus } from "./types";
 
 const jsonHeaders = { "Content-Type": "application/json" };
 
@@ -85,6 +85,10 @@ export async function getPublicPageState(): Promise<PublicState> {
 
 export async function getSystemStatus(): Promise<SystemStatus> {
   return apiGet<SystemStatus>("/api/system/status");
+}
+
+export async function getSystemHost(): Promise<SystemHostInfo> {
+  return apiGet<SystemHostInfo>("/api/system/host");
 }
 
 export async function getSystemMetrics(window = "15m"): Promise<SystemMetricsResponse> {

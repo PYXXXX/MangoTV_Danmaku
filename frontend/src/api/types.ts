@@ -29,6 +29,7 @@ export interface RecordingClip {
   label: string;
   startSeconds: number;
   endSeconds: number;
+  kind?: "manual" | "auto" | string;
   url?: string;
   danmakuUrl?: string;
   rawDanmakuUrl?: string;
@@ -44,6 +45,13 @@ export interface Recording {
   fileSizeBytes?: number;
   sourceUrl?: string;
   error?: string;
+  startedAt?: string;
+  endedAt?: string;
+  autoSplitSeconds?: number;
+  autoSplitStatus?: string;
+  autoSplitMessage?: string;
+  canPostProcess?: boolean;
+  postProcessReason?: string;
   markers?: RecordingMarker[];
   clips?: RecordingClip[];
 }
@@ -65,6 +73,9 @@ export interface RoundSession {
   name: string;
   baseName?: string;
   displayName?: string;
+  kind?: "realtime" | "recording" | "analysis" | string;
+  visibility?: "public" | "private" | string;
+  sourceRoundId?: string;
   status: "running" | "stopped" | string;
   startedAt?: string;
   endedAt?: string;
@@ -232,6 +243,11 @@ export interface SystemStatus {
   ok?: boolean;
   generatedAt?: string;
   systemTime?: string;
+  timezone?: string;
+  platform?: string;
+  python?: string;
+  host?: SystemHostInfo;
+  backup?: SystemBackupInfo;
   startedAt?: string;
   uptimeSeconds?: number;
   process?: {
@@ -243,6 +259,13 @@ export interface SystemStatus {
     count?: number;
     loadPercent?: number | null;
     loadAverage?: number[];
+    model?: string;
+    architecture?: string;
+    temperature?: SystemCpuTemperature;
+    temperatureCelsius?: number | null;
+    temperatureAvailable?: boolean;
+    temperatureSource?: string;
+    temperatureLabel?: string;
   };
   memory?: {
     totalBytes?: number;
@@ -259,7 +282,19 @@ export interface SystemStatus {
     data?: { ok?: boolean; path?: string; totalBytes?: number; usedBytes?: number; freeBytes?: number; error?: string };
     recordings?: { ok?: boolean; path?: string; totalBytes?: number; usedBytes?: number; freeBytes?: number; error?: string };
   };
-  services?: Record<string, { status?: ServiceStatus; message?: string; enabled?: boolean; activeCount?: number; progress?: unknown }>;
+  services?: Record<string, {
+    status?: ServiceStatus;
+    message?: string;
+    enabled?: boolean;
+    activeCount?: number;
+    activeRoundId?: string | null;
+    taskRunning?: boolean;
+    configured?: boolean;
+    quality?: string;
+    availableQualities?: string[];
+    detectedAt?: string;
+    progress?: unknown;
+  }>;
   monitor?: MonitorView;
   health?: {
     status?: "ok" | "warning" | "error" | string;
@@ -269,21 +304,96 @@ export interface SystemStatus {
   };
 }
 
+export interface SystemCpuTemperature {
+  available?: boolean;
+  celsius?: number | null;
+  label?: string;
+  source?: string;
+  error?: string;
+  sensors?: Array<{ label?: string; celsius?: number; source?: string }>;
+}
+
+export interface SystemBackupInfo {
+  available?: boolean;
+  latestAt?: string;
+  path?: string;
+  name?: string;
+  sizeBytes?: number;
+  count?: number;
+  items?: Array<{ path?: string; name?: string; sizeBytes?: number; updatedAt?: string }>;
+}
+
+export interface SystemHostInfo {
+  ok?: boolean;
+  generatedAt?: string;
+  hostname?: string;
+  platform?: string;
+  system?: string;
+  release?: string;
+  version?: string;
+  machine?: string;
+  python?: string;
+  process?: {
+    pid?: number;
+    name?: string;
+    rssBytes?: number;
+  };
+  paths?: {
+    repoRoot?: string;
+    config?: string;
+    storage?: string;
+    recordings?: string;
+  };
+  cpu?: {
+    model?: string;
+    architecture?: string;
+    temperature?: SystemCpuTemperature;
+  };
+  backup?: SystemBackupInfo;
+}
+
 export interface SystemLogEvent {
   id?: string;
   time?: string;
   level?: "INFO" | "WARN" | "ERROR" | string;
   source?: string;
+  sourceLabel?: string;
   summary?: string;
   detail?: string;
+  roundId?: string;
+  host?: string;
+  command?: string;
+  errorMessage?: string;
+  remediation?: string[];
+  [key: string]: unknown;
+}
+
+export interface SystemLogTimelineItem {
+  id?: string;
+  time?: string;
+  level?: "INFO" | "WARN" | "ERROR" | string;
+  source?: string;
+  sourceLabel?: string;
+  summary?: string;
   roundId?: string;
 }
 
 export interface SystemLogsResponse {
+  ok?: boolean;
+  generatedAt?: string;
   events?: SystemLogEvent[];
   items?: SystemLogEvent[];
   sources?: string[];
+  availableSources?: string[];
+  sourceLabels?: Record<string, string>;
   levels?: string[];
+  availableLevels?: string[];
+  levelCounts?: Record<string, number>;
+  sourceCounts?: Record<string, number>;
+  timeline?: SystemLogTimelineItem[];
+  cursor?: number;
+  limit?: number;
+  previousCursor?: string;
   nextCursor?: string;
   total?: number;
 }

@@ -70,8 +70,11 @@ export function rankingRows(round?: RoundSession | null, result?: VoteResult): R
 }
 
 export function currentRound(sessions: RoundSession[] = [], activeSessionId?: string | null): RoundSession | null {
-  return sessions.find((item) => item.id === activeSessionId)
-    || sessions.find((item) => item.status === "running")
+  const publishable = sessions.filter((item) => item.visibility !== "private" && item.kind !== "recording");
+  return publishable.find((item) => item.id === activeSessionId)
+    || publishable.find((item) => item.status === "running")
+    || publishable[0]
+    || sessions.find((item) => item.id === activeSessionId)
     || sessions[0]
     || null;
 }
