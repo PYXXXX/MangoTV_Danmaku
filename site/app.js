@@ -143,10 +143,10 @@ function renderCurrentPng() {
 
   ctx.fillStyle = orange;
   ctx.font = `700 18px ui-monospace, monospace`;
-  ctx.fillText("LIVE AUDIENCE VOTE", left, 76);
+  ctx.fillText("LIVE OPS DATA", left, 76);
   ctx.fillStyle = text;
   ctx.font = `700 58px ${fontStack}`;
-  ctx.fillText("直播弹幕人气统计", left, 138);
+  ctx.fillText("直播运营数据看板", left, 138);
 
   const status = resultType === "precise" ? "精确结果 · 已清洗" : (session.status === "running" ? "LIVE · 粗略统计中" : "粗略结果 · 本轮已结束");
   const displayName = sessionDisplayName(session);

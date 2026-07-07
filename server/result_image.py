@@ -164,8 +164,8 @@ def render_result_png(state: dict[str, Any], round_id: str, requested_result: st
     line = "#2a2c30"
     text = "#f5f5f3"
 
-    draw.text((left, 58), "LIVE AUDIENCE VOTE", fill=orange, font=fonts.small)
-    draw.text((left, 88), "直播弹幕人气统计", fill=text, font=fonts.title)
+    draw.text((left, 58), "LIVE OPS DATA", fill=orange, font=fonts.small)
+    draw.text((left, 88), "直播运营数据看板", fill=text, font=fonts.title)
     status = "精确结果 · 已清洗" if result_type == "precise" else ("LIVE · 粗略统计中" if session.get("status") == "running" else "粗略结果 · 本轮已结束")
     display_name = session.get("displayName") or session.get("baseName") or session.get("name") or "未命名场次"
     program = f"{session.get('activity') or '未分类活动'} / {display_name}"

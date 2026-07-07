@@ -105,7 +105,7 @@ class OperatorAuthHttpTest(AuthHttpTestBase):
         authenticated = await self.client.get("/", headers={"Cookie": raw_cookie})
         self.assertEqual(authenticated.status, 200)
         page = await authenticated.text()
-        self.assertIn("直播投票统计", page)
+        self.assertIn("直播运营工作台", page)
         self.assertIn("退出登录", page)
         self.assertIn('/webui/styles.css?v=', page)
         self.assertIn('/webui/app.js?v=', page)

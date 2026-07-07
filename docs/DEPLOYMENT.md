@@ -1,12 +1,12 @@
-# 直播弹幕人气统计：完整部署手册
+# 直播运营工作台：完整部署手册
 
-本文是服务器模式的统一部署文档，覆盖从空白 Linux 主机到可运营状态的完整流程：服务安装、基础配置、运营端密码、GitHub Pages、飞书 Bot、systemd、HTTPS、验收、备份、升级、回滚和排障。
+本文是直播运营工作台的统一部署文档，覆盖从空白 Linux 主机到可运营状态的完整流程：服务安装、基础配置、运营端密码、芒果 TV 扫码登录、直播录制、弹幕采集、数据分析、GitHub Pages、飞书 Bot、systemd、HTTPS、验收、备份、升级、回滚和排障。
 
 浏览器扩展的本地安装见项目根目录 [README.md](../README.md)。精确结果的语义清洗规则属于 Agent 执行协议，继续单独维护在 [PRECISE_RESULT_AGENT.md](PRECISE_RESULT_AGENT.md)。
 
 ## 0. 部署结果与推荐拓扑
 
-推荐生产形态是“单实例服务 + 本地持久化 + HTTPS 反向代理 + 飞书长连接 + GitHub Pages 公开页”。
+推荐生产形态是“单实例运营服务 + 本地持久化 + HTTPS 反向代理 + 飞书长连接 + GitHub Pages 公开页”。
 
 ~~~mermaid
 flowchart LR
@@ -14,7 +14,7 @@ flowchart LR
     OP["运营浏览器"] -->|HTTPS + 登录密码| NGINX["Caddy / Nginx / 可信代理"]
     NGINX --> SVC
     FS["飞书运营群"] <-->|出站 WebSocket 长连接| SVC
-    SVC --> DATA["/var/lib/mgtv-danmaku<br/>配置、状态、原始弹幕、SQLite 去重"]
+    SVC --> DATA["/var/lib/mgtv-danmaku<br/>配置、状态、录屏、原始弹幕、SQLite 去重"]
     SVC -->|仅聚合结果| GH["GitHub Contents API"]
     GH --> PAGES["GitHub Actions / Pages<br/>公开结果页"]
 ~~~
