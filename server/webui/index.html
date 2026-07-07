@@ -141,7 +141,7 @@
           <div>
             <p class="kicker">RUNTIME CONFIG</p>
             <h2 id="settingsTitle">系统配置</h2>
-            <p class="panel-copy">保存后自动校验并热应用。正在采集的场次保持启动时的候选人与计票口径；带“需重启”的高级项会保存但不会切换当前进程。</p>
+            <p class="panel-copy">保存后自动校验并热应用。正在采集的场次保持启动时的候选人与计票口径；只有监听地址、端口和主数据目录需要安全重启。</p>
           </div>
           <div class="settings-actions-top">
             <span id="configStatus" class="config-status">尚未读取</span>
@@ -178,7 +178,7 @@
               <label class="check-label"><input id="cfgCountInitial" type="checkbox" /> 将首批历史弹幕计入场次</label>
               <label>内存去重缓存<input id="cfgDedupHot" type="number" min="1000" max="10000000" required /></label>
               <label>去重记录上限<input id="cfgDedupMax" type="number" min="10000" max="1000000000" required /></label>
-              <label class="wide">SQLite 去重路径（修改后需重启）<input id="cfgDedupDb" type="text" required /></label>
+              <label class="wide">SQLite 去重路径（空闲时热切换）<input id="cfgDedupDb" type="text" required /></label>
             </div>
           </details>
 
@@ -222,7 +222,7 @@
               </label>
               <label class="wide">录屏直播流 URL<input id="cfgRecordingStreamUrl" type="url" placeholder="例如：https://example.com/live.m3u8" /></label>
               <label>ffmpeg 路径<input id="cfgRecordingFfmpeg" type="text" placeholder="ffmpeg" /></label>
-              <label>录制目录（修改后需重启）<input id="cfgRecordingDir" type="text" placeholder="server/data/recordings" /></label>
+              <label>录制目录（空闲时热切换）<input id="cfgRecordingDir" type="text" placeholder="server/data/recordings" /></label>
             </div>
           </details>
 

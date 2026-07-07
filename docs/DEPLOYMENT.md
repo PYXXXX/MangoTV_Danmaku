@@ -219,7 +219,8 @@ sudoedit /var/lib/mgtv-danmaku/config.json
 
 - 立即生效：历史接口、轮询/重连、去重容量、GitHub 发布、密码策略和飞书连接。
 - 下一场生效：默认活动、候选人、别名、多人策略、直播 URL、room_id 和首批历史策略。正在采集的场次保持启动时冻结的口径。
-- 保存后需重启：监听地址、端口、数据目录、SQLite 去重文件路径。WebUI 会明确显示待重启字段，并在没有场次采集时提供“安全重启服务”按钮；systemd 自动拉起新进程。
+- 保存后需重启：监听地址、端口、主数据目录。WebUI 会明确显示待重启字段，并在没有场次采集时提供“安全重启服务”按钮；systemd 自动拉起新进程。
+- 空闲时可热切换：SQLite 去重文件路径、录制目录。若正在采集或录制，当前场次继续使用启动时的路径，下一场开始前自动切到新路径。
 
 正在采集时服务会拒绝重启动作。配置 API 永远不会回传 GitHub Token、飞书 Secret、密码哈希或会话密钥；敏感输入留空表示保留服务器现值。
 
@@ -512,7 +513,7 @@ sudo systemctl stop mgtv-danmaku
 sudo systemctl start mgtv-danmaku
 ~~~
 
-服务示例启用了 `ProtectSystem=full`，源码目录保持只读，只允许服务在 `/var/lib/mgtv-danmaku` 保存配置、备份和数据。大多数配置由 WebUI 热应用；只有界面标记“需重启”的字段需要重启服务。
+服务示例启用了 `ProtectSystem=full`，源码目录保持只读，只允许服务在 `/var/lib/mgtv-danmaku` 保存配置、备份和数据。大多数配置由 WebUI 热应用；SQLite 去重路径和录制目录会在空闲时热切换；只有界面标记“需重启”的字段需要重启服务。
 
 ## 9. HTTPS 反向代理（Caddy / Nginx）
 

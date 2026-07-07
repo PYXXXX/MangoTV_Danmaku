@@ -317,8 +317,6 @@ def build_settings_update(
         ("listen.host", ("listen", "host")),
         ("listen.port", ("listen", "port")),
         ("storage.directory", ("storage", "directory")),
-        ("mgtv.dedup_db_path", ("mgtv", "dedup_db_path")),
-        ("recording.directory", ("recording", "directory")),
     ]
     restart_fields = [
         label

@@ -802,24 +802,45 @@ class MgtvCollector:
         self.round_id: str | None = None
         self.url: str | None = None
         self.room_id: str | None = None
-        self.fingerprints = PersistentDeduper(
-            db_path=Path(config.get("dedup_db_path", "server/data/fingerprints.sqlite3")),
+        self.fingerprints = self._new_deduper(config)
+
+    def _dedup_db_path(self, config: dict[str, Any]) -> Path:
+        return Path(config.get("dedup_db_path", "server/data/fingerprints.sqlite3"))
+
+    def _new_deduper(self, config: dict[str, Any]) -> PersistentDeduper:
+        return PersistentDeduper(
+            db_path=self._dedup_db_path(config),
             hot_cache_size=int(config.get("dedup_hot_cache_size", 200_000)),
             max_records=int(config.get("dedup_max_records", 100_000_000)),
         )
+
+    def _sync_deduper_for_config(self) -> None:
+        target_path = self._dedup_db_path(self.config)
+        if self.fingerprints.db_path == target_path:
+            self.fingerprints.reconfigure(
+                int(self.config.get("dedup_hot_cache_size", 200_000)),
+                int(self.config.get("dedup_max_records", 100_000_000)),
+            )
+            return
+        self.fingerprints.close()
+        self.fingerprints = self._new_deduper(self.config)
 
     def running(self) -> bool:
         return self.task is not None and not self.task.done()
 
     def apply_config(self, config: dict[str, Any]) -> None:
         self.config = config
-        self.fingerprints.reconfigure(
-            int(config.get("dedup_hot_cache_size", 200_000)),
-            int(config.get("dedup_max_records", 100_000_000)),
-        )
+        if self.running():
+            self.fingerprints.reconfigure(
+                int(config.get("dedup_hot_cache_size", 200_000)),
+                int(config.get("dedup_max_records", 100_000_000)),
+            )
+        else:
+            self._sync_deduper_for_config()
 
     async def start(self, round_id: str, url: str) -> None:
         await self.stop()
+        self._sync_deduper_for_config()
         self.round_id = round_id
         self.url = url
         self.room_id = self.resolve_room_id(url)
@@ -1029,13 +1050,32 @@ class FeishuBot:
 
 class RecordingManager:
     def __init__(self, config: dict[str, Any], storage_dir: Path):
+        self.storage_dir = storage_dir
         self.config = config or {}
-        self.directory = Path(self.config.get("directory") or storage_dir / "recordings")
-        self.directory.mkdir(parents=True, exist_ok=True)
-        self.meta_path = self.directory / "recordings.json"
         self.records: dict[str, dict[str, Any]] = {}
         self.processes: dict[str, asyncio.subprocess.Process] = {}
+        self.directory = self._desired_directory(self.config)
+        self.meta_path = self.directory / "recordings.json"
+        self._switch_directory(self.directory)
+
+    def _desired_directory(self, config: dict[str, Any]) -> Path:
+        return Path(config.get("directory") or self.storage_dir / "recordings")
+
+    def _switch_directory(self, directory: Path) -> None:
+        self.directory = directory
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.meta_path = self.directory / "recordings.json"
+        self.records = {}
         self.load()
+
+    def _sync_directory_for_config(self) -> None:
+        desired = self._desired_directory(self.config)
+        if desired != self.directory and not self.processes:
+            self._switch_directory(desired)
+
+    def apply_config(self, config: dict[str, Any]) -> None:
+        self.config = config or {}
+        self._sync_directory_for_config()
 
     def enabled(self) -> bool:
         return bool(self.config.get("enabled"))
@@ -1097,6 +1137,7 @@ class RecordingManager:
         return sorted(records, key=lambda item: item.get("startedAt") or "", reverse=True)
 
     async def start(self, meta: RoundMeta, source_url: str = "") -> dict[str, Any] | None:
+        self._sync_directory_for_config()
         if not self.enabled():
             return None
         source = source_url or self.default_source_url()
@@ -1402,8 +1443,6 @@ class VoteService:
             ("listen.host", "listen", "host"),
             ("listen.port", "listen", "port"),
             ("storage.directory", "storage", "directory"),
-            ("mgtv.dedup_db_path", "mgtv", "dedup_db_path"),
-            ("recording.directory", "recording", "directory"),
         ]
         return [
             label
@@ -1522,7 +1561,7 @@ class VoteService:
                 if self.config_path is not None:
                     save_config_atomic(self.config_path, target)
                 self.config = target
-                self.recorder.config = rec
+                self.recorder.apply_config(rec)
                 self.collector.apply_config(mgtv)
         redacted = dict(result)
         if redacted.get("streamUrl"):
@@ -1737,14 +1776,8 @@ class VoteService:
             self.publisher.config = new_config.get("github", {})
 
             runtime_mgtv = dict(new_config.get("mgtv", {}))
-            old_db_path = (self.startup_config.get("mgtv") or {}).get(
-                "dedup_db_path",
-                "server/data/fingerprints.sqlite3",
-            )
-            if "mgtv.dedup_db_path" in self._restart_fields_for(new_config):
-                runtime_mgtv["dedup_db_path"] = old_db_path
             self.collector.apply_config(runtime_mgtv)
-            self.recorder.config = new_config.get("recording", {}) or {}
+            self.recorder.apply_config(new_config.get("recording", {}) or {})
             self.mgtv_auth.config = new_config.get("mgtv_auth", {}) or {}
 
             old_feishu = old_config.get("feishu") or {}

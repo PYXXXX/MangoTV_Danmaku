@@ -69,14 +69,30 @@ function settingsDebug(message, ...args) {
 function parseMgtvLiveUrl(value, flag = "liveshow") {
   const text = String(value || "").trim();
   if (!text) return null;
-  const match = text.match(/\/z\/[^/?#]+\/([^/?#]+)/);
-  if (!match) return null;
-  const cameraId = match[1].replace(/\.html$/i, "").trim();
-  if (!cameraId) return null;
+  const liveMatch = text.match(/\/z2?\/([^/?#]+)\/([^/?#]+)/);
   const roomFlag = String(flag || "liveshow").trim() || "liveshow";
+  if (liveMatch) {
+    const activityId = liveMatch[1].replace(/\.html$/i, "").trim();
+    const cameraId = liveMatch[2].replace(/\.html$/i, "").trim();
+    if (!cameraId) return null;
+    return {
+      type: "camera",
+      activityId,
+      cameraId,
+      roomId: roomFlag + "-" + cameraId,
+      historyApi: "https://lb.bz.mgtv.com/get_history",
+      flag: roomFlag
+    };
+  }
+  const activityMatch = text.match(/\/z2?\/([^/?#]+?)(?:\.html)?(?:[?#]|$)/);
+  if (!activityMatch) return null;
+  const activityId = activityMatch[1].trim();
+  if (!activityId) return null;
   return {
-    cameraId,
-    roomId: roomFlag + "-" + cameraId,
+    type: "activity",
+    activityId,
+    cameraId: "",
+    roomId: "",
     historyApi: "https://lb.bz.mgtv.com/get_history",
     flag: roomFlag
   };
@@ -87,15 +103,22 @@ function applyMgtvUrlAutofill() {
   const parsed = parseMgtvLiveUrl(settingsEl.cfgLiveUrl.value, flag);
   if (!parsed) {
     if (settingsEl.mgtvUrlHint) {
-      settingsEl.mgtvUrlHint.textContent = "未识别到 /z/{活动ID}/{camera_id}.html，可手动填写 room_id 或 camera_id。";
+      settingsEl.mgtvUrlHint.textContent = "未识别到芒果活动页 /z/{活动ID}.html 或直播页 /z/{活动ID}/{camera_id}.html，可手动填写 room_id 或 camera_id。";
       settingsEl.mgtvUrlHint.className = "field-hint muted";
     }
     return false;
   }
   setField("cfgFlag", parsed.flag);
+  if (!settingsEl.cfgHistoryApi.value.trim()) setField("cfgHistoryApi", parsed.historyApi);
+  if (parsed.type === "activity") {
+    if (settingsEl.mgtvUrlHint) {
+      settingsEl.mgtvUrlHint.textContent = "已识别官方活动页 activity_id=" + parsed.activityId + "；直播开始后检测播放源或开始场次时会自动解析 camera_id。";
+      settingsEl.mgtvUrlHint.className = "field-hint success";
+    }
+    return true;
+  }
   setField("cfgCameraId", parsed.cameraId);
   setField("cfgRoomId", parsed.roomId);
-  if (!settingsEl.cfgHistoryApi.value.trim()) setField("cfgHistoryApi", parsed.historyApi);
   if (settingsEl.mgtvUrlHint) {
     settingsEl.mgtvUrlHint.textContent = "已自动识别 camera_id=" + parsed.cameraId + "，room_id=" + parsed.roomId + "。";
     settingsEl.mgtvUrlHint.className = "field-hint success";
@@ -733,7 +756,7 @@ settingsEl.cfgLiveUrl.addEventListener("paste", () => {
 
 settingsEl.cfgFlag.addEventListener("input", () => {
   const parsed = parseMgtvLiveUrl(settingsEl.cfgLiveUrl.value, settingsEl.cfgFlag.value);
-  if (parsed && (!settingsEl.cfgRoomId.value.trim() || settingsEl.cfgRoomId.value.includes("-" + parsed.cameraId))) {
+  if (parsed && parsed.type === "camera" && (!settingsEl.cfgRoomId.value.trim() || settingsEl.cfgRoomId.value.includes("-" + parsed.cameraId))) {
     setField("cfgRoomId", parsed.roomId);
   }
 });

@@ -127,7 +127,7 @@ python tools/setup_operator_password.py
 - `mgtv.count_initial_history`：默认 `false`，开始场次时先预热一次历史列表但不计票，避免把开场前缓存弹幕算入本轮。
 - `mgtv.dedup_hot_cache_size`：内存热去重缓存大小，默认 `200000`。
 - `mgtv.dedup_max_records`：SQLite 去重索引上限，默认 `100000000`，用于支撑超大场次且控制内存占用。
-- `mgtv.dedup_db_path`：SQLite 去重索引位置，默认 `server/data/fingerprints.sqlite3`。
+- `mgtv.dedup_db_path`：SQLite 去重索引位置，默认 `server/data/fingerprints.sqlite3`，空闲时可热切换。
 - `vote.activity`：默认活动名，例如 `歌手 2026`。
 - `vote.candidates`：候选人与别名。
 - `github`：与扩展版相同，用于发布聚合结果到 `site/data/results.json`。

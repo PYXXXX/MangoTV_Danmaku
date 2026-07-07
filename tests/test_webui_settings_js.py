@@ -60,6 +60,10 @@ class WebuiSettingsJsTest(unittest.TestCase):
         self.assertIn("mgtvAuthProtocol", html)
         self.assertIn("录制后处理", html)
         self.assertIn("开始全程录制与弹幕", html)
+        self.assertIn("SQLite 去重路径（空闲时热切换）", html)
+        self.assertIn("录制目录（空闲时热切换）", html)
+        self.assertNotIn("SQLite 去重路径（修改后需重启）", html)
+        self.assertNotIn("录制目录（修改后需重启）", html)
         self.assertIn("postLiveUrl", html)
         self.assertIn("cfgRecordingFfmpeg", source)
         self.assertIn("recording:", source)
@@ -273,6 +277,15 @@ class WebuiSettingsJsTest(unittest.TestCase):
             }
             if (!elementFor("mgtvUrlHint").textContent.includes("已自动识别")) {
               throw new Error("hint did not report success: " + elementFor("mgtvUrlHint").textContent);
+            }
+
+            elementFor("cfgLiveUrl").value = "https://www.mgtv.com/z/1001668.html?fpa=12437&fpos&lastp=ch_home&_source_=B";
+            elementFor("cfgLiveUrl").dispatch("input");
+            if (!elementFor("mgtvUrlHint").textContent.includes("activity_id=1001668")) {
+              throw new Error("activity page hint did not report activity id: " + elementFor("mgtvUrlHint").textContent);
+            }
+            if (!elementFor("mgtvUrlHint").textContent.includes("自动解析 camera_id")) {
+              throw new Error("activity page hint did not explain deferred camera parsing: " + elementFor("mgtvUrlHint").textContent);
             }
             """
         )

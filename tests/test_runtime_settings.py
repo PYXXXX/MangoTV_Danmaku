@@ -205,6 +205,28 @@ class RuntimeSettingsTest(unittest.TestCase):
             )
             self.assertEqual(update.restart_fields, ["listen.host", "listen.port"])
 
+    def test_dedup_and_recording_paths_are_hot_reloadable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = base_config(root)
+            update = build_settings_update(
+                config,
+                {
+                    "mgtv": {
+                        **config["mgtv"],
+                        "dedup_db_path": str(root / "new-fingerprints.sqlite3"),
+                    },
+                    "recording": {
+                        **config["recording"],
+                        "stream_url": "",
+                        "directory": str(root / "new-recordings"),
+                    },
+                },
+                active_round=False,
+            )
+            self.assertEqual(update.restart_fields, [])
+            self.assertFalse(any("需重启" in warning for warning in update.warnings))
+
     def test_atomic_save_keeps_last_backup(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "config.json"
@@ -252,6 +274,38 @@ class VoteServiceSettingsTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(service.collector.config["poll_seconds"], 1)
                 self.assertEqual(service.collector.fingerprints.hot.max_size, 3000)
                 self.assertEqual(json.loads(config_path.read_text())["vote"]["activity"], "新活动")
+            finally:
+                service.collector.fingerprints.close()
+
+    async def test_apply_settings_hot_switches_dedup_and_recording_directories_when_idle(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = base_config(root)
+            config_path = root / "config.json"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            service = VoteService(config, config_path=config_path)
+            try:
+                new_dedup = root / "new-fingerprints.sqlite3"
+                new_recordings = root / "new-recordings"
+                result = await service.apply_settings(
+                    {
+                        "mgtv": {
+                            **config["mgtv"],
+                            "dedup_db_path": str(new_dedup),
+                        },
+                        "recording": {
+                            **config["recording"],
+                            "stream_url": "",
+                            "directory": str(new_recordings),
+                        },
+                    },
+                    __import__("asyncio").get_running_loop(),
+                )
+                self.assertTrue(result["ok"])
+                self.assertFalse(result["restartRequired"])
+                self.assertEqual(service.collector.fingerprints.db_path, new_dedup)
+                self.assertEqual(service.recorder.directory, new_recordings)
+                self.assertTrue(new_recordings.exists())
             finally:
                 service.collector.fingerprints.close()
 
