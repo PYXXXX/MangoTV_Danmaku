@@ -1050,7 +1050,8 @@ function Impact({ tone, title, items }: { tone: "green" | "blue" | "orange"; tit
 }
 
 function MachineStatusPage({ initial }: { initial?: SystemStatus }) {
-  const status = useQuery({ queryKey: ["system-status"], queryFn: getSystemStatus, initialData: initial, refetchInterval: 15_000 });
+  const [refreshSeconds, setRefreshSeconds] = useState(15);
+  const status = useQuery({ queryKey: ["system-status"], queryFn: getSystemStatus, initialData: initial, refetchInterval: refreshSeconds ? refreshSeconds * 1000 : false });
   const payload = status.data;
   const [history, setHistory] = useState<Array<{ at: string; cpu: number; memory: number; network: number; danmaku: number }>>([]);
   useEffect(() => {
@@ -1074,7 +1075,22 @@ function MachineStatusPage({ initial }: { initial?: SystemStatus }) {
   }, [payload?.generatedAt, payload?.systemTime]);
   return (
     <section>
-      <PageHeading kicker="System Health" title="机器状态监控" description="实时监控服务器与服务运行状态，保障直播运营稳定可靠。" />
+      <PageHeading
+        kicker="System Health"
+        title="机器状态监控"
+        description="实时监控服务器与服务运行状态，保障直播运营稳定可靠。"
+        action={
+          <div className="flex flex-wrap items-center gap-3">
+            <select className="ops-input" style={{ width: "auto", minWidth: "10rem" }} value={refreshSeconds} onChange={(event) => setRefreshSeconds(Number(event.target.value))}>
+              <option value={0}>停止自动刷新</option>
+              <option value={5}>自动刷新：5 秒</option>
+              <option value={15}>自动刷新：15 秒</option>
+              <option value={30}>自动刷新：30 秒</option>
+            </select>
+            <button type="button" className="rounded-xl bg-ops-orange px-5 py-3 text-sm font-black text-[#1b0d03]" disabled={status.isFetching} onClick={() => status.refetch()}>立即刷新</button>
+          </div>
+        }
+      />
       <div className="mb-4 grid grid-cols-4 gap-4 max-xl:grid-cols-2 max-md:grid-cols-1">
         <MetricCard label="系统时间" value={payload?.systemTime ? new Date(payload.systemTime).toLocaleString("zh-CN", { hour12: false }) : "--"} icon={<Pulse size={24} />} />
         <MetricCard label="服务运行时长" value={formatDuration(payload?.uptimeSeconds)} icon={<Lightning size={24} />} tone="green" />
@@ -1154,6 +1170,7 @@ function BigMetric({ value, detail }: { value: string; detail: string }) {
 function SystemLogsPage({ initialLogs }: { initialLogs: SystemLogEvent[] }) {
   const [filters, setFilters] = useState({ q: "", level: "", source: "" });
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [followLogs, setFollowLogs] = useState(true);
   const query = new URLSearchParams();
   query.set("limit", "160");
   if (filters.q.trim()) query.set("q", filters.q.trim());
@@ -1163,7 +1180,7 @@ function SystemLogsPage({ initialLogs }: { initialLogs: SystemLogEvent[] }) {
     queryKey: ["system-logs", filters],
     queryFn: () => apiGet<SystemLogsResponse>(`/api/system/logs?${query.toString()}`),
     initialData: { events: initialLogs },
-    refetchInterval: 10_000
+    refetchInterval: followLogs ? 10_000 : false
   });
   const items = logs.data.events || logs.data.items || [];
   const sources = Array.from(new Set(items.map((item) => item.source).filter(Boolean))) as string[];
@@ -1179,7 +1196,19 @@ function SystemLogsPage({ initialLogs }: { initialLogs: SystemLogEvent[] }) {
   };
   return (
     <section>
-      <PageHeading kicker="System Logs" title="系统日志" description="按时间查看系统运行日志，支持搜索、过滤、导出和排障摘要。" />
+      <PageHeading
+        kicker="System Logs"
+        title="系统日志"
+        description="按时间查看系统运行日志，支持搜索、过滤、导出和排障摘要。"
+        action={
+          <div className="flex flex-wrap gap-3">
+            <button type="button" className={`rounded-xl border px-5 py-3 text-sm font-black ${followLogs ? "border-blue-400/35 bg-blue-400/15 text-blue-100" : "border-white/10 bg-white/[0.04] text-slate-200"}`} onClick={() => setFollowLogs((value) => !value)}>
+              {followLogs ? "日志实时跟随" : "已暂停跟随"}
+            </button>
+            <button type="button" className="rounded-xl bg-ops-orange px-5 py-3 text-sm font-black text-[#1b0d03]" disabled={logs.isFetching} onClick={() => logs.refetch()}>立即刷新</button>
+          </div>
+        }
+      />
       <div className="mb-4 grid grid-cols-[minmax(260px,1fr)_140px_160px_auto] gap-3 rounded-3xl border border-white/10 bg-white/[0.04] p-4 max-lg:grid-cols-1">
         <input className="ops-input" value={filters.q} onChange={(event) => setFilters({ ...filters, q: event.target.value })} placeholder="搜索错误、场次 ID、关键词…" />
         <select className="ops-input" value={filters.level} onChange={(event) => setFilters({ ...filters, level: event.target.value })}>
