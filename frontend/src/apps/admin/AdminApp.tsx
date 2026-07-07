@@ -36,7 +36,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { apiDelete, apiGet, apiPatch, apiPost, apiUpload, getBootstrap, getSystemMetrics, getSystemLogs, getSystemStatus } from "../../api/client";
-import type { ActivityItem, FeishuBindingStatus, MgtvAuthStatus, Recording, RecordingTimeline, RoundSession, SourceDetectionResult, SystemLogEvent, SystemLogSummary, SystemLogsResponse, SystemStatus, UpdateStatus } from "../../api/types";
+import type { ActivityItem, FeishuBindingStatus, FeishuPushResult, MgtvAuthStatus, Recording, RecordingTimeline, RoundSession, SourceDetectionResult, SystemLogEvent, SystemLogSummary, SystemLogsResponse, SystemStatus, UpdateStatus } from "../../api/types";
 import { Card, PageHeading, PrimaryButton, Shell, StatusBadge } from "../../components/Shell";
 import { RankingTable } from "../../components/RankingTable";
 import { Timeline } from "../../components/Timeline";
@@ -1361,7 +1361,7 @@ function SettingsBlueprintPage({ status, settings }: { status?: SystemStatus; se
     }
   });
   const sendFeishuTestCard = useMutation({
-    mutationFn: () => apiPost("/api/feishu/push-card"),
+    mutationFn: () => apiPost<FeishuPushResult>("/api/feishu/push-card"),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
   });
   const updateStatus = useQuery<UpdateStatus>({
@@ -1482,11 +1482,17 @@ function SettingsBlueprintPage({ status, settings }: { status?: SystemStatus; se
                 {feishuView?.userCode && <p className="mt-2 rounded-xl border border-orange-400/30 bg-orange-400/10 px-3 py-2 font-mono text-xs text-ops-gold">授权码：{feishuView.userCode}</p>}
                 {feishuView?.verificationUrl && <a className="mt-2 rounded-xl border border-blue-400/30 bg-blue-400/10 px-3 py-2 text-xs font-black text-blue-100" href={feishuView.verificationUrl} target="_blank" rel="noreferrer">打开飞书授权页</a>}
                 {(feishuView?.error || startFeishuBinding.error || feishuBinding.error || sendFeishuTestCard.error) && (
-                  <p className="mt-2 rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-xs text-red-100">{String(feishuView?.error || (startFeishuBinding.error as Error)?.message || (feishuBinding.error as Error)?.message || (sendFeishuTestCard.error as Error)?.message)}</p>
+                  <Notice tone="red">{String(feishuView?.error || (startFeishuBinding.error as Error)?.message || (feishuBinding.error as Error)?.message || (sendFeishuTestCard.error as Error)?.message)}</Notice>
                 )}
-                {sendFeishuTestCard.isSuccess && <p className="mt-2 rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-3 py-2 text-xs text-emerald-100">测试卡片已发送到已配置的飞书会话。</p>}
+                {sendFeishuTestCard.isSuccess && (
+                  <Notice tone={sendFeishuTestCard.data?.failedCount ? "orange" : "green"}>
+                    测试卡片已发送到 {sendFeishuTestCard.data?.count || 0} 个飞书会话。
+                    {sendFeishuTestCard.data?.failedCount ? ` 已跳过 ${sendFeishuTestCard.data.failedCount} 个失效目标。` : ""}
+                    {sendFeishuTestCard.data?.prunedOpenIdCount ? ` 已自动清理 ${sendFeishuTestCard.data.prunedOpenIdCount} 个旧 App open_id。` : ""}
+                  </Notice>
+                )}
               </div>
-              <div className="mt-4 grid grid-cols-2 gap-3">
+              <div className="mt-4 grid grid-cols-[repeat(auto-fit,minmax(8.5rem,1fr))] gap-3">
                 <SettingsButton variant="primary" disabled={startFeishuBinding.isPending || feishuView?.status === "pending"} onClick={() => startFeishuBinding.mutate()}>
                   {feishuView?.appSecretConfigured ? "重新绑定" : "发起绑定"}
                 </SettingsButton>
@@ -1825,13 +1831,13 @@ function SettingsColumn({ icon, title, children }: { icon: ReactNode; title: str
 
 function SettingsBlock({ icon, title, action, children }: { icon: ReactNode; title: string; action?: ReactNode; children: ReactNode }) {
   return (
-    <section className="rounded-3xl border border-white/10 bg-black/20 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,.04)]">
+    <section className="min-w-0 rounded-3xl border border-white/10 bg-black/20 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,.04)]">
       <div className="mb-4 flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <span className="grid size-8 shrink-0 place-items-center rounded-xl bg-orange-400/10 text-ops-orange">{icon}</span>
           <strong className="truncate text-base font-black text-slate-100">{title}</strong>
         </div>
-        {action}
+        {action && <div className="shrink-0">{action}</div>}
       </div>
       {children}
     </section>
@@ -1849,8 +1855,22 @@ function SettingsRow({ label, value, tone = "neutral" }: { label: string; value:
   return (
     <div className="grid grid-cols-[7.5rem_minmax(0,1fr)] items-center gap-3 border-b border-white/[0.06] py-2 text-xs last:border-b-0 max-sm:grid-cols-1 max-sm:gap-1">
       <span className="text-ops-muted">{label}</span>
-      <span className={`min-w-0 truncate font-medium ${toneClass}`}>{value || "-"}</span>
+      <span className={`min-w-0 truncate font-medium ${toneClass}`} title={typeof value === "string" ? value : undefined}>{value || "-"}</span>
     </div>
+  );
+}
+
+function Notice({ tone, children }: { tone: "green" | "orange" | "red" | "blue"; children: ReactNode }) {
+  const toneClass = {
+    green: "border-emerald-400/30 bg-emerald-400/10 text-emerald-100",
+    orange: "border-orange-400/30 bg-orange-400/10 text-ops-gold",
+    red: "border-red-400/30 bg-red-400/10 text-red-100",
+    blue: "border-blue-400/30 bg-blue-400/10 text-blue-100"
+  }[tone];
+  return (
+    <p className={`mt-2 min-w-0 max-w-full whitespace-pre-wrap break-words rounded-xl border px-3 py-2 text-xs leading-5 [overflow-wrap:anywhere] ${toneClass}`}>
+      {children}
+    </p>
   );
 }
 

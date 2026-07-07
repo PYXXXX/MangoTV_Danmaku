@@ -195,6 +195,52 @@ class FeishuBindingTest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("secret-bound", rendered)
             self.assertTrue(view["appSecretConfigured"])
 
+    def test_complete_binding_replaces_open_ids_when_app_changes(self):
+        async def run_case():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                config_path = root / "config.json"
+                config = {
+                    "listen": {"public_base_url": "https://operator.example.com"},
+                    "storage": {"directory": str(root / "data")},
+                    "mgtv": {"dedup_db_path": str(root / "fingerprints.sqlite3")},
+                    "vote": {
+                        "activity": "测试活动",
+                        "multi_candidate_policy": "all",
+                        "candidates": [{"name": "甲", "aliases": ["甲"]}],
+                    },
+                    "github": {"enabled": False},
+                    "feishu": {
+                        "enabled": True,
+                        "connection_mode": "websocket",
+                        "app_id": "cli_old",
+                        "app_secret": "old-secret",
+                        "allowed_open_ids": ["ou_old_a", "ou_old_b"],
+                        "allowed_chat_ids": ["oc_control"],
+                    },
+                    "operator_auth": {"enabled": False},
+                }
+                config_path.write_text(json.dumps(config), encoding="utf-8")
+                service = VoteService(config, config_path=config_path, repo_root=root)
+                service.reload_feishu_connection = lambda loop: asyncio.sleep(0, result=True)
+
+                warning = await service._complete_feishu_binding(
+                    FeishuBindingResult(
+                        app_id="cli_new",
+                        app_secret="secret-new",
+                        open_id="ou_new_operator",
+                        tenant_brand="feishu",
+                    ),
+                    asyncio.get_running_loop(),
+                )
+
+                saved = json.loads(config_path.read_text(encoding="utf-8"))
+                self.assertIn("App ID 已变更", warning)
+                self.assertEqual(saved["feishu"]["allowed_open_ids"], ["ou_new_operator"])
+                self.assertEqual(saved["feishu"]["allowed_chat_ids"], ["oc_control"])
+
+        asyncio.run(run_case())
+
 
 if __name__ == "__main__":
     unittest.main()

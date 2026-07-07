@@ -29,7 +29,7 @@ from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
@@ -1093,7 +1093,7 @@ class FeishuBot:
             ) as response:
                 data = await response.json(content_type=None)
         if response.status not in (200, 201) or data.get("code") != 0:
-            raise RuntimeError(f"飞书消息发送失败：HTTP {response.status} {data}")
+            raise FeishuApiError("飞书消息发送失败", response.status, data, receive_id_type=receive_id_type)
 
     async def send_text(self, open_id: str, text: str) -> None:
         await self.send_message(open_id, "open_id", "text", {"text": text})
@@ -1122,6 +1122,32 @@ class FeishuBot:
         image_key = await self.upload_image(content, filename)
         if image_key:
             await self.send_message(receive_id, receive_id_type, "image", {"image_key": image_key})
+
+
+class FeishuApiError(RuntimeError):
+    """Structured Feishu OpenAPI error that keeps UI-facing messages concise."""
+
+    def __init__(self, prefix: str, status: int, payload: Any, *, receive_id_type: str = ""):
+        self.status = status
+        self.payload = payload if isinstance(payload, dict) else {"raw": payload}
+        self.receive_id_type = receive_id_type
+        self.code = str(self.payload.get("code") or "")
+        self.msg = str(self.payload.get("msg") or self.payload.get("message") or "")
+        super().__init__(self._format(prefix))
+
+    @property
+    def is_open_id_cross_app(self) -> bool:
+        return self.code == "99992361" or "open_id cross app" in self.msg.lower()
+
+    def _format(self, prefix: str) -> str:
+        if self.is_open_id_cross_app:
+            return (
+                f"{prefix}：open_id 属于其它飞书应用，当前 App 无法主动发送。"
+                "请删除旧 allowed_open_ids，重新绑定当前 App，或把机器人加入运营群后发送“我的ID”并填写 chat_id。"
+            )
+        if self.code or self.msg:
+            return f"{prefix}：HTTP {self.status} code={self.code or '-'} msg={self.msg or '-'}"
+        return f"{prefix}：HTTP {self.status}"
 
 
 class RecordingManager:
@@ -2502,12 +2528,71 @@ class VoteService:
         if not targets:
             raise RuntimeError("未配置可主动推送的 allowed_chat_ids 或 allowed_open_ids")
         sent: list[dict[str, str]] = []
+        failed: list[dict[str, str]] = []
         card = self.feishu_card("", notice)
         for receive_id, receive_type in targets:
-            await self.feishu.send_card(receive_id, receive_type, card)
+            try:
+                await self.feishu.send_card(receive_id, receive_type, card)
+            except FeishuApiError as exc:
+                failed.append({
+                    "receiveId": receive_id,
+                    "receiveIdType": receive_type,
+                    "code": exc.code,
+                    "error": str(exc),
+                })
+                if exc.is_open_id_cross_app:
+                    self.add_system_event(
+                        "warn",
+                        "feishu",
+                        "跳过失效的飞书 open_id",
+                        f"{receive_id} 属于其它飞书应用，请从 allowed_open_ids 中移除。",
+                    )
+                    continue
+                continue
             sent.append({"receiveId": receive_id, "receiveIdType": receive_type})
-        self.add_system_event("info", "feishu", "已主动同步飞书控制卡片", f"targets={len(sent)}")
-        return {"ok": True, "sent": sent, "count": len(sent)}
+        pruned_open_ids = await self.prune_cross_app_feishu_open_ids(
+            item["receiveId"] for item in failed
+            if item.get("receiveIdType") == "open_id" and item.get("code") == "99992361"
+        )
+        if not sent:
+            detail = failed[-1]["error"] if failed else "没有成功发送的目标"
+            raise RuntimeError(f"飞书测试卡片没有成功发送。{detail}")
+        self.add_system_event("info", "feishu", "已主动同步飞书控制卡片", f"sent={len(sent)} failed={len(failed)} pruned={len(pruned_open_ids)}")
+        return {
+            "ok": True,
+            "sent": sent,
+            "failed": failed,
+            "count": len(sent),
+            "failedCount": len(failed),
+            "prunedOpenIds": pruned_open_ids,
+            "prunedOpenIdCount": len(pruned_open_ids),
+        }
+
+    async def prune_cross_app_feishu_open_ids(self, open_ids: Iterable[str]) -> list[str]:
+        invalid = {str(item).strip() for item in open_ids if str(item).strip()}
+        if not invalid:
+            return []
+        async with self.config_lock:
+            feishu_config = dict((self.config.get("feishu") or {}))
+            current = feishu_config.get("allowed_open_ids") or []
+            if isinstance(current, str):
+                current_ids = [item.strip() for item in current.split(",") if item.strip()]
+            else:
+                current_ids = [str(item).strip() for item in current if str(item).strip()]
+            next_ids = [item for item in current_ids if item not in invalid]
+            removed = [item for item in current_ids if item in invalid]
+            if not removed:
+                return []
+            new_config = copy.deepcopy(self.config)
+            new_feishu = dict(new_config.get("feishu") or {})
+            new_feishu["allowed_open_ids"] = next_ids
+            new_config["feishu"] = new_feishu
+            if self.config_path is not None:
+                save_config_atomic(self.config_path, new_config)
+            self.config = new_config
+            self.feishu = FeishuBot(new_feishu)
+        self.add_system_event("warn", "feishu", "已自动清理失效飞书 open_id", "、".join(removed))
+        return removed
 
     async def notify_monitor_status_once(self, *, force: bool = False) -> None:
         monitor = self.monitor_config()
@@ -3226,9 +3311,18 @@ class VoteService:
         async with self.config_lock:
             new_config = copy.deepcopy(self.config)
             feishu_config = dict(new_config.get("feishu") or {})
-            open_ids = list(feishu_config.get("allowed_open_ids") or [])
-            if result.open_id and "*" not in open_ids and result.open_id not in open_ids:
+            previous_app_id = str(feishu_config.get("app_id") or "").strip()
+            app_changed = bool(previous_app_id and previous_app_id != result.app_id)
+            existing_open_ids = list(feishu_config.get("allowed_open_ids") or [])
+            # Feishu open_id is app-scoped. When the one-click binding creates or
+            # switches to a different App ID, old open_ids will trigger
+            # "open_id cross app" on proactive sends, so keep only the current
+            # app's operator open_id. Group chat_id allowlists are preserved.
+            open_ids = ["*"] if app_changed and "*" in existing_open_ids else ([] if app_changed else existing_open_ids)
+            if result.open_id and result.open_id not in open_ids:
                 open_ids.append(result.open_id)
+            if app_changed:
+                warning = "检测到飞书 App ID 已变更，已自动清理旧 App 的 allowed_open_ids；群 chat_id 白名单已保留。"
             public_url = str(feishu_config.get("public_results_url") or "").strip()
             if not public_url:
                 public_url = str((new_config.get("listen") or {}).get("public_base_url") or "").strip()

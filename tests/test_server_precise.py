@@ -437,6 +437,50 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 service.collector.fingerprints.close()
 
+    async def test_push_feishu_control_card_skips_cross_app_open_id(self):
+        from server.vote_server import FeishuApiError
+
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "mgtv": {"dedup_db_path": str(Path(temp) / "fingerprints.sqlite3")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {
+                    "enabled": True,
+                    "allowed_open_ids": ["ou_old", "ou_current"],
+                    "allowed_chat_ids": [],
+                },
+            }
+            service = VoteService(config)
+            sent = []
+
+            async def fake_send_card(receive_id, receive_id_type, card):
+                if receive_id == "ou_old":
+                    raise FeishuApiError(
+                        "飞书消息发送失败",
+                        400,
+                        {"code": 99992361, "msg": "open_id cross app"},
+                        receive_id_type=receive_id_type,
+                    )
+                sent.append((receive_id, receive_id_type, card))
+
+            service.feishu.send_card = fake_send_card
+            try:
+                result = await service.push_feishu_control_card()
+                self.assertEqual(result["count"], 1)
+                self.assertEqual(result["failedCount"], 1)
+                self.assertEqual(result["prunedOpenIdCount"], 1)
+                self.assertEqual([(item[0], item[1]) for item in sent], [("ou_current", "open_id")])
+                self.assertIn("ou_old", result["failed"][0]["receiveId"])
+                self.assertEqual(service.config["feishu"]["allowed_open_ids"], ["ou_current"])
+            finally:
+                service.collector.fingerprints.close()
+
     async def test_system_logs_include_persisted_events(self):
         with tempfile.TemporaryDirectory() as temp:
             config = {

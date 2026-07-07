@@ -207,6 +207,24 @@ export interface FeishuBindingStatus {
   workerAlive?: boolean;
 }
 
+export interface FeishuPushResult {
+  ok?: boolean;
+  count?: number;
+  failedCount?: number;
+  prunedOpenIdCount?: number;
+  prunedOpenIds?: string[];
+  sent?: Array<{
+    receiveId?: string;
+    receiveIdType?: string;
+  }>;
+  failed?: Array<{
+    receiveId?: string;
+    receiveIdType?: string;
+    code?: string;
+    error?: string;
+  }>;
+}
+
 export interface UpdateProgress {
   status?: "idle" | "running" | "complete" | "failed" | string;
   stage?: string;
