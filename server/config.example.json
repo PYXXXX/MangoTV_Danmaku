@@ -35,6 +35,17 @@
     "ffmpeg_path": "ffmpeg",
     "directory": "server/data/recordings"
   },
+  "monitor": {
+    "enabled": false,
+    "activity": "歌手 2026",
+    "url": "https://www.mgtv.com/z/1001668.html?fpa=12437&fpos&lastp=ch_home&_source_=B",
+    "auto_detect_source": true,
+    "auto_record_video": false,
+    "auto_record_danmaku": true,
+    "feishu_notify": true,
+    "poll_seconds": 45,
+    "round_name": ""
+  },
   "mgtv_auth": {
     "enabled": true,
     "cookies": [],

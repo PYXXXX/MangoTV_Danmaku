@@ -1366,6 +1366,10 @@ class VoteService:
         self.updater = GitUpdater(self.repo_root)
         self.started_at = now_iso()
         self.system_events: list[dict[str, Any]] = []
+        self.monitor_task: asyncio.Task[Any] | None = None
+        self.monitor_auto_started = False
+        self.monitor_last_url = ""
+        self.monitor_state: dict[str, Any] = self._initial_monitor_state()
         self.add_system_event("info", "service", "服务已启动", "直播运营工作台后端进程已初始化。")
 
     def add_system_event(
@@ -1400,6 +1404,51 @@ class VoteService:
         for pattern, replacement in patterns:
             text = re.sub(pattern, replacement, text)
         return text
+
+    def _initial_monitor_state(self) -> dict[str, Any]:
+        return {
+            "status": "disabled",
+            "message": "活动监控未启用。",
+            "lastCheckAt": "",
+            "lastSuccessAt": "",
+            "lastError": "",
+            "roundId": "",
+            "activity": "",
+            "url": "",
+            "quality": "",
+            "taskRunning": False,
+            "autoStarted": False,
+        }
+
+    def monitor_config(self) -> dict[str, Any]:
+        monitor = dict(self.config.get("monitor") or {})
+        vote = self.config.get("vote") or {}
+        mgtv = self.config.get("mgtv") or {}
+        return {
+            "enabled": bool(monitor.get("enabled")),
+            "activity": str(monitor.get("activity") or vote.get("activity") or "未分类活动"),
+            "url": str(monitor.get("url") or mgtv.get("url") or ""),
+            "autoDetectSource": bool(monitor.get("auto_detect_source", True)),
+            "autoRecordVideo": bool(monitor.get("auto_record_video", False)),
+            "autoRecordDanmaku": bool(monitor.get("auto_record_danmaku", True)),
+            "feishuNotify": bool(monitor.get("feishu_notify", True)),
+            "pollSeconds": max(10, min(3600, int(monitor.get("poll_seconds") or 45))),
+            "roundName": str(monitor.get("round_name") or ""),
+        }
+
+    def _set_monitor_state(self, **updates: Any) -> None:
+        state = dict(self.monitor_state or self._initial_monitor_state())
+        state.update(updates)
+        state["taskRunning"] = bool(self.monitor_task is not None and not self.monitor_task.done())
+        state["autoStarted"] = bool(self.monitor_auto_started)
+        self.monitor_state = state
+
+    def monitor_status_view(self) -> dict[str, Any]:
+        self._set_monitor_state()
+        return {
+            "config": self.monitor_config(),
+            "state": dict(self.monitor_state),
+        }
 
     def _initial_feishu_binding_state(self) -> dict[str, Any]:
         return {
@@ -1494,6 +1543,7 @@ class VoteService:
             "activeRoundId": self.store.active_round_id,
             "collectorRunning": self.collector.running(),
             "feishuWorkerAlive": bool(feishu_thread and feishu_thread.is_alive()),
+            "monitor": self.monitor_status_view(),
             "restartRequired": bool(self.pending_restart_fields),
             "restartFields": self.pending_restart_fields,
             "configPath": str(self.config_path) if self.config_path else "",
@@ -1599,6 +1649,7 @@ class VoteService:
         feishu_thread = getattr(self.feishu_connection, "thread", None)
         active_recordings = [item for item in self.recorder.public_records() if item.get("status") == "recording"]
         update_in_progress = self.update_task is not None and not self.update_task.done()
+        monitor = self.monitor_status_view()
         health = "warning" if self.pending_restart_fields else "ok"
         recent_errors = [event for event in self.system_events[-50:] if event.get("level") == "ERROR"]
         if recent_errors:
@@ -1634,12 +1685,19 @@ class VoteService:
                 "feishu": {"status": "connected" if feishu_thread and feishu_thread.is_alive() else ("enabled" if self.feishu.enabled() else "disabled")},
                 "github": {"status": "enabled" if (config.get("github") or {}).get("enabled") else "disabled"},
                 "updater": {"status": "running" if update_in_progress else "idle", "progress": self.update_progress},
+                "monitor": {
+                    "status": (monitor.get("state") or {}).get("status") or "disabled",
+                    "message": (monitor.get("state") or {}).get("message") or "",
+                    "enabled": (monitor.get("config") or {}).get("enabled") or False,
+                    "taskRunning": (monitor.get("state") or {}).get("taskRunning") or False,
+                },
                 "recordingSource": {
                     "configured": bool(recording.get("stream_url")),
                     "quality": recording.get("last_detected_quality") or recording.get("preferred_quality") or "auto",
                     "detectedAt": recording.get("last_detected_at") or "",
                 },
             },
+            "monitor": monitor,
             "health": {
                 "status": health,
                 "restartRequired": runtime["restartRequired"],
@@ -1668,6 +1726,183 @@ class VoteService:
             "events": events[:limit],
             "sources": sorted({str(event.get("source") or "service") for event in events}),
         }
+
+    def start_background_tasks(self, loop: asyncio.AbstractEventLoop) -> None:
+        if self.monitor_task is None or self.monitor_task.done():
+            self.monitor_task = loop.create_task(self._monitor_loop(), name="mgtv-activity-monitor")
+            self._set_monitor_state(taskRunning=True)
+            self.add_system_event("info", "monitor", "活动监控后台任务已启动")
+
+    async def stop_background_tasks(self) -> None:
+        task = self.monitor_task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self.monitor_task = None
+        self._set_monitor_state(taskRunning=False)
+
+    async def _monitor_loop(self) -> None:
+        while True:
+            try:
+                await self.monitor_tick_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._set_monitor_state(
+                    status="error",
+                    message="活动监控执行失败，稍后自动重试。",
+                    lastCheckAt=now_iso(),
+                    lastError=str(exc),
+                )
+                self.add_system_event("error", "monitor", "活动监控执行失败", str(exc))
+            config = self.monitor_config()
+            await asyncio.sleep(config["pollSeconds"] if config["enabled"] else 10)
+
+    async def notify_monitor(self, text: str) -> None:
+        monitor = self.monitor_config()
+        if not monitor["feishuNotify"] or not self.feishu.enabled():
+            return
+        feishu = self.config.get("feishu") or {}
+        chat_ids = feishu.get("allowed_chat_ids") or []
+        open_ids = feishu.get("allowed_open_ids") or []
+        if isinstance(chat_ids, str):
+            chat_ids = [item.strip() for item in chat_ids.split(",") if item.strip()]
+        if isinstance(open_ids, str):
+            open_ids = [item.strip() for item in open_ids.split(",") if item.strip()]
+        chat_ids = [item for item in chat_ids if item and item != "*"]
+        open_ids = [item for item in open_ids if item and item != "*"]
+        receive_id = str((chat_ids or open_ids or [""])[0] or "")
+        if not receive_id:
+            self.add_system_event("warn", "feishu", "活动监控未推送飞书", "未配置 allowed_chat_ids 或 allowed_open_ids")
+            return
+        receive_type = "chat_id" if chat_ids else "open_id"
+        await self.feishu.send_card(receive_id, receive_type, self.feishu_card("", text))
+
+    async def monitor_tick_once(self) -> dict[str, Any]:
+        config = self.monitor_config()
+        activity = normalize(config["activity"]) or "未分类活动"
+        url = normalize(config["url"])
+        if self.monitor_last_url != url:
+            self.monitor_last_url = url
+            self.monitor_auto_started = False
+        if not config["enabled"]:
+            self._set_monitor_state(
+                status="disabled",
+                message="活动监控未启用。",
+                activity=activity,
+                url=url,
+                lastError="",
+                roundId="",
+            )
+            return self.monitor_status_view()
+        if not url:
+            self._set_monitor_state(
+                status="blocked",
+                message="活动监控已启用，但缺少活动链接。",
+                activity=activity,
+                url=url,
+                lastCheckAt=now_iso(),
+                lastError="缺少活动链接",
+            )
+            return self.monitor_status_view()
+
+        active = self.store.find_round(self.store.active_round_id)
+        if active:
+            self._set_monitor_state(
+                status="running",
+                message=f"正在采集：{active.activity} / {active.name}",
+                activity=active.activity,
+                url=url,
+                roundId=active.id,
+                lastCheckAt=now_iso(),
+                lastError="",
+            )
+            return self.monitor_status_view()
+
+        self._set_monitor_state(
+            status="checking",
+            message="正在检测直播源与机位。",
+            activity=activity,
+            url=url,
+            lastCheckAt=now_iso(),
+            lastError="",
+        )
+
+        source_ready = False
+        quality = ""
+        try:
+            if config["autoDetectSource"] or config["autoRecordVideo"]:
+                detected = await self.detect_mgtv_recording_source(url, str((self.config.get("recording") or {}).get("preferred_quality") or "auto"))
+                source_ready = bool(detected.get("ok"))
+                quality = str(detected.get("actualQuality") or detected.get("quality") or "")
+                if not source_ready:
+                    self.monitor_auto_started = False
+                    self._set_monitor_state(
+                        status="waiting",
+                        message=str(detected.get("error") or "直播源暂不可用，等待下一次检测。"),
+                        lastError=str(detected.get("error") or ""),
+                        quality=quality,
+                    )
+                    return self.monitor_status_view()
+            else:
+                resolved = await self.resolve_mgtv_live_url(url, persist=True)
+                source_ready = bool(resolved.get("ok"))
+                if not source_ready:
+                    self.monitor_auto_started = False
+                    self._set_monitor_state(
+                        status="waiting",
+                        message=str(resolved.get("error") or "直播机位暂不可用，等待下一次检测。"),
+                        lastError=str(resolved.get("error") or ""),
+                    )
+                    return self.monitor_status_view()
+        except Exception as exc:
+            self.monitor_auto_started = False
+            self._set_monitor_state(
+                status="waiting",
+                message=f"直播源暂不可用，等待下一次检测：{exc}",
+                lastError=str(exc),
+            )
+            return self.monitor_status_view()
+
+        self._set_monitor_state(
+            status="source_ready",
+            message="已检测到可用直播源。",
+            lastSuccessAt=now_iso(),
+            lastError="",
+            quality=quality,
+        )
+
+        should_auto_start = bool(config["autoRecordVideo"] or config["autoRecordDanmaku"])
+        if not should_auto_start:
+            return self.monitor_status_view()
+        if self.monitor_auto_started:
+            self._set_monitor_state(
+                status="armed",
+                message="本次直播已自动启动过场次；如需重新开始，请先关闭再开启监控。",
+            )
+            return self.monitor_status_view()
+
+        name = normalize(config["roundName"]) or f"{activity} 全程录制"
+        meta = await self.start_round(name, url, activity)
+        self.monitor_auto_started = True
+        self._set_monitor_state(
+            status="running",
+            message=f"已自动开始：{meta.activity} / {meta.name}",
+            roundId=meta.id,
+            activity=meta.activity,
+            url=url,
+            lastSuccessAt=now_iso(),
+            lastError="",
+        )
+        self.add_system_event("info", "monitor", "活动监控已自动开始场次", f"{meta.activity} / {meta.name}", roundId=meta.id)
+        try:
+            await self.notify_monitor(f"已检测到直播并自动开始：{meta.activity} / {meta.name}")
+        except Exception as exc:
+            self.add_system_event("warn", "feishu", "活动监控飞书通知失败", str(exc), roundId=meta.id)
+        return self.monitor_status_view()
 
     def public_base_url(self) -> str:
         return str((self.config.get("listen") or {}).get("public_base_url") or "").rstrip("/")
@@ -1981,6 +2216,17 @@ class VoteService:
             self.collector.apply_config(runtime_mgtv)
             self.recorder.apply_config(new_config.get("recording", {}) or {})
             self.mgtv_auth.config = new_config.get("mgtv_auth", {}) or {}
+            self.pending_restart_fields = self._restart_fields_for(new_config)
+            if (old_config.get("monitor") or {}) != (new_config.get("monitor") or {}):
+                self.monitor_auto_started = False
+                monitor = self.monitor_config()
+                self._set_monitor_state(
+                    status="armed" if monitor["enabled"] else "disabled",
+                    message="活动监控配置已热应用。" if monitor["enabled"] else "活动监控未启用。",
+                    activity=monitor["activity"],
+                    url=monitor["url"],
+                    lastError="",
+                )
             self.add_system_event(
                 "info",
                 "settings",
@@ -1995,7 +2241,6 @@ class VoteService:
                 await self.reload_feishu_connection(loop)
 
             self.operator_auth = OperatorAuth(new_config.get("operator_auth") or {})
-            self.pending_restart_fields = self._restart_fields_for(new_config)
             return {
                 "ok": True,
                 "warnings": update.warnings,
@@ -2512,6 +2757,17 @@ def create_app(service: VoteService) -> web.Application:
         middlewares=[security_headers, operator_auth_middleware],
     )
 
+    async def start_background(app_: web.Application) -> None:
+        if hasattr(service, "start_background_tasks"):
+            service.start_background_tasks(asyncio.get_running_loop())
+
+    async def cleanup_background(app_: web.Application) -> None:
+        if hasattr(service, "stop_background_tasks"):
+            await service.stop_background_tasks()
+
+    app.on_startup.append(start_background)
+    app.on_cleanup.append(cleanup_background)
+
     def login_response(error: str = "", next_url: str = "/", status: int = 200) -> web.Response:
         safe_next = safe_next_url(next_url)
         error_block = f'<p class="auth-error" role="alert">{html.escape(error)}</p>' if error else ""
@@ -2582,6 +2838,7 @@ def create_app(service: VoteService) -> web.Application:
             "feishuEnabled": service.feishu.enabled(),
             "feishuConnectionMode": service.config.get("feishu", {}).get("connection_mode", "websocket"),
             "feishuWorkerAlive": runtime["feishuWorkerAlive"],
+            "monitor": runtime.get("monitor"),
             "restartRequired": runtime["restartRequired"],
             "restartFields": runtime["restartFields"],
         })
@@ -3063,6 +3320,7 @@ async def amain() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
     await stop.wait()
+    await service.stop_background_tasks()
     await service.collector.stop()
     await service.recorder.stop_all()
     if service.feishu_connection is not None:

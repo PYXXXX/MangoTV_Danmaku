@@ -189,6 +189,67 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 service.collector.fingerprints.close()
 
+    async def test_monitor_tick_detects_source_and_auto_starts_round(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "mgtv": {
+                    "url": "https://www.mgtv.com/z/1001668.html",
+                    "dedup_db_path": str(Path(temp) / "fingerprints.sqlite3"),
+                },
+                "recording": {"enabled": True, "preferred_quality": "1080P", "directory": str(Path(temp) / "recordings")},
+                "monitor": {
+                    "enabled": True,
+                    "activity": "歌手 2026",
+                    "url": "https://www.mgtv.com/z/1001668.html",
+                    "auto_detect_source": True,
+                    "auto_record_video": True,
+                    "auto_record_danmaku": True,
+                    "feishu_notify": True,
+                    "poll_seconds": 10,
+                    "round_name": "全程录制",
+                },
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {"enabled": True, "allowed_open_ids": ["ou_operator"], "allowed_chat_ids": ["oc_control_room"]},
+            }
+            service = VoteService(config)
+            calls = []
+            notices = []
+
+            async def fake_detect(url=None, quality=None):
+                calls.append({"detect": url, "quality": quality})
+                return {"ok": True, "quality": "1080P", "actualQuality": "1080P"}
+
+            async def fake_start_round(name, url=None, activity=None):
+                calls.append({"start": name, "url": url, "activity": activity})
+                return SimpleNamespace(id="round-monitor", name=name, activity=activity)
+
+            async def fake_notify(text):
+                notices.append(text)
+
+            service.detect_mgtv_recording_source = fake_detect
+            service.start_round = fake_start_round
+            service.notify_monitor = fake_notify
+            try:
+                status = await service.monitor_tick_once()
+                self.assertEqual(calls, [
+                    {"detect": "https://www.mgtv.com/z/1001668.html", "quality": "1080P"},
+                    {"start": "全程录制", "url": "https://www.mgtv.com/z/1001668.html", "activity": "歌手 2026"},
+                ])
+                self.assertEqual(status["state"]["status"], "running")
+                self.assertEqual(status["state"]["roundId"], "round-monitor")
+                self.assertEqual(notices, ["已检测到直播并自动开始：歌手 2026 / 全程录制"])
+
+                await service.monitor_tick_once()
+                self.assertEqual(len([item for item in calls if "start" in item]), 1)
+            finally:
+                service.collector.fingerprints.close()
+
     async def test_delete_round_and_activity_remove_stopped_sessions(self):
         with tempfile.TemporaryDirectory() as temp:
             config = {

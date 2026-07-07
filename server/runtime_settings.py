@@ -213,6 +213,37 @@ def build_settings_update(
             warnings.append("已启用录屏但未配置直播流 URL；开始场次时会尝试自动检测播放源")
         updated["recording"] = target
 
+    if "monitor" in payload:
+        source = payload.get("monitor")
+        if not isinstance(source, dict):
+            raise SettingsValidationError("monitor 配置格式无效")
+        current_monitor = updated.get("monitor") or {}
+        current_vote = updated.get("vote") or {}
+        current_mgtv = updated.get("mgtv") or {}
+        enabled = as_bool(source.get("enabled"))
+        activity = str(source.get("activity") or current_monitor.get("activity") or current_vote.get("activity") or "").strip()
+        url = str(source.get("url") or current_monitor.get("url") or current_mgtv.get("url") or "").strip()
+        target = dict(current_monitor)
+        target.update({
+            "enabled": enabled,
+            "activity": activity,
+            "url": as_url(url, "活动链接", required=False),
+            "auto_detect_source": as_bool(source.get("auto_detect_source", target.get("auto_detect_source", True))),
+            "auto_record_video": as_bool(source.get("auto_record_video", target.get("auto_record_video", False))),
+            "auto_record_danmaku": as_bool(source.get("auto_record_danmaku", target.get("auto_record_danmaku", True))),
+            "feishu_notify": as_bool(source.get("feishu_notify", target.get("feishu_notify", True))),
+            "poll_seconds": as_int(source.get("poll_seconds", target.get("poll_seconds", 45)), "活动监控间隔", 10, 3600),
+            "round_name": str(source.get("round_name") or target.get("round_name") or "").strip(),
+        })
+        if enabled:
+            if not target["activity"]:
+                raise SettingsValidationError("启用活动监控前必须填写活动名称")
+            if not target["url"]:
+                raise SettingsValidationError("启用活动监控前必须填写活动链接")
+            if not target["auto_record_video"] and not target["auto_record_danmaku"]:
+                warnings.append("活动监控已启用，但未选择自动录制视频或弹幕；系统只会检测直播源并更新状态")
+        updated["monitor"] = target
+
     if "mgtv_auth" in payload:
         source = payload.get("mgtv_auth")
         if not isinstance(source, dict):

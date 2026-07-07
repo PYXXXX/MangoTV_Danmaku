@@ -30,6 +30,17 @@ def base_config(root: Path) -> dict:
             "ffmpeg_path": "ffmpeg",
             "directory": str(root / "recordings"),
         },
+        "monitor": {
+            "enabled": False,
+            "activity": "旧活动",
+            "url": "https://www.mgtv.com/z/1.html",
+            "auto_detect_source": True,
+            "auto_record_video": False,
+            "auto_record_danmaku": True,
+            "feishu_notify": True,
+            "poll_seconds": 45,
+            "round_name": "",
+        },
         "mgtv_auth": {
             "enabled": True,
             "cookies": [{"name": "HDCN", "value": "secret-cookie", "domain": ".mgtv.com"}],
@@ -152,6 +163,44 @@ class RuntimeSettingsTest(unittest.TestCase):
             self.assertEqual(update.config["recording"]["stream_url"], config["recording"]["stream_url"])
             self.assertEqual(update.config["recording"]["preferred_quality"], "720P")
             self.assertEqual(update.config["mgtv_auth"]["cookie_header"], config["mgtv_auth"]["cookie_header"])
+
+    def test_monitor_settings_are_validated_and_hot_reloadable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = base_config(Path(temp))
+            update = build_settings_update(
+                config,
+                {
+                    "monitor": {
+                        "enabled": True,
+                        "activity": "歌手 2026",
+                        "url": "https://www.mgtv.com/z/1001668.html?fpa=12437",
+                        "auto_detect_source": True,
+                        "auto_record_video": True,
+                        "auto_record_danmaku": True,
+                        "feishu_notify": False,
+                        "poll_seconds": 30,
+                        "round_name": "歌手 2026 全程录制",
+                    }
+                },
+                active_round=False,
+            )
+            self.assertEqual(update.restart_fields, [])
+            self.assertTrue(update.config["monitor"]["enabled"])
+            self.assertEqual(update.config["monitor"]["activity"], "歌手 2026")
+            self.assertEqual(update.config["monitor"]["poll_seconds"], 30)
+
+    def test_enabled_monitor_requires_activity_url(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = base_config(Path(temp))
+            config["monitor"] = {}
+            config["mgtv"]["url"] = ""
+            config["vote"]["activity"] = ""
+            with self.assertRaisesRegex(SettingsValidationError, "活动名称"):
+                build_settings_update(
+                    config,
+                    {"monitor": {"enabled": True, "activity": "", "url": ""}},
+                    active_round=False,
+                )
 
     def test_active_round_warns_but_accepts_next_round_defaults(self):
         with tempfile.TemporaryDirectory() as temp:

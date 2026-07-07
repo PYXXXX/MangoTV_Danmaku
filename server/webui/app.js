@@ -183,6 +183,34 @@ function defaultFullRecordingName() {
   return defaultActivityName() + " 全程录制";
 }
 
+function currentMonitor() {
+  return (systemStatus && systemStatus.monitor) || {};
+}
+
+function currentMonitorConfig() {
+  return currentMonitor().config || {};
+}
+
+function currentMonitorState() {
+  return currentMonitor().state || {};
+}
+
+function applyMonitorInputs() {
+  const config = currentMonitorConfig();
+  if (!config || Object.keys(config).length === 0) return;
+  if (el.monitorActivity && document.activeElement !== el.monitorActivity) {
+    el.monitorActivity.value = config.activity || "";
+  }
+  if (el.monitorUrl && document.activeElement !== el.monitorUrl) {
+    el.monitorUrl.value = config.url || "";
+  }
+  if (el.monitorEnabled) el.monitorEnabled.checked = Boolean(config.enabled);
+  if (el.monitorAutoSource) el.monitorAutoSource.checked = config.autoDetectSource !== false;
+  if (el.monitorRecordVideo) el.monitorRecordVideo.checked = Boolean(config.autoRecordVideo);
+  if (el.monitorRecordDanmaku) el.monitorRecordDanmaku.checked = config.autoRecordDanmaku !== false;
+  if (el.monitorFeishuNotify) el.monitorFeishuNotify.checked = config.feishuNotify !== false;
+}
+
 function applyStartDefaults() {
   const activity = defaultActivityName();
   if (el.activityName && document.activeElement !== el.activityName && !el.activityName.value.trim()) {
@@ -216,8 +244,11 @@ function applyStartDefaults() {
 
 function renderMonitor(round) {
   const defaults = configuredDefaults();
-  const activity = defaults.activity || selectedActivity || "未分类活动";
-  const url = defaults.mgtvUrl || "";
+  const monitorConfig = currentMonitorConfig();
+  const monitorState = currentMonitorState();
+  const activity = monitorConfig.activity || defaults.activity || selectedActivity || "未分类活动";
+  const url = monitorConfig.url || defaults.mgtvUrl || "";
+  applyMonitorInputs();
   if (el.globalActivityPill) {
     el.globalActivityPill.textContent = activity && activity !== "未分类活动" ? activity + " · 监控策略" : "等待活动";
     el.globalActivityPill.className = "status-pill " + (activity && activity !== "未分类活动" ? "warn" : "");
@@ -228,19 +259,31 @@ function renderMonitor(round) {
     el.globalCollectPill.className = "status-pill " + (running ? "ok" : "");
   }
   if (el.monitorState) {
-    const configured = Boolean(url);
-    el.monitorState.textContent = configured ? "活动页已配置" : "等待活动链接";
-    el.monitorState.className = "update-status " + (configured ? "ready" : "available");
+    const status = monitorState.status || (url ? "armed" : "blocked");
+    const labelMap = {
+      disabled: "监控未启用",
+      blocked: "等待活动链接",
+      armed: "监控已就绪",
+      checking: "正在检测直播源",
+      waiting: "等待直播开始",
+      source_ready: "直播源已就绪",
+      running: "自动采集中",
+      error: "监控异常"
+    };
+    el.monitorState.textContent = labelMap[status] || (url ? "活动页已配置" : "等待活动链接");
+    el.monitorState.className = "update-status " + (status === "running" || status === "source_ready" ? "ready" : (status === "error" || status === "blocked" ? "" : "available"));
   }
   if (el.monitorHint) {
-    el.monitorHint.textContent = url
-      ? "已使用活动链接：" + url
-      : "保存后会同步到系统默认活动和默认直播 URL；开轮次时自动使用这组信息。";
+    el.monitorHint.textContent = monitorState.message || (url
+      ? "后台会按策略自动检测活动页，直播开始后可自动开启弹幕/录屏场次。"
+      : "保存后会同步到系统默认活动和默认直播 URL；开轮次时自动使用这组信息。");
   }
-  if (el.timelineActivity) el.timelineActivity.textContent = url ? "已配置活动页" : "等待配置";
+  if (el.timelineActivity) el.timelineActivity.textContent = url ? (activity + " · 已配置") : "等待配置";
   if (el.timelineSource) {
     const recording = round && round.recording;
-    el.timelineSource.textContent = recording && recording.sourceUrl ? "已解析录制源" : "直播开始后自动解析";
+    el.timelineSource.textContent = monitorState.quality
+      ? ("已解析 " + monitorState.quality)
+      : (recording && recording.sourceUrl ? "已解析录制源" : "直播开始后自动解析");
   }
   if (el.timelineRecording) {
     const recording = round && round.recording;
@@ -618,6 +661,7 @@ function serviceLabel(name, service) {
     feishu: "飞书长连接",
     github: "GitHub 发布",
     updater: "程序更新",
+    monitor: "活动监控",
     recordingSource: "直播源"
   };
   const status = service && (service.status || service.quality || (service.configured ? "已配置" : "未配置")) || "未知";
@@ -905,10 +949,19 @@ el.monitorSave.addEventListener("click", async () => {
     const vote = Object.assign({}, currentSettings.vote || {}, { activity });
     const mgtv = Object.assign({}, currentSettings.mgtv || {}, { url });
     const recording = Object.assign({}, currentSettings.recording || {}, { enabled: Boolean(el.monitorRecordVideo.checked) });
+    const monitor = Object.assign({}, currentSettings.monitor || {}, {
+      enabled: Boolean(el.monitorEnabled.checked),
+      activity,
+      url,
+      auto_detect_source: Boolean(el.monitorAutoSource.checked),
+      auto_record_video: Boolean(el.monitorRecordVideo.checked),
+      auto_record_danmaku: Boolean(el.monitorRecordDanmaku.checked),
+      feishu_notify: Boolean(el.monitorFeishuNotify.checked)
+    });
     const response = await fetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ vote, mgtv, recording })
+      body: JSON.stringify({ vote, mgtv, recording, monitor })
     });
     requireLogin(response);
     const payload = await response.json();
@@ -916,8 +969,9 @@ el.monitorSave.addEventListener("click", async () => {
     if (typeof populateSettings === "function") populateSettings(payload.settings);
     el.monitorState.textContent = "监控策略已保存";
     el.monitorState.className = "update-status ready";
-    addLog("活动监控策略已保存。自动检测/飞书通知开关已在界面记录；当前版本会复用现有检测与通知链路。");
+    addLog("活动监控策略已保存并热应用，后台会按策略自动检测与启动。");
     await load();
+    await loadSystemStatus().catch(() => {});
   } catch (error) {
     addLog("活动监控保存失败：" + error.message);
   } finally {
@@ -977,6 +1031,6 @@ setInterval(() => load().catch((error) => addLog(error.message)), 3000);
 loadSystemStatus().catch(() => {});
 loadSystemLogs().catch(() => {});
 setInterval(() => {
-  if (document.querySelector("#machinePage.active")) loadSystemStatus().catch(() => {});
+  if (document.querySelector("#machinePage.active") || document.querySelector("#activityPage.active")) loadSystemStatus().catch(() => {});
   if (document.querySelector("#logsPage.active") && el.logFollow.checked) loadSystemLogs().catch(() => {});
 }, 5000);
