@@ -65,6 +65,15 @@ export async function apiDelete<T>(url: string): Promise<T> {
   return parseJson<T>(response);
 }
 
+export async function apiUpload<T>(url: string, form: FormData): Promise<T> {
+  const response = await fetch(url, { method: "POST", body: form });
+  if (response.status === 401) {
+    window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+    throw new ApiError("登录已过期", 401);
+  }
+  return parseJson<T>(response);
+}
+
 export async function getPublicState(): Promise<PublicState> {
   return apiGet<PublicState>("/api/results.json");
 }

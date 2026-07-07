@@ -6,8 +6,8 @@ import {
 } from "@phosphor-icons/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { apiDelete, apiGet, apiPatch, apiPost, getBootstrap, getSystemLogs, getSystemStatus } from "../../api/client";
-import type { ActivityItem, RecordingTimeline, RoundSession, SystemLogEvent, SystemLogsResponse, SystemStatus } from "../../api/types";
+import { apiDelete, apiGet, apiPatch, apiPost, apiUpload, getBootstrap, getSystemLogs, getSystemStatus } from "../../api/client";
+import type { ActivityItem, FeishuBindingStatus, MgtvAuthStatus, RecordingTimeline, RoundSession, SystemLogEvent, SystemLogsResponse, SystemStatus, UpdateStatus } from "../../api/types";
 import { Card, PageHeading, PrimaryButton, Shell, StatusBadge } from "../../components/Shell";
 import { MetricCard } from "../../components/MetricCard";
 import { RankingTable } from "../../components/RankingTable";
@@ -22,10 +22,12 @@ function useBootstrap() {
 export function AdminApp() {
   const page = useUiStore((state) => state.page);
   const setPage = useUiStore((state) => state.setPage);
+  const selectedRoundId = useUiStore((state) => state.selectedRoundId);
   const bootstrap = useBootstrap();
   const publicState = bootstrap.data?.publicState;
   const systemStatus = bootstrap.data?.systemStatus;
-  const round = currentRound(publicState?.sessions || [], publicState?.activeSessionId);
+  const sessions = publicState?.sessions || [];
+  const round = sessions.find((item) => item.id === selectedRoundId) || currentRound(sessions, publicState?.activeSessionId);
   const monitorStatus = systemStatus?.monitor?.state?.status;
   const feishuStatus = systemStatus?.services?.feishu?.status;
   const title = "直播运营工作台";
@@ -209,6 +211,8 @@ function OperationsPage({ rounds, activeRound, defaultActivity }: { rounds: Roun
   const queryClient = useQueryClient();
   const resultType = useUiStore((state) => state.resultType);
   const setResultType = useUiStore((state) => state.setResultType);
+  const selectedRoundId = useUiStore((state) => state.selectedRoundId);
+  const setSelectedRoundId = useUiStore((state) => state.setSelectedRoundId);
   const result = selectedResult(activeRound, resultType);
   const rows = rankingRows(activeRound, result.data);
   const total = rows.reduce((sum, row) => sum + row.votes, 0);
@@ -221,6 +225,9 @@ function OperationsPage({ rounds, activeRound, defaultActivity }: { rounds: Roun
   const [selectedRecordingId, setSelectedRecordingId] = useState(activeRound?.id || rounds.find((item) => item.recording)?.id || "");
   const [markerForm, setMarkerForm] = useState({ label: "", atSeconds: 0 });
   const [clipForm, setClipForm] = useState({ label: "", startSeconds: 0, endSeconds: 0 });
+  const [pendingDelete, setPendingDelete] = useState<null | { kind: "round"; label: string } | { kind: "activity"; activity: string }>(null);
+  const [deleteSyncPublic, setDeleteSyncPublic] = useState(true);
+  const [preciseFile, setPreciseFile] = useState<File | null>(null);
   useEffect(() => {
     setRoundForm((current) => ({
       ...current,
@@ -267,11 +274,19 @@ function OperationsPage({ rounds, activeRound, defaultActivity }: { rounds: Roun
   });
   const deleteRound = useMutation({
     mutationFn: ({ publish }: { publish: boolean }) => apiDelete(`/api/rounds/${encodeURIComponent(activeRound?.id || "")}?publish=${publish ? "1" : "0"}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
+    onSuccess: () => {
+      setPendingDelete(null);
+      setSelectedRoundId(null);
+      queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] });
+    }
   });
   const deleteActivity = useMutation({
     mutationFn: ({ activity, publish }: { activity: string; publish: boolean }) => apiDelete(`/api/activities/${encodeURIComponent(activity)}?publish=${publish ? "1" : "0"}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
+    onSuccess: () => {
+      setPendingDelete(null);
+      setSelectedRoundId(null);
+      queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] });
+    }
   });
   const addMarker = useMutation({
     mutationFn: () => apiPost(`/api/rounds/${encodeURIComponent(recordingRound?.id || "")}/recording/markers`, markerForm),
@@ -291,24 +306,44 @@ function OperationsPage({ rounds, activeRound, defaultActivity }: { rounds: Roun
     mutationFn: (clipId: string) => apiPost(`/api/rounds/${encodeURIComponent(recordingRound?.id || "")}/recording/clips/${encodeURIComponent(clipId)}/analysis-round`, { name: clipForm.label || "片段分析" }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
   });
+  const uploadPrecise = useMutation({
+    mutationFn: () => {
+      if (!activeRound?.id || !preciseFile) throw new Error("请先选择已结束场次和精确结果文件");
+      const form = new FormData();
+      form.append("file", preciseFile);
+      return apiUpload(`/api/rounds/${encodeURIComponent(activeRound.id)}/precise-result`, form);
+    },
+    onSuccess: () => {
+      setPreciseFile(null);
+      setResultType("precise");
+      queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] });
+    }
+  });
   const deleteCurrentRound = () => {
     if (!activeRound) return;
-    if (!window.confirm(`确认删除场次「${roundName(activeRound)}」？删除后不可在管理台恢复。`)) return;
-    const publishAfterDelete = window.confirm("删除后是否立即同步远端公开页？\n确定：立即同步\n取消：仅本地删除，稍后手动发布");
-    deleteRound.mutate({ publish: publishAfterDelete });
+    setDeleteSyncPublic(true);
+    setPendingDelete({ kind: "round", label: roundName(activeRound) });
   };
   const deleteCurrentActivity = () => {
     const activity = activeRound?.activity || roundForm.activity || defaultActivity;
     if (!activity) return;
-    if (!window.confirm(`确认删除活动「${activity}」下全部已结束场次？删除后不可在管理台恢复。`)) return;
-    const publishAfterDelete = window.confirm("删除后是否立即同步远端公开页？\n确定：立即同步\n取消：仅本地删除，稍后手动发布");
-    deleteActivity.mutate({ activity, publish: publishAfterDelete });
+    setDeleteSyncPublic(true);
+    setPendingDelete({ kind: "activity", activity });
   };
-  const operationError = startRound.error || endRound.error || publish.error || pushFeishu.error || renameRound.error || deleteRound.error || deleteActivity.error || addMarker.error || createClip.error || createAnalysisRound.error || recordingTimeline.error;
+  const confirmDelete = () => {
+    if (!pendingDelete) return;
+    if (pendingDelete.kind === "round") {
+      deleteRound.mutate({ publish: deleteSyncPublic });
+      return;
+    }
+    deleteActivity.mutate({ activity: pendingDelete.activity, publish: deleteSyncPublic });
+  };
+  const operationError = startRound.error || endRound.error || publish.error || pushFeishu.error || renameRound.error || deleteRound.error || deleteActivity.error || addMarker.error || createClip.error || createAnalysisRound.error || uploadPrecise.error || recordingTimeline.error;
   const timeline = recordingTimeline.data;
   const density = timeline?.danmakuDensity || [];
   const maxDensity = Math.max(1, ...density.map((item) => item.count));
   const recording = timeline?.recording || recordingRound?.recording || null;
+  const sortedRounds = [...rounds].sort((a, b) => String(b.startedAt || b.endedAt || "").localeCompare(String(a.startedAt || a.endedAt || "")));
   return (
     <section>
       <PageHeading
@@ -379,6 +414,24 @@ function OperationsPage({ rounds, activeRound, defaultActivity }: { rounds: Roun
                 <p className="text-xs leading-6 text-red-100/75">只能删除已结束场次；删除活动会移除该活动下全部已结束场次。删除时可选择是否立即同步公开页。</p>
                 <button type="button" className="rounded-xl border border-red-400/35 bg-red-400/15 px-4 py-3 text-sm font-black text-red-100" disabled={!activeRound || activeRound.status === "running" || deleteRound.isPending} onClick={deleteCurrentRound}>删除场次</button>
                 <button type="button" className="rounded-xl border border-red-400/35 bg-red-400/15 px-4 py-3 text-sm font-black text-red-100" disabled={(!activeRound?.activity && !roundForm.activity && !defaultActivity) || activeRound?.status === "running" || deleteActivity.isPending} onClick={deleteCurrentActivity}>删除活动</button>
+                {pendingDelete && (
+                  <div className="mt-2 rounded-2xl border border-red-300/35 bg-[#2a0f0f] p-4">
+                    <strong className="block text-sm text-red-100">
+                      确认删除{pendingDelete.kind === "round" ? `场次「${pendingDelete.label}」` : `活动「${pendingDelete.activity}」`}
+                    </strong>
+                    <p className="mt-2 text-xs leading-6 text-red-100/75">
+                      删除后不可在管理台恢复。{pendingDelete.kind === "activity" ? "系统会删除该活动下全部已结束场次，采集中场次会被服务端拒绝。" : "采集中场次会被服务端拒绝。"}
+                    </p>
+                    <label className="mt-3 flex items-center gap-2 text-xs font-bold text-red-50">
+                      <input type="checkbox" checked={deleteSyncPublic} onChange={(event) => setDeleteSyncPublic(event.target.checked)} />
+                      删除后立即同步远端公开页
+                    </label>
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <button type="button" className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-black text-slate-200" onClick={() => setPendingDelete(null)}>取消</button>
+                      <button type="button" className="rounded-xl bg-red-500 px-3 py-2 text-xs font-black text-white" disabled={deleteRound.isPending || deleteActivity.isPending} onClick={confirmDelete}>确认删除</button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -400,6 +453,77 @@ function OperationsPage({ rounds, activeRound, defaultActivity }: { rounds: Roun
           </div>
         </Card>
       </div>
+
+      <Card title="精确结果发布" className="mt-4" action={<StatusBadge tone={activeRound?.results?.precise ? "green" : "neutral"}>{activeRound?.results?.precise ? "已发布精确结果" : "待上传"}</StatusBadge>}>
+        <div className="grid grid-cols-[minmax(0,1fr)_360px] items-end gap-4 max-xl:grid-cols-1">
+          <div>
+            <p className="text-sm leading-7 text-ops-muted">
+              先结束场次并导出弹幕切片，按清洗规范生成 precise_result.json 或 XML。上传后系统会校验候选人、票数和场次，并立即发布为公开页默认结果。
+            </p>
+            <a className="mt-3 inline-flex rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-black text-slate-100" href="/docs/precise-result-agent" target="_blank" rel="noreferrer">查看 Agent 清洗规范</a>
+          </div>
+          <div className="grid gap-3">
+            <input
+              className="ops-input"
+              type="file"
+              accept=".json,.xml,application/json,text/xml,application/xml"
+              onChange={(event) => setPreciseFile(event.target.files?.[0] || null)}
+            />
+            <button
+              type="button"
+              className="rounded-xl bg-ops-orange px-5 py-3 text-sm font-black text-[#1b0d03]"
+              disabled={!activeRound || activeRound.status === "running" || !preciseFile || uploadPrecise.isPending}
+              onClick={() => uploadPrecise.mutate()}
+            >
+              上传并发布精确结果
+            </button>
+          </div>
+        </div>
+      </Card>
+
+      <Card title="场次列表" className="mt-4" action={<StatusBadge tone="neutral">{formatCount(rounds.length)} 场</StatusBadge>}>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[860px] border-separate border-spacing-y-2 text-left text-sm">
+            <thead className="text-xs text-ops-muted">
+              <tr>
+                <th className="px-3 py-2">场次</th>
+                <th className="px-3 py-2">时间范围</th>
+                <th className="px-3 py-2">状态</th>
+                <th className="px-3 py-2">弹幕</th>
+                <th className="px-3 py-2">结果</th>
+                <th className="px-3 py-2 text-right">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedRounds.map((round) => {
+                const isSelected = round.id === activeRound?.id || round.id === selectedRoundId;
+                return (
+                  <tr key={round.id} className={isSelected ? "bg-orange-400/10" : "bg-white/[0.035]"}>
+                    <td className="rounded-l-2xl border-y border-l border-white/10 px-3 py-3">
+                      <strong className="block text-slate-100">{roundName(round)}</strong>
+                      <span className="mt-1 block text-xs text-ops-muted">{round.activity || "未分类活动"}</span>
+                    </td>
+                    <td className="border-y border-white/10 px-3 py-3 font-mono text-xs text-ops-muted">{round.timeRange || "-"}</td>
+                    <td className="border-y border-white/10 px-3 py-3"><StatusBadge tone={round.status === "running" ? "blue" : "green"}>{round.status === "running" ? "进行中" : "已结束"}</StatusBadge></td>
+                    <td className="border-y border-white/10 px-3 py-3 font-mono">{formatCount(round.messageCount)}</td>
+                    <td className="border-y border-white/10 px-3 py-3 text-xs text-ops-muted">{round.results?.precise ? "精确结果" : "粗略结果"}</td>
+                    <td className="rounded-r-2xl border-y border-r border-white/10 px-3 py-3">
+                      <div className="flex justify-end gap-2">
+                        <button type="button" className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-black text-slate-100" onClick={() => setSelectedRoundId(round.id)}>选择</button>
+                        <a className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-black text-slate-100" href={`/api/rounds/${encodeURIComponent(round.id)}/result.png?result=${round.results?.precise ? "precise" : "rough"}`}>PNG</a>
+                        <a className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-black text-slate-100" href={`/api/rounds/${encodeURIComponent(round.id)}.jsonl`}>弹幕</a>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {!sortedRounds.length && (
+                <tr><td className="rounded-2xl border border-white/10 bg-white/[0.035] px-4 py-10 text-center text-ops-muted" colSpan={6}>暂无场次。活动监控开播后可自动创建，也可以手动开始新一轮。</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
 
       <Card title="录制后处理" className="mt-4" action={<StatusBadge tone={recording?.status === "recording" ? "orange" : recording ? "green" : "neutral"}>{recording?.status || "暂无录制"}</StatusBadge>}>
         <div className="grid grid-cols-[320px_minmax(0,1fr)_360px] gap-5 max-xl:grid-cols-1">
@@ -577,6 +701,54 @@ function SettingsBlueprintPage({ status, settings }: { status?: SystemStatus; se
     mutationFn: () => apiPost("/api/settings", buildSettingsPayload(form)),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
   });
+  const mgtvAuth = useQuery<MgtvAuthStatus>({
+    queryKey: ["mgtv-auth"],
+    queryFn: () => apiGet<MgtvAuthStatus>("/api/mgtv/auth"),
+    refetchInterval: 5_000
+  });
+  const startMgtvAuth = useMutation({
+    mutationFn: () => apiPost<MgtvAuthStatus>("/api/mgtv/auth/start"),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["mgtv-auth"] });
+      queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] });
+    }
+  });
+  const feishuBinding = useQuery<FeishuBindingStatus>({
+    queryKey: ["feishu-binding"],
+    queryFn: () => apiGet<FeishuBindingStatus>("/api/feishu/binding"),
+    refetchInterval: 5_000
+  });
+  const startFeishuBinding = useMutation({
+    mutationFn: () => apiPost<FeishuBindingStatus>("/api/feishu/binding/start"),
+    onSuccess: (payload) => {
+      if (payload.verificationUrl) {
+        window.open(payload.verificationUrl, "_blank", "noopener,noreferrer");
+      }
+      queryClient.invalidateQueries({ queryKey: ["feishu-binding"] });
+      queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] });
+    }
+  });
+  const sendFeishuTestCard = useMutation({
+    mutationFn: () => apiPost("/api/feishu/push-card"),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
+  });
+  const updateStatus = useQuery<UpdateStatus>({
+    queryKey: ["update-status"],
+    queryFn: () => apiGet<UpdateStatus>("/api/update/status"),
+    refetchInterval: 5_000
+  });
+  const applyUpdate = useMutation({
+    mutationFn: () => apiPost("/api/update/apply"),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["update-status"] })
+  });
+  const restartService = useMutation({
+    mutationFn: () => apiPost("/api/restart"),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
+  });
+  const mgtvView = startMgtvAuth.data || mgtvAuth.data;
+  const feishuView = startFeishuBinding.data || feishuBinding.data;
+  const updateView = updateStatus.data;
+  const updateProgress = updateView?.progress || {};
   return (
     <section>
       <PageHeading
@@ -591,10 +763,65 @@ function SettingsBlueprintPage({ status, settings }: { status?: SystemStatus; se
         <Card title="连接与账号">
           <div className="grid gap-4">
             <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-              <strong className="block text-sm">芒果 TV 扫码登录</strong>
-              <p className="mt-2 text-xs leading-6 text-ops-muted">登录态：{config.mgtv_auth?.cookie_configured ? "已保存" : "未配置"}。扫码流程继续使用活动监控页的直播源检测能力。</p>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <strong className="block text-sm">芒果 TV 扫码登录</strong>
+                  <p className="mt-2 text-xs leading-6 text-ops-muted">用于检测 1080P/VIP 清晰度与解析可录制播放流，登录态只保存在服务器配置中。</p>
+                </div>
+                <StatusBadge tone={mgtvView?.cookieConfigured ? "green" : mgtvView?.status === "pending" ? "orange" : "neutral"}>
+                  {mgtvView?.cookieConfigured ? "已登录" : mgtvView?.status === "pending" ? "等待扫码" : "未登录"}
+                </StatusBadge>
+              </div>
+              <div className="mt-4 grid grid-cols-[minmax(0,1fr)_112px] gap-4 max-sm:grid-cols-1">
+                <div className="grid gap-2 text-xs leading-6 text-ops-muted">
+                  <span>账号：{mgtvView?.user?.nickname || mgtvView?.user?.uid || "-"}</span>
+                  <span>VIP：{mgtvView?.user?.isVip ? `是${mgtvView.user.vipType ? ` · ${mgtvView.user.vipType}` : ""}` : mgtvView?.cookieConfigured ? "否/未知" : "未知"}</span>
+                  <span>协议：{mgtvView?.loginProtocolAvailable ? mgtvView.loginProtocol || "mgtv_http_qr" : "不可用"}</span>
+                  {(mgtvView?.error || startMgtvAuth.error || mgtvAuth.error) && (
+                    <span className="rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-red-100">{String(mgtvView?.error || (startMgtvAuth.error as Error)?.message || (mgtvAuth.error as Error)?.message)}</span>
+                  )}
+                </div>
+                <div className="grid min-h-28 place-items-center rounded-2xl border border-white/10 bg-white/[0.035] p-2">
+                  {mgtvView?.screenshot ? <img className="max-h-28 rounded-xl" src={mgtvView.screenshot} alt="芒果 TV 登录二维码" /> : <span className="text-center text-xs text-ops-muted">二维码将在扫码登录时显示</span>}
+                </div>
+              </div>
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                <button type="button" className="rounded-xl bg-ops-orange px-4 py-3 text-sm font-black text-[#1b0d03]" disabled={startMgtvAuth.isPending || mgtvView?.status === "pending"} onClick={() => startMgtvAuth.mutate()}>
+                  {mgtvView?.cookieConfigured ? "重新扫码" : "发起扫码登录"}
+                </button>
+                <button type="button" className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-black text-slate-100" onClick={() => queryClient.invalidateQueries({ queryKey: ["mgtv-auth"] })}>刷新状态</button>
+              </div>
             </div>
             <SettingsToggle label="启用飞书 Bot" checked={Boolean(form.feishuEnabled)} onChange={(value) => update("feishuEnabled", value)} />
+            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <strong className="block text-sm">飞书一键绑定</strong>
+                  <p className="mt-2 text-xs leading-6 text-ops-muted">绑定后可在飞书卡片内完成开轮次、切换场次、导出 PNG、删除和录制后处理。</p>
+                </div>
+                <StatusBadge tone={feishuView?.status === "bound" || feishuView?.appSecretConfigured ? "green" : feishuView?.status === "pending" ? "orange" : "neutral"}>
+                  {feishuView?.status === "pending" ? "等待授权" : feishuView?.appSecretConfigured ? "已绑定" : "未绑定"}
+                </StatusBadge>
+              </div>
+              <div className="mt-4 grid gap-2 text-xs leading-6 text-ops-muted">
+                <span>App ID：{feishuView?.appId || form.feishuAppId || "-"}</span>
+                <span>授权 open_id：{feishuView?.openId || "-"}</span>
+                <span>长连接：{feishuView?.workerAlive ? "运行中" : "未运行"}</span>
+                {feishuView?.userCode && <span className="rounded-xl border border-orange-400/30 bg-orange-400/10 px-3 py-2 font-mono text-ops-gold">授权码：{feishuView.userCode}</span>}
+                {feishuView?.verificationUrl && <a className="rounded-xl border border-blue-400/30 bg-blue-400/10 px-3 py-2 font-black text-blue-100" href={feishuView.verificationUrl} target="_blank" rel="noreferrer">打开飞书授权页</a>}
+                {(feishuView?.error || startFeishuBinding.error || feishuBinding.error || sendFeishuTestCard.error) && (
+                  <span className="rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-red-100">{String(feishuView?.error || (startFeishuBinding.error as Error)?.message || (feishuBinding.error as Error)?.message || (sendFeishuTestCard.error as Error)?.message)}</span>
+                )}
+                {sendFeishuTestCard.isSuccess && <span className="rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-3 py-2 text-emerald-100">测试卡片已发送到已配置的飞书会话。</span>}
+              </div>
+              <div className="mt-4 grid grid-cols-3 gap-3 max-sm:grid-cols-1">
+                <button type="button" className="rounded-xl bg-ops-orange px-4 py-3 text-sm font-black text-[#1b0d03]" disabled={startFeishuBinding.isPending || feishuView?.status === "pending"} onClick={() => startFeishuBinding.mutate()}>
+                  {feishuView?.appSecretConfigured ? "重新绑定" : "发起绑定"}
+                </button>
+                <button type="button" className="rounded-xl border border-blue-400/30 bg-blue-400/15 px-4 py-3 text-sm font-black text-blue-100" disabled={sendFeishuTestCard.isPending} onClick={() => sendFeishuTestCard.mutate()}>发送测试卡片</button>
+                <button type="button" className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-black text-slate-100" onClick={() => queryClient.invalidateQueries({ queryKey: ["feishu-binding"] })}>刷新状态</button>
+              </div>
+            </div>
             <Field label="飞书连接模式">
               <select className="ops-input" value={form.feishuMode || "websocket"} onChange={(event) => update("feishuMode", event.target.value)}>
                 <option value="websocket">WebSocket 长连接</option>
@@ -662,6 +889,42 @@ function SettingsBlueprintPage({ status, settings }: { status?: SystemStatus; se
               <Field label="端口"><input className="ops-input" type="number" value={form.listenPort || 8080} onChange={(event) => update("listenPort", Number(event.target.value))} /></Field>
             </div>
             <Field label="外部访问地址"><input className="ops-input" value={form.publicBaseUrl || ""} onChange={(event) => update("publicBaseUrl", event.target.value)} /></Field>
+            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <strong className="block text-sm">程序版本升级</strong>
+                  <p className="mt-2 text-xs leading-6 text-ops-muted">仅允许 fast-forward 更新。采集中、工作区脏数据或已有升级任务时会被后端拒绝。</p>
+                </div>
+                <StatusBadge tone={updateView?.inProgress ? "orange" : updateView?.updateAvailable ? "blue" : updateView?.dirty ? "red" : "green"}>
+                  {updateView?.inProgress ? "升级中" : updateView?.updateAvailable ? "发现新版本" : updateView?.dirty ? "工作区有改动" : "已是最新"}
+                </StatusBadge>
+              </div>
+              <div className="mt-4 grid grid-cols-2 gap-3 text-xs leading-6 text-ops-muted">
+                <span>当前 commit：<b className="font-mono text-slate-100">{updateView?.currentShort || "-"}</b></span>
+                <span>远端 commit：<b className="font-mono text-slate-100">{updateView?.remoteShort || "-"}</b></span>
+                <span>目标分支：{updateView?.remote && updateView?.remoteBranch ? `${updateView.remote}/${updateView.remoteBranch}` : "-"}</span>
+                <span>传输速度：{updateProgress.speed || "-"}</span>
+              </div>
+              <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10">
+                <span className="block h-full rounded-full bg-gradient-to-r from-ops-blue to-ops-orange transition-all" style={{ width: `${Math.max(0, Math.min(100, Number(updateProgress.percent || 0)))}%` }} />
+              </div>
+              <p className="mt-3 text-xs leading-6 text-ops-muted">{updateProgress.detail || (updateView?.updateAvailable ? "发现远端新 commit，可一键升级。" : "当前部署已经与远端目标分支一致。")}</p>
+              {!!updateView?.blockers?.length && (
+                <div className="mt-3 rounded-xl border border-orange-400/30 bg-orange-400/10 px-3 py-2 text-xs leading-6 text-ops-gold">
+                  {updateView.blockers.join("；")}
+                </div>
+              )}
+              {(updateStatus.error || applyUpdate.error || restartService.error) && (
+                <div className="mt-3 rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-xs leading-6 text-red-100">
+                  {String((updateStatus.error as Error)?.message || (applyUpdate.error as Error)?.message || (restartService.error as Error)?.message)}
+                </div>
+              )}
+              <div className="mt-4 grid grid-cols-3 gap-3 max-sm:grid-cols-1">
+                <button type="button" className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-black text-slate-100" disabled={updateStatus.isFetching} onClick={() => queryClient.invalidateQueries({ queryKey: ["update-status"] })}>检查更新</button>
+                <button type="button" className="rounded-xl bg-ops-orange px-4 py-3 text-sm font-black text-[#1b0d03]" disabled={!updateView?.canApply || updateView?.inProgress || applyUpdate.isPending} onClick={() => applyUpdate.mutate()}>一键升级</button>
+                <button type="button" className="rounded-xl border border-orange-400/35 bg-orange-400/10 px-4 py-3 text-sm font-black text-ops-gold" disabled={!status?.health?.restartRequired || restartService.isPending} onClick={() => restartService.mutate()}>安全重启</button>
+              </div>
+            </div>
           </div>
         </Card>
 

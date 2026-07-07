@@ -413,6 +413,18 @@ class SettingsApiHttpTest(SettingsHttpBase):
         self.assertEqual(json.loads(self.config_path.read_text())["vote"]["activity"], "在线活动")
 
     async def test_studio_routes_serve_react_entrypoints(self):
+        root = await self.client.get("/")
+        self.assertEqual(root.status, 200)
+        self.assertIn("React Studio", await root.text())
+
+        legacy = await self.client.get("/legacy")
+        self.assertEqual(legacy.status, 200)
+        self.assertIn("直播运营工作台", await legacy.text())
+
+        admin_root = await self.client.get("/admin")
+        self.assertEqual(admin_root.status, 200)
+        self.assertIn("React Studio", await admin_root.text())
+
         admin = await self.client.get("/studio")
         self.assertEqual(admin.status, 200)
         self.assertIn("React Studio", await admin.text())
@@ -420,6 +432,10 @@ class SettingsApiHttpTest(SettingsHttpBase):
         public = await self.client.get("/studio/public")
         self.assertEqual(public.status, 200)
         self.assertIn("Public Results", await public.text())
+
+        public_data = await self.client.get("/studio/data/results.json")
+        self.assertEqual(public_data.status, 200)
+        self.assertIn("sessions", await public_data.text())
 
     async def test_round_end_api_stops_only_active_round(self):
         meta = await self.service.store.create_round(

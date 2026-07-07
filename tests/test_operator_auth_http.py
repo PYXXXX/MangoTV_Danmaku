@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 try:
     from aiohttp.test_utils import AioHTTPTestCase
@@ -32,6 +34,23 @@ class FakeFeishu:
 
 class FakeService:
     def __init__(self, auth_enabled=True):
+        self._temp = tempfile.TemporaryDirectory()
+        self.repo_root = Path(self._temp.name)
+        frontend_dist = self.repo_root / "frontend" / "dist"
+        frontend_assets = frontend_dist / "assets"
+        frontend_assets.mkdir(parents=True)
+        (frontend_dist / "admin.html").write_text(
+            '<!doctype html><html><head><title>直播运营工作台 · Studio</title>'
+            '<script type="module" src="/studio/assets/admin-test.js"></script></head>'
+            "<body><div id=\"root\">直播运营工作台 · Studio</div></body></html>",
+            encoding="utf-8",
+        )
+        (frontend_dist / "public.html").write_text(
+            '<!doctype html><html><head><title>公开结果页 · Studio</title></head>'
+            "<body><div id=\"root\">公开结果页 · Studio</div></body></html>",
+            encoding="utf-8",
+        )
+        (frontend_assets / "admin-test.js").write_text("export {};", encoding="utf-8")
         self.config = {
             "feishu": {"enabled": False},
             "operator_auth": {
@@ -125,12 +144,21 @@ class OperatorAuthHttpTest(AuthHttpTestBase):
         authenticated = await self.client.get("/", headers={"Cookie": raw_cookie})
         self.assertEqual(authenticated.status, 200)
         page = await authenticated.text()
-        self.assertIn("直播运营工作台", page)
-        self.assertIn("退出登录", page)
-        self.assertIn('/webui/styles.css?v=', page)
-        self.assertIn('/webui/app.js?v=', page)
-        self.assertIn('/webui/settings.js?v=', page)
-        self.assertNotIn("{{STATIC_VERSION}}", page)
+        self.assertIn("直播运营工作台 · Studio", page)
+        self.assertIn('/studio/assets/admin-test.js', page)
+        self.assertNotIn('/webui/app.js?v=', page)
+
+        admin = await self.client.get("/admin", headers={"Cookie": raw_cookie})
+        self.assertEqual(admin.status, 200)
+        self.assertIn("直播运营工作台 · Studio", await admin.text())
+
+        public = await self.client.get("/studio/public")
+        self.assertEqual(public.status, 200)
+        self.assertIn("公开结果页 · Studio", await public.text())
+
+        public_data = await self.client.get("/studio/data/results.json")
+        self.assertEqual(public_data.status, 200)
+        self.assertIn("sessions", await public_data.text())
 
         system_status = await self.client.get("/api/system/status", headers={"Cookie": raw_cookie})
         self.assertEqual(system_status.status, 200)
@@ -159,10 +187,8 @@ class DisabledOperatorAuthHttpTest(AuthHttpTestBase):
         self.assertEqual(home.status, 200)
         page = await home.text()
         self.assertNotIn("退出登录", page)
-        self.assertIn('/webui/styles.css?v=', page)
-        self.assertIn('/webui/app.js?v=', page)
-        self.assertIn('/webui/settings.js?v=', page)
-        self.assertNotIn("{{STATIC_VERSION}}", page)
+        self.assertIn("直播运营工作台 · Studio", page)
+        self.assertIn('/studio/assets/admin-test.js', page)
         api = await self.client.get("/api/results.json")
         self.assertEqual(api.status, 200)
 

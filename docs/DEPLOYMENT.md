@@ -858,7 +858,9 @@ sudo systemctl restart mgtv-danmaku
 
 | 方法 | 路径 | 未登录可用 | 用途 |
 |---|---|---:|---|
-| GET | `/`、`/admin` | 否 | 运营 WebUI |
+| GET | `/`、`/admin`、`/studio` | 否 | 运营 Studio（新版 React 工作台） |
+| GET | `/legacy`、`/webui/index.html` | 否 | 旧版 WebUI 备用入口 |
+| GET | `/studio/public`、`/studio/data/results.json` | 是 | 服务器本地公开页预览与公开数据 |
 | GET | `/login` | 是 | 登录页 |
 | POST | `/auth/login` | 是 | 提交密码 |
 | POST | `/auth/logout` | 否 | 退出登录 |

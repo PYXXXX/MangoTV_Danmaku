@@ -3228,9 +3228,19 @@ def create_app(service: VoteService) -> web.Application:
         auth = service.operator_auth
         if not auth.enabled:
             return await handler(request)
-        public_paths = {"/login", "/auth/login", "/healthz", "/feishu/events", "/webui/styles.css"}
+        public_paths = {
+            "/login",
+            "/auth/login",
+            "/healthz",
+            "/feishu/events",
+            "/webui/styles.css",
+            "/studio/public",
+            "/studio/public/",
+            "/studio/data/results.json",
+        }
         public_export = request.path.startswith("/exports/rounds/") and request.path.endswith("/result.png")
-        if request.path in public_paths or public_export or auth.request_is_authenticated(request):
+        public_studio_asset = request.path.startswith("/studio/assets/")
+        if request.path in public_paths or public_export or public_studio_asset or auth.request_is_authenticated(request):
             return await handler(request)
         if request.path.startswith("/api/"):
             return web.json_response({"error": "登录已过期，请重新登录"}, status=401, headers={"Cache-Control": "no-store"})
@@ -3285,7 +3295,7 @@ def create_app(service: VoteService) -> web.Application:
     async def studio_index(_: web.Request) -> web.StreamResponse:
         admin_html = frontend_dist / "admin.html"
         if not admin_html.exists():
-            raise web.HTTPNotFound(text="frontend/dist/admin.html 不存在，请先在 frontend/ 运行 npm run build。")
+            return await webui_index(_)
         return web.FileResponse(admin_html, headers={"Cache-Control": "no-store"})
 
     async def studio_public(_: web.Request) -> web.StreamResponse:
@@ -3948,15 +3958,18 @@ def create_app(service: VoteService) -> web.Application:
         await service.handle_feishu_text(text, open_id, chat_id, receive_id, receive_id_type)
         return web.json_response({"ok": True})
 
-    app.router.add_get("/", webui_index)
-    app.router.add_get("/admin", webui_index)
+    app.router.add_get("/", studio_index)
+    app.router.add_get("/admin", studio_index)
     app.router.add_get("/studio", studio_index)
     app.router.add_get("/studio/", studio_index)
     app.router.add_get("/studio/public", studio_public)
     app.router.add_get("/studio/public/", studio_public)
+    app.router.add_get("/studio/data/results.json", results)
     app.router.add_get("/login", login_page)
     app.router.add_post("/auth/login", login_submit)
     app.router.add_post("/auth/logout", logout)
+    app.router.add_get("/legacy", webui_index)
+    app.router.add_get("/legacy/", webui_index)
     app.router.add_get("/webui/index.html", webui_index)
     app.router.add_static("/webui", webui_dir)
     app.router.add_get("/healthz", health)

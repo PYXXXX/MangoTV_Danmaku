@@ -140,6 +140,75 @@ export interface MonitorView {
   };
 }
 
+export interface MgtvAuthStatus {
+  status?: "idle" | "pending" | "success" | "error" | string;
+  message?: string;
+  error?: string;
+  screenshot?: string;
+  expiresAt?: number;
+  cookieConfigured?: boolean;
+  loginProtocol?: string;
+  loginProtocolAvailable?: boolean;
+  user?: {
+    uid?: string;
+    nickname?: string;
+    isVip?: boolean;
+    vipType?: string;
+  };
+}
+
+export interface FeishuBindingStatus {
+  status?: "idle" | "pending" | "bound" | "success" | "error" | string;
+  message?: string;
+  error?: string;
+  userCode?: string;
+  verificationUrl?: string;
+  expiresAt?: number;
+  boundAt?: string;
+  openId?: string;
+  tenantBrand?: string;
+  warning?: string;
+  enabled?: boolean;
+  connectionMode?: string;
+  appId?: string;
+  appSecretConfigured?: boolean;
+  allowedOpenIds?: string[];
+  allowedChatIds?: string[];
+  workerAlive?: boolean;
+}
+
+export interface UpdateProgress {
+  status?: "idle" | "running" | "complete" | "failed" | string;
+  stage?: string;
+  percent?: number;
+  detail?: string;
+  speed?: string;
+  updatedAt?: string;
+  logs?: string[];
+  restartScheduled?: boolean;
+}
+
+export interface UpdateStatus {
+  ok?: boolean;
+  repoRoot?: string;
+  currentSha?: string;
+  currentShort?: string;
+  branch?: string;
+  remote?: string;
+  remoteBranch?: string;
+  remoteUrl?: string;
+  remoteSha?: string;
+  remoteShort?: string;
+  dirty?: boolean;
+  updateAvailable?: boolean;
+  inProgress?: boolean;
+  canApply?: boolean;
+  blockers?: string[];
+  restartWillApplyConfig?: boolean;
+  lastUpdate?: unknown;
+  progress?: UpdateProgress;
+}
+
 export interface SystemStatus {
   ok?: boolean;
   generatedAt?: string;
