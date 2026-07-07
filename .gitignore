@@ -7,3 +7,5 @@ server/data/
 server/config.json
 server/config.json.bak
 server/config.json.bak-*
+frontend/node_modules/
+frontend/dist/

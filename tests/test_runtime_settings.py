@@ -371,6 +371,17 @@ class SettingsApiHttpTest(SettingsHttpBase):
         self.config_path = root / "config.json"
         self.config_path.write_text(json.dumps(self.config), encoding="utf-8")
         self.service = VoteService(self.config, config_path=self.config_path)
+        self.service.repo_root = root
+        frontend_dist = root / "frontend" / "dist"
+        frontend_dist.mkdir(parents=True)
+        (frontend_dist / "admin.html").write_text(
+            "<!doctype html><html><head><title>Studio</title></head><body>React Studio</body></html>",
+            encoding="utf-8",
+        )
+        (frontend_dist / "public.html").write_text(
+            "<!doctype html><html><head><title>Public</title></head><body>Public Results</body></html>",
+            encoding="utf-8",
+        )
         return create_app(self.service)
 
     async def asyncTearDown(self):
@@ -400,6 +411,35 @@ class SettingsApiHttpTest(SettingsHttpBase):
         self.assertTrue(result["ok"])
         self.assertEqual(self.service.default_candidates[0].name, "丙")
         self.assertEqual(json.loads(self.config_path.read_text())["vote"]["activity"], "在线活动")
+
+    async def test_studio_routes_serve_react_entrypoints(self):
+        admin = await self.client.get("/studio")
+        self.assertEqual(admin.status, 200)
+        self.assertIn("React Studio", await admin.text())
+
+        public = await self.client.get("/studio/public")
+        self.assertEqual(public.status, 200)
+        self.assertIn("Public Results", await public.text())
+
+    async def test_round_end_api_stops_only_active_round(self):
+        meta = await self.service.store.create_round(
+            "旧活动",
+            "第一轮",
+            "https://www.mgtv.com/z/1/2.html",
+            self.service.default_candidates,
+            self.service.default_policy,
+        )
+
+        missing = await self.client.post("/api/rounds/missing/end", json={"publish": False})
+        self.assertEqual(missing.status, 404)
+
+        response = await self.client.post(f"/api/rounds/{meta.id}/end", json={"publish": False})
+        self.assertEqual(response.status, 200)
+        result = await response.json()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["roundId"], meta.id)
+        self.assertFalse(result["published"])
+        self.assertIsNone(self.service.store.active_round_id)
 
 
 if __name__ == "__main__":

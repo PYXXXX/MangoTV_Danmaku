@@ -211,6 +211,12 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                     service.round_result_png_url(meta.id, "rough"),
                     f"https://danmaku.example.com/exports/rounds/{meta.id}/result.png?result=rough",
                 )
+                session = service.public_state()["sessions"][0]
+                self.assertEqual(
+                    session["resultImageUrls"]["rough"],
+                    f"https://danmaku.example.com/exports/rounds/{meta.id}/result.png?result=rough",
+                )
+                self.assertEqual(session["resultImageUrl"], session["resultImageUrls"]["rough"])
             finally:
                 service.collector.fingerprints.close()
 

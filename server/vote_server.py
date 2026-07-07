@@ -1590,6 +1590,13 @@ class VoteService:
         recordings = {item.get("roundId"): item for item in self.recorder.public_records()}
         for session in state.get("sessions") or []:
             session["recording"] = recordings.get(session.get("id"))
+            rough_image_url = self.round_result_png_url(str(session.get("id") or ""), "rough")
+            precise_image_url = self.round_result_png_url(str(session.get("id") or ""), "precise")
+            session["resultImageUrls"] = {
+                "rough": rough_image_url,
+                "precise": precise_image_url,
+            }
+            session["resultImageUrl"] = precise_image_url if session.get("defaultResultType") == "precise" else rough_image_url
         return state
 
     def _process_rss_bytes(self) -> int:
@@ -2898,6 +2905,9 @@ def static_asset_version(repo_root: Path) -> str:
 
 def create_app(service: VoteService) -> web.Application:
     webui_dir = Path(__file__).with_name("webui")
+    repo_root = Path(getattr(service, "repo_root", Path(__file__).resolve().parents[1]))
+    frontend_dist = repo_root / "frontend" / "dist"
+    frontend_assets = frontend_dist / "assets"
     precise_doc = Path(__file__).resolve().parents[1] / "docs" / "PRECISE_RESULT_AGENT.md"
     index_template = (webui_dir / "index.html").read_text(encoding="utf-8")
     login_template = (webui_dir / "login.html").read_text(encoding="utf-8")
@@ -2989,6 +2999,18 @@ def create_app(service: VoteService) -> web.Application:
             .replace("<!-- OPERATOR_AUTH_CONTROL -->", auth_control)
         )
         return web.Response(text=body, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+    async def studio_index(_: web.Request) -> web.StreamResponse:
+        admin_html = frontend_dist / "admin.html"
+        if not admin_html.exists():
+            raise web.HTTPNotFound(text="frontend/dist/admin.html 不存在，请先在 frontend/ 运行 npm run build。")
+        return web.FileResponse(admin_html, headers={"Cache-Control": "no-store"})
+
+    async def studio_public(_: web.Request) -> web.StreamResponse:
+        public_html = frontend_dist / "public.html"
+        if not public_html.exists():
+            raise web.HTTPNotFound(text="frontend/dist/public.html 不存在，请先在 frontend/ 运行 npm run build。")
+        return web.FileResponse(public_html, headers={"Cache-Control": "no-store"})
 
     async def login_page(request: web.Request) -> web.StreamResponse:
         auth = service.operator_auth
@@ -3361,6 +3383,29 @@ def create_app(service: VoteService) -> web.Application:
             dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
         )
 
+    async def end_round_api(request: web.Request) -> web.Response:
+        round_id = request.match_info["round_id"]
+        data = await request.json() if request.can_read_body else {}
+        publish = bool(data.get("publish", True)) if isinstance(data, dict) else True
+        if service.store.active_round_id != round_id:
+            found = service.store.find_round(round_id)
+            if not found:
+                return web.json_response({"error": f"找不到场次：{round_id}"}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+            return web.json_response({"error": "只能结束当前正在采集的场次"}, status=409, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        meta = await service.end_round(publish=publish)
+        if not meta:
+            return web.json_response({"error": "当前没有进行中的场次"}, status=409, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response(
+            {
+                "ok": True,
+                "roundId": meta.id,
+                "roundName": meta.name,
+                "activity": meta.activity,
+                "published": publish,
+            },
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+        )
+
     async def precise_upload(request: web.Request) -> web.Response:
         round_id = request.match_info["round_id"]
         try:
@@ -3485,6 +3530,10 @@ def create_app(service: VoteService) -> web.Application:
 
     app.router.add_get("/", webui_index)
     app.router.add_get("/admin", webui_index)
+    app.router.add_get("/studio", studio_index)
+    app.router.add_get("/studio/", studio_index)
+    app.router.add_get("/studio/public", studio_public)
+    app.router.add_get("/studio/public/", studio_public)
     app.router.add_get("/login", login_page)
     app.router.add_post("/auth/login", login_submit)
     app.router.add_post("/auth/logout", logout)
@@ -3508,6 +3557,7 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_post("/api/update/apply", apply_update)
     app.router.add_get("/api/recordings", recordings)
     app.router.add_post("/api/rounds/start", start_round_api)
+    app.router.add_post("/api/rounds/{round_id}/end", end_round_api)
     app.router.add_get("/api/rounds/{round_id}.jsonl", round_export)
     app.router.add_get("/api/rounds/{round_id}/raw.jsonl", round_raw_export)
     app.router.add_get("/api/rounds/{round_id}/result.png", round_result_png)
@@ -3526,6 +3576,8 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_post("/api/command", command)
     app.router.add_post("/api/feishu/push-card", push_feishu_card)
     app.router.add_post("/feishu/events", feishu_events)
+    if frontend_assets.exists():
+        app.router.add_static("/studio/assets", frontend_assets)
     return app
 
 

@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --color-ops-bg: #070a0d;
+  --color-ops-panel: #101821;
+  --color-ops-line: rgba(151, 164, 184, .20);
+  --color-ops-muted: #a2a9b3;
+  --color-ops-subtle: #68717e;
+  --color-ops-orange: #ff861f;
+  --color-ops-gold: #ffc077;
+  --color-ops-green: #58d985;
+  --color-ops-blue: #4aa3ff;
+  --color-ops-red: #ff6f61;
+}
+
+html {
+  color-scheme: dark;
+  background: #070a0d;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  background:
+    radial-gradient(circle at 86% 2%, rgba(255, 134, 31, .20), transparent 28rem),
+    radial-gradient(circle at 18% -8%, rgba(74, 163, 255, .13), transparent 24rem),
+    linear-gradient(145deg, #06080b 0%, #0a1117 52%, #071018 100%);
+  color: #fff7ea;
+  font-family: var(--font-sans);
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: .32;
+  background:
+    linear-gradient(rgba(255,255,255,.026) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.022) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: linear-gradient(to bottom, black, transparent 82%);
+}
+
+#root {
+  min-height: 100dvh;
+}
+
+.glass {
+  border: 1px solid rgba(151, 164, 184, .20);
+  background:
+    linear-gradient(145deg, rgba(255,255,255,.075), rgba(255,255,255,.028)),
+    rgba(16, 24, 33, .78);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .34);
+  backdrop-filter: blur(18px);
+}
+
+.orange-glow {
+  box-shadow: 0 18px 48px rgba(255, 134, 31, .24), inset 0 1px 0 rgba(255,255,255,.32);
+}
+
+.metric-ring {
+  background:
+    radial-gradient(circle at center, #101821 0 48%, transparent 49%),
+    conic-gradient(from -140deg, #58d985 0deg, #58d985 var(--value), rgba(151,164,184,.18) var(--value), rgba(151,164,184,.18) 270deg, transparent 270deg);
+}
