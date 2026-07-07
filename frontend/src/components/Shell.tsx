@@ -7,7 +7,6 @@ import {
   Question,
   Rows,
   SignOut,
-  VideoCamera
 } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
 import type { AdminPage } from "../state/ui";
@@ -30,13 +29,19 @@ interface ShellProps {
 }
 
 export function Shell({ activePage, title, subtitle, badges, children, onNavigate }: ShellProps) {
+  const markSrc = "/studio/assets/live-ops-mark.png";
   return (
     <div className="relative grid min-h-dvh grid-cols-[300px_minmax(0,1fr)] text-[#fff7ea] max-xl:grid-cols-1">
-      <aside className="glass sticky top-0 z-20 flex h-dvh flex-col gap-8 rounded-none border-y-0 border-l-0 px-6 py-5 max-xl:static max-xl:h-auto max-xl:flex-row max-xl:items-center max-xl:overflow-x-auto">
+      <aside className="glass sticky top-0 z-20 flex h-dvh flex-col gap-8 rounded-none border-y-0 border-l-0 px-6 py-5 max-xl:static max-xl:h-auto max-xl:flex-row max-xl:items-center max-xl:overflow-x-auto max-sm:gap-4 max-sm:px-4 max-sm:py-3">
         <div className="flex items-center gap-4">
-          <div className="orange-glow grid size-14 place-items-center rounded-2xl bg-gradient-to-br from-[#ff9d35] to-[#ff7417] text-[#160b04]">
-            <VideoCamera size={30} weight="fill" />
-          </div>
+          <img
+            src={markSrc}
+            alt="直播运营工作台"
+            className="orange-glow size-14 rounded-2xl object-cover"
+            width={56}
+            height={56}
+            decoding="async"
+          />
           <div className="min-w-40">
             <strong className="block text-xl font-black tracking-[-0.05em]">直播运营工作台</strong>
             <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-ops-muted">MangoTV Live Ops Studio</span>
@@ -66,7 +71,7 @@ export function Shell({ activePage, title, subtitle, badges, children, onNavigat
           ))}
         </nav>
 
-        <div className="mt-auto grid gap-3 max-xl:ml-auto max-xl:mt-0">
+        <div className="mt-auto grid gap-3 max-xl:ml-auto max-xl:mt-0 max-sm:hidden">
           <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4 text-sm font-bold text-emerald-200">
             <span className="mr-2 inline-block size-2 rounded-full bg-emerald-400 shadow-[0_0_0_6px_rgba(88,217,133,.12)]" />
             服务运行正常
@@ -81,12 +86,12 @@ export function Shell({ activePage, title, subtitle, badges, children, onNavigat
       </aside>
 
       <section className="min-w-0">
-        <header className="sticky top-0 z-10 flex min-h-[70px] items-center justify-between gap-6 border-b border-white/10 bg-[#070a0d]/80 px-7 backdrop-blur-2xl max-lg:static max-lg:flex-col max-lg:items-start max-lg:py-4">
+        <header className="sticky top-0 z-10 flex min-h-[70px] items-center justify-between gap-6 border-b border-white/10 bg-[#070a0d]/80 px-7 backdrop-blur-2xl max-lg:static max-lg:flex-col max-lg:items-start max-lg:py-4 max-sm:min-h-0 max-sm:px-4 max-sm:py-3">
           <div className="flex min-w-0 items-baseline gap-4">
-            <h1 className="whitespace-nowrap text-2xl font-black tracking-[-0.055em]">{title}</h1>
-            <p className="truncate text-sm text-ops-muted">{subtitle}</p>
+            <h1 className="whitespace-nowrap text-2xl font-black tracking-[-0.055em] max-sm:text-xl">{title}</h1>
+            <p className="truncate text-sm text-ops-muted max-sm:hidden">{subtitle}</p>
           </div>
-          <div className="flex flex-wrap items-center justify-end gap-3">
+          <div className="flex flex-wrap items-center justify-end gap-3 max-sm:hidden">
             {badges}
             <button className="grid size-10 place-items-center rounded-xl border border-white/10 bg-white/[0.04]" type="button" aria-label="通知">
               <Bell size={20} />

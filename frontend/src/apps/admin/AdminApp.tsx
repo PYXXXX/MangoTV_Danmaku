@@ -1,11 +1,21 @@
 import {
+  ArrowSquareOut,
+  BellRinging,
+  Broadcast,
+  ChatCircleDots,
+  CheckCircle,
   Database,
+  Gauge,
   Lightning,
+  Play,
   Pulse,
-  ShieldCheck
+  ShieldCheck,
+  Stop,
+  VideoCamera,
+  WarningCircle
 } from "@phosphor-icons/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { apiDelete, apiGet, apiPatch, apiPost, apiUpload, getBootstrap, getSystemMetrics, getSystemLogs, getSystemStatus } from "../../api/client";
 import type { ActivityItem, FeishuBindingStatus, MgtvAuthStatus, RecordingTimeline, RoundSession, SystemLogEvent, SystemLogSummary, SystemLogsResponse, SystemStatus, UpdateStatus } from "../../api/types";
 import { Card, PageHeading, PrimaryButton, Shell, StatusBadge } from "../../components/Shell";
@@ -63,13 +73,25 @@ export function AdminApp() {
   );
 }
 
+type ActivityMonitorForm = {
+  name: string;
+  url: string;
+  monitorEnabled: boolean;
+  autoDetectSource: boolean;
+  autoRecordVideo: boolean;
+  autoRecordDanmaku: boolean;
+  feishuNotify: boolean;
+  pollSeconds: number;
+  preferredQuality: string;
+};
+
 function ActivityMonitorPage({ activity, status }: { activity?: ActivityItem | null; status?: SystemStatus }) {
   const queryClient = useQueryClient();
   const monitor = status?.monitor;
   const config = monitor?.config || {};
   const state = monitor?.state || {};
   const activityId = activity?.id || "default";
-  const [form, setForm] = useState({
+  const serverForm = useMemo<ActivityMonitorForm>(() => ({
     name: activity?.name || config.activity || "歌手 2026",
     url: activity?.url || config.url || "",
     monitorEnabled: Boolean(activity?.monitorEnabled || config.enabled),
@@ -79,25 +101,27 @@ function ActivityMonitorPage({ activity, status }: { activity?: ActivityItem | n
     feishuNotify: config.feishuNotify ?? true,
     pollSeconds: config.pollSeconds || 45,
     preferredQuality: config.preferredQuality || "auto"
-  });
+  }), [activity?.name, activity?.monitorEnabled, activity?.url, config.activity, config.autoDetectSource, config.autoRecordDanmaku, config.autoRecordVideo, config.enabled, config.feishuNotify, config.pollSeconds, config.preferredQuality, config.url]);
+  const [form, setForm] = useState<ActivityMonitorForm>(serverForm);
+  const [isDirty, setIsDirty] = useState(false);
 
   useEffect(() => {
-    setForm({
-      name: activity?.name || config.activity || "歌手 2026",
-      url: activity?.url || config.url || "",
-      monitorEnabled: Boolean(activity?.monitorEnabled || config.enabled),
-      autoDetectSource: config.autoDetectSource ?? true,
-      autoRecordVideo: config.autoRecordVideo ?? false,
-      autoRecordDanmaku: config.autoRecordDanmaku ?? true,
-      feishuNotify: config.feishuNotify ?? true,
-      pollSeconds: config.pollSeconds || 45,
-      preferredQuality: config.preferredQuality || "auto"
-    });
-  }, [activity?.id, activity?.name, activity?.url, config.activity, config.url, config.enabled, config.autoDetectSource, config.autoRecordVideo, config.autoRecordDanmaku, config.feishuNotify, config.pollSeconds, config.preferredQuality]);
+    if (!isDirty) {
+      setForm(serverForm);
+    }
+  }, [isDirty, serverForm]);
+
+  const updateForm = (patch: Partial<ActivityMonitorForm>) => {
+    setIsDirty(true);
+    setForm((current) => ({ ...current, ...patch }));
+  };
 
   const save = useMutation({
-    mutationFn: (override?: Partial<typeof form>) => apiPost("/api/activities", { ...form, ...override }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
+    mutationFn: (next: ActivityMonitorForm) => apiPost("/api/activities", next),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] });
+      setIsDirty(false);
+    }
   });
   const detect = useMutation({
     mutationFn: () => apiPost(`/api/activities/${encodeURIComponent(activityId)}/source/detect`, { url: form.url, quality: form.preferredQuality }),
@@ -105,82 +129,318 @@ function ActivityMonitorPage({ activity, status }: { activity?: ActivityItem | n
   });
   const stop = useMutation({
     mutationFn: () => apiPost(`/api/activities/${encodeURIComponent(activityId)}/monitor/stop`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
+    onSuccess: async () => {
+      updateForm({ monitorEnabled: false });
+      await queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] });
+      setIsDirty(false);
+    }
   });
+  const saveCurrent = (override: Partial<ActivityMonitorForm> = {}) => {
+    const next = { ...form, ...override };
+    setIsDirty(true);
+    setForm(next);
+    save.mutate(next);
+  };
   const busy = save.isPending || detect.isPending || stop.isPending;
   const error = save.error || detect.error || stop.error;
+  const parsedActivityId = parseMgtvActivityId(form.url);
+  const isRecognizedActivity = Boolean(parsedActivityId);
+  const statusText = form.monitorEnabled ? "监控中" : "未启用";
+  const statusTone = form.monitorEnabled ? "green" : isDirty ? "orange" : "neutral";
+  const currentQuality = state.quality || (form.preferredQuality === "auto" ? "自动最高可用" : form.preferredQuality);
+  const recentEvents = [
+    {
+      time: formatShortTime(state.lastCheckAt),
+      text: state.lastCheckAt ? "完成一次直播状态检测" : "等待第一次检测",
+      tone: state.lastError ? "red" : "blue"
+    },
+    {
+      time: parsedActivityId || "-",
+      text: parsedActivityId ? `已识别活动 ID：${parsedActivityId}` : "活动链接待识别",
+      tone: parsedActivityId ? "green" : "neutral"
+    },
+    {
+      time: form.feishuNotify ? "ON" : "OFF",
+      text: form.feishuNotify ? "飞书通知会随状态变化推送" : "飞书通知已关闭",
+      tone: form.feishuNotify ? "green" : "neutral"
+    }
+  ];
   return (
-    <section>
-      <PageHeading
-        kicker="Activity Monitor"
-        title="活动监控"
-        description="配置活动信息与自动化策略，系统将监控开播、解析直播源，并按策略启动录制、弹幕采集与飞书通知。"
-        action={<PrimaryButton onClick={() => detect.mutate()}>立即检测直播源</PrimaryButton>}
-      />
-      <div className="grid grid-cols-[minmax(360px,1fr)_minmax(420px,1fr)_minmax(330px,.85fr)] gap-4 max-2xl:grid-cols-1">
-        <Card title="活动信息" action={<StatusBadge tone={config.enabled ? "green" : "orange"}>{config.enabled ? "监控中" : "未启用"}</StatusBadge>} className="min-h-[360px]">
-          <div className="grid gap-4">
-            <Field label="活动名称">
-              <input className="ops-input" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
-            </Field>
-            <Field label="活动链接（官方活动页或直播页）">
-              <input className="ops-input" value={form.url} onChange={(event) => setForm({ ...form, url: event.target.value })} placeholder="https://www.mgtv.com/z/1001668.html" />
-            </Field>
-            <div className="grid grid-cols-2 gap-3">
-              <button type="button" className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-black text-slate-100" disabled={busy} onClick={() => save.mutate({})}>
-                保存活动
-              </button>
-              <button type="button" className="rounded-xl bg-ops-orange px-4 py-3 text-sm font-black text-[#1b0d03]" disabled={busy} onClick={() => save.mutate({ monitorEnabled: true })}>
-                保存并监控
-              </button>
+    <section className="activity-monitor-page">
+      <div className="mb-6 flex items-start justify-between gap-6 max-lg:flex-col">
+        <div>
+          <p className="mb-3 font-mono text-xs font-black uppercase tracking-[0.18em] text-ops-orange">Activity Monitor</p>
+          <h2 className="text-4xl font-black tracking-[-0.06em] max-sm:text-3xl">活动监控</h2>
+          <p className="mt-3 max-w-3xl text-sm leading-7 text-ops-muted">
+            配置活动信息与自动化策略，系统会监控开播、解析直播源，并按策略启动录制、弹幕采集和飞书通知。
+          </p>
+        </div>
+        <button
+          type="button"
+          className="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl border border-blue-300/25 bg-blue-400/10 px-5 text-sm font-black text-blue-100 transition hover:border-blue-300/45 hover:bg-blue-400/15 disabled:opacity-60"
+          disabled={busy || !form.url.trim()}
+          onClick={() => detect.mutate()}
+        >
+          <Broadcast size={18} weight="bold" />
+          立即检测一次
+        </button>
+      </div>
+
+      <div className="grid items-start grid-cols-[minmax(390px,1.08fr)_minmax(390px,1fr)_minmax(340px,.92fr)] gap-5 max-2xl:grid-cols-[minmax(0,1fr)_minmax(340px,.9fr)] max-xl:grid-cols-1">
+        <div className="grid content-start gap-5">
+          <Card
+            title="活动信息"
+            action={<StatusBadge tone={statusTone}>{isDirty ? "有未保存修改" : statusText}</StatusBadge>}
+            className="min-h-[330px]"
+          >
+            <div className="grid gap-5">
+              <Field label="活动名称">
+                <input className="ops-input min-h-[3.25rem]" value={form.name} onChange={(event) => updateForm({ name: event.target.value })} />
+              </Field>
+              <Field label="活动链接（官方活动页或直播页）">
+                <div className="flex gap-2 max-sm:flex-col">
+                  <input
+                    className="ops-input min-h-[3.25rem]"
+                    value={form.url}
+                    onChange={(event) => updateForm({ url: event.target.value })}
+                    placeholder="https://www.mgtv.com/z/1001668.html"
+                  />
+                  <a
+                    className="grid size-[3.25rem] shrink-0 place-items-center rounded-2xl border border-white/10 bg-white/[0.04] text-slate-200 transition hover:border-orange-300/35 hover:text-ops-gold max-sm:size-auto max-sm:min-h-12"
+                    href={form.url || "#"}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label="打开活动链接"
+                  >
+                    <ArrowSquareOut size={20} />
+                  </a>
+                </div>
+              </Field>
+              <div className={`rounded-2xl border px-4 py-3 text-sm ${isRecognizedActivity ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-100" : "border-white/10 bg-black/20 text-ops-muted"}`}>
+                <span className="inline-flex items-center gap-2 font-bold">
+                  {isRecognizedActivity ? <CheckCircle size={18} weight="fill" /> : <WarningCircle size={18} />}
+                  {isRecognizedActivity ? "已识别为官方活动页" : "未识别到标准活动页"}
+                </span>
+                <span className="mt-1 block text-xs opacity-80">
+                  {isRecognizedActivity ? `活动 ID：${parsedActivityId}。直播开始后会自动解析机位与直播源。` : "请填写 mgtv.com/z/{活动ID}.html，或使用直播开始后的跳转链接。"}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+                <InfoPill label="活动 ID" value={parsedActivityId || "待识别"} />
+                <InfoPill label="状态" value={form.monitorEnabled ? "监控策略已启用" : "未开始监控"} />
+              </div>
+              <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+                <button type="button" className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-black text-slate-100 transition hover:border-white/20 hover:bg-white/[0.07]" disabled={busy} onClick={() => saveCurrent()}>
+                  保存活动
+                </button>
+                <button type="button" className="orange-glow rounded-2xl bg-ops-orange px-4 py-3 text-sm font-black text-[#1b0d03] transition hover:brightness-110 disabled:opacity-60" disabled={busy} onClick={() => saveCurrent({ monitorEnabled: true })}>
+                  保存并监控
+                </button>
+              </div>
+              {error && <p className="rounded-2xl border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm text-red-100">{String((error as Error).message || error)}</p>}
             </div>
-            <p className="text-sm leading-7 text-ops-muted">{state.message || "保存活动链接后，监控器会按策略轮询直播状态。"}</p>
-            {error && <p className="rounded-xl border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm text-red-100">{String((error as Error).message || error)}</p>}
+          </Card>
+
+          <Card title="直播源检测" action={<StatusBadge tone={state.quality ? "green" : "neutral"}>{state.quality ? "已检测" : "待检测"}</StatusBadge>}>
+            <div className="grid gap-4 text-sm">
+              <p className="leading-7 text-ops-muted">
+                系统会在开播后自动刷新活动页并解析可录制源。手动检测用于开播前复核配置。
+              </p>
+              <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+                <InfoPill label="检测结果" value={state.lastError ? "检测失败" : state.quality ? "可录制" : "等待开播"} tone={state.lastError ? "red" : state.quality ? "green" : "neutral"} />
+                <InfoPill label="可用清晰度" value={currentQuality || "-"} tone={state.quality ? "green" : "neutral"} />
+              </div>
+              <button
+                type="button"
+                className="min-h-12 rounded-2xl border border-white/10 bg-white/[0.04] px-4 text-sm font-black text-slate-100 transition hover:border-blue-300/35 hover:bg-blue-400/10 disabled:opacity-60"
+                disabled={busy || !form.url.trim()}
+                onClick={() => detect.mutate()}
+              >
+                检测直播源
+              </button>
+              <p className="text-xs leading-6 text-ops-muted">建议在开播前或登录芒果 TV 后检测，以确认录制清晰度和权限。</p>
+            </div>
+          </Card>
+        </div>
+
+        <Card title="监控策略" action={<span className="text-xs font-bold text-ops-muted">说明</span>} className="min-h-[520px]">
+          <div className="grid gap-2">
+            <StrategyToggle
+              icon={<Broadcast size={20} />}
+              label="监控直播状态"
+              description="监控是否开播，开播后按下方策略执行。"
+              checked={form.monitorEnabled}
+              onChange={(monitorEnabled) => updateForm({ monitorEnabled })}
+            />
+            <StrategyToggle
+              icon={<Gauge size={20} />}
+              label="开播后自动检测直播源"
+              description="自动刷新活动页，解析机位和可录制播放源。"
+              checked={form.autoDetectSource}
+              onChange={(autoDetectSource) => updateForm({ autoDetectSource })}
+            />
+            <StrategyToggle
+              icon={<VideoCamera size={20} />}
+              label="检测成功后录制视频"
+              description="需要 ffmpeg 和可直录 m3u8，1080P/VIP 依赖登录态。"
+              checked={form.autoRecordVideo}
+              onChange={(autoRecordVideo) => updateForm({ autoRecordVideo })}
+            >
+              <div className="mt-3 grid grid-cols-[1fr_1fr] gap-3 max-sm:grid-cols-1">
+                <Field label="清晰度">
+                  <select className="ops-input" value={form.preferredQuality} onChange={(event) => updateForm({ preferredQuality: event.target.value })}>
+                    <option value="auto">自动最高可用</option>
+                    <option value="1080P">1080P</option>
+                    <option value="720P">720P</option>
+                    <option value="540P">540P</option>
+                  </select>
+                </Field>
+                <Field label="检测间隔（秒）">
+                  <input className="ops-input" type="number" min={10} max={3600} value={form.pollSeconds} onChange={(event) => updateForm({ pollSeconds: Number(event.target.value) })} />
+                </Field>
+              </div>
+            </StrategyToggle>
+            <StrategyToggle
+              icon={<ChatCircleDots size={20} />}
+              label="检测成功后录制弹幕"
+              description="保存完整原始弹幕，供实时分析和录制后切片复用。"
+              checked={form.autoRecordDanmaku}
+              onChange={(autoRecordDanmaku) => updateForm({ autoRecordDanmaku })}
+            />
+            <StrategyToggle
+              icon={<BellRinging size={20} />}
+              label="开播自动通知飞书"
+              description="开播、录制异常、发布结果等事件推送到飞书卡片。"
+              checked={form.feishuNotify}
+              onChange={(feishuNotify) => updateForm({ feishuNotify })}
+            />
           </div>
+          <div className="mt-6 grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+            <button type="button" className="orange-glow inline-flex min-h-[3.25rem] items-center justify-center gap-2 rounded-2xl bg-ops-orange px-5 text-sm font-black text-[#1b0d03] transition hover:brightness-110 disabled:opacity-60" disabled={busy} onClick={() => saveCurrent({ monitorEnabled: true })}>
+              <Play size={18} weight="fill" />
+              开始监控
+            </button>
+            <button type="button" className="inline-flex min-h-[3.25rem] items-center justify-center gap-2 rounded-2xl border border-red-400/35 bg-red-400/15 px-5 text-sm font-black text-red-100 transition hover:bg-red-400/20 disabled:opacity-60" disabled={busy} onClick={() => stop.mutate()}>
+              <Stop size={18} weight="fill" />
+              停止监控
+            </button>
+          </div>
+          {isDirty && <p className="mt-4 rounded-2xl border border-orange-400/25 bg-orange-400/10 px-4 py-3 text-xs leading-6 text-ops-gold">当前策略有未保存修改。保存后才会应用到后台监控任务。</p>}
         </Card>
 
-        <Card title="监控策略" className="min-h-[360px]">
-          <div className="grid gap-4">
-            <Toggle label="监控直播状态" description="监控开播状态，开播后按下方策略执行。" checked={form.monitorEnabled} onChange={(monitorEnabled) => setForm({ ...form, monitorEnabled })} />
-            <Toggle label="开播后自动检测直播源" description="自动刷新活动页并解析可录制播放源。" checked={form.autoDetectSource} onChange={(autoDetectSource) => setForm({ ...form, autoDetectSource })} />
-            <Toggle label="检测成功后录制视频" description="需要 ffmpeg 和可直录 m3u8，1080P/VIP 依赖芒果登录态。" checked={form.autoRecordVideo} onChange={(autoRecordVideo) => setForm({ ...form, autoRecordVideo })} />
-            <Toggle label="检测成功后录制弹幕" description="保存完整原始弹幕，并在实时/后处理场景复用。" checked={form.autoRecordDanmaku} onChange={(autoRecordDanmaku) => setForm({ ...form, autoRecordDanmaku })} />
-            <Toggle label="状态变化通知飞书" description="开播、录制异常、发布结果等事件会推送飞书卡片。" checked={form.feishuNotify} onChange={(feishuNotify) => setForm({ ...form, feishuNotify })} />
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="检测间隔（秒）">
-                <input className="ops-input" type="number" min={10} max={3600} value={form.pollSeconds} onChange={(event) => setForm({ ...form, pollSeconds: Number(event.target.value) })} />
-              </Field>
-              <Field label="默认清晰度">
-                <select className="ops-input" value={form.preferredQuality} onChange={(event) => setForm({ ...form, preferredQuality: event.target.value })}>
-                  <option value="auto">自动最高可用</option>
-                  <option value="1080P">1080P</option>
-                  <option value="720P">720P</option>
-                  <option value="540P">540P</option>
-                </select>
-              </Field>
+        <div className="grid content-start gap-5 max-2xl:col-span-2 max-2xl:grid-cols-3 max-xl:col-span-1 max-xl:grid-cols-1">
+          <Card title="运行状态" action={<a className="text-xs font-bold text-blue-200" href="/api/system/logs" target="_blank" rel="noreferrer">查看详情</a>}>
+            <Timeline
+              items={[
+                { title: form.monitorEnabled ? "等待开播" : "监控未启用", description: state.lastCheckAt || "系统已准备监控活动页与直播状态", tone: form.monitorEnabled ? "active" : "idle" },
+                { title: isRecognizedActivity ? "已解析活动页" : "活动页待识别", description: isRecognizedActivity ? `识别活动 ID：${parsedActivityId}` : "请先保存标准活动链接", tone: isRecognizedActivity ? "done" : "idle" },
+                { title: "直播源待检测", description: state.lastError || state.quality || "等待开播或手动检测", tone: state.lastError ? "warn" : state.quality ? "done" : "idle" }
+              ]}
+            />
+            <div className="mt-5 grid grid-cols-4 gap-2 rounded-2xl border border-white/10 bg-black/20 p-3 text-xs max-sm:grid-cols-2">
+              <InfoPill label="当前状态" value={form.monitorEnabled ? "监控中" : "待命"} tone={form.monitorEnabled ? "green" : "neutral"} />
+              <InfoPill label="开播时间" value="-" />
+              <InfoPill label="当前机位" value={state.quality ? "已解析" : "-"} />
+              <InfoPill label="直播源" value={state.quality ? "可录制" : "未检测"} tone={state.quality ? "green" : "neutral"} />
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <button type="button" className="rounded-xl border border-emerald-400/30 bg-emerald-400/15 px-4 py-3 text-sm font-black text-emerald-100" disabled={busy} onClick={() => save.mutate({ monitorEnabled: true })}>开始监控</button>
-              <button type="button" className="rounded-xl border border-red-400/30 bg-red-400/15 px-4 py-3 text-sm font-black text-red-100" disabled={busy} onClick={() => stop.mutate()}>停止监控</button>
-            </div>
-          </div>
-        </Card>
+          </Card>
 
-        <Card title="运行状态" className="min-h-[360px]">
-          <Timeline
-            items={[
-              { title: "等待开播", description: state.lastCheckAt || "监控器已准备", tone: config.enabled ? "active" : "idle" },
-              { title: "已解析活动页", description: config.url || "未配置活动链接", tone: config.url ? "done" : "idle" },
-              { title: "直播源检测", description: state.lastError || state.quality || "开播后自动解析", tone: state.lastError ? "warn" : state.quality ? "done" : "idle" }
-            ]}
-          />
-          <div className="mt-5 grid grid-cols-2 gap-3">
-            <MiniMetric label="活动场次" value={formatCount(activity?.roundCount)} />
-            <MiniMetric label="累计弹幕" value={formatCount(activity?.messageCount)} />
+          <Card title="飞书通知预览" action={<span className="text-xs font-bold text-blue-200">配置</span>}>
+            <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-slate-800/95 to-slate-950/95 p-5 shadow-2xl">
+              <div className="mb-4 flex items-center gap-3">
+                <span className="grid size-10 place-items-center rounded-2xl bg-blue-400/15 text-blue-200">
+                  <ChatCircleDots size={22} weight="fill" />
+                </span>
+                <div>
+                  <strong className="block text-sm">直播运营助手</strong>
+                  <span className="text-xs text-ops-muted">BOT · {formatShortTime(new Date().toISOString())}</span>
+                </div>
+              </div>
+              <strong className="block text-lg text-white">监控已启动</strong>
+              <dl className="mt-3 grid gap-2 text-sm text-slate-200">
+                <div className="flex justify-between gap-4"><dt className="text-ops-muted">活动</dt><dd>{form.name || "待配置"}</dd></div>
+                <div className="flex justify-between gap-4"><dt className="text-ops-muted">活动 ID</dt><dd>{parsedActivityId || "-"}</dd></div>
+                <div className="flex justify-between gap-4"><dt className="text-ops-muted">状态</dt><dd>{form.monitorEnabled ? "等待开播" : "未启用"}</dd></div>
+              </dl>
+              <p className="mt-4 border-t border-white/10 pt-3 text-xs text-ops-muted">开播时推送通知与关键数据。仅为预览效果。</p>
+            </div>
+          </Card>
+
+          <Card title="采集统计（今日）">
+            <div className="grid grid-cols-2 gap-3 max-2xl:grid-cols-1 max-sm:grid-cols-1">
+              <CollectionMetric icon={<VideoCamera size={20} weight="fill" />} label="视频录制" value={form.autoRecordVideo ? "待启动" : "未启用"} detail="文件大小 0 B" tone="orange" />
+              <CollectionMetric icon={<ChatCircleDots size={20} weight="fill" />} label="弹幕采集" value={`${formatCount(activity?.messageCount)} 条`} detail="有效弹幕 0 条" tone="blue" />
+            </div>
+          </Card>
+        </div>
+
+        <Card title="最近事件" className="col-span-2 max-2xl:col-span-2 max-xl:col-span-1" action={<span className="text-xs font-bold text-blue-200">查看全部</span>}>
+          <div className="grid gap-3">
+            {recentEvents.map((event) => (
+              <div key={`${event.text}-${event.time}`} className="grid grid-cols-[90px_14px_minmax(0,1fr)] items-center gap-3 text-sm max-sm:grid-cols-[64px_12px_minmax(0,1fr)]">
+                <span className="font-mono text-xs text-ops-muted">{event.time}</span>
+                <span className={`size-2.5 rounded-full ${event.tone === "green" ? "bg-emerald-400" : event.tone === "red" ? "bg-red-400" : event.tone === "blue" ? "bg-blue-400" : "bg-white/25"}`} />
+                <span className="truncate text-slate-200">{event.text}</span>
+              </div>
+            ))}
           </div>
         </Card>
       </div>
     </section>
+  );
+}
+
+function parseMgtvActivityId(url = "") {
+  const match = url.match(/mgtv\.com\/z\/(\d+)(?:\.html|\/|\?|#|$)/i);
+  return match?.[1] || "";
+}
+
+function formatShortTime(value?: string) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+}
+
+function InfoPill({ label, value, tone = "neutral" }: { label: string; value: string; tone?: "green" | "red" | "neutral" }) {
+  const toneClass = tone === "green" ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100" : tone === "red" ? "border-red-400/25 bg-red-400/10 text-red-100" : "border-white/10 bg-black/20 text-slate-100";
+  return (
+    <div className={`rounded-2xl border px-3 py-3 ${toneClass}`}>
+      <span className="block text-[11px] font-bold text-ops-muted">{label}</span>
+      <strong className="mt-1 block truncate text-sm">{value || "-"}</strong>
+    </div>
+  );
+}
+
+function StrategyToggle({ icon, label, description, checked, onChange, children }: { icon: React.ReactNode; label: string; description: string; checked: boolean; onChange: (value: boolean) => void; children?: React.ReactNode }) {
+  return (
+    <div className="border-b border-white/[0.07] py-4 last:border-b-0">
+      <button type="button" role="switch" aria-checked={checked} onClick={() => onChange(!checked)} className="grid w-full grid-cols-[44px_minmax(0,1fr)_52px] items-center gap-4 text-left">
+        <span className="grid size-11 place-items-center rounded-2xl bg-white/[0.06] text-ops-muted">
+          {icon}
+        </span>
+        <span>
+          <strong className="block text-sm text-white">{label}</strong>
+          <span className="mt-1 block text-xs leading-5 text-ops-muted">{description}</span>
+        </span>
+        <span className={`h-8 w-14 rounded-full p-1 transition ${checked ? "bg-ops-orange shadow-[0_0_24px_rgba(255,134,31,.26)]" : "bg-white/10"}`}>
+          <i className={`block size-6 rounded-full bg-white shadow-sm transition-transform ${checked ? "translate-x-6" : ""}`} />
+        </span>
+      </button>
+      {children && <div className="pl-[60px] max-sm:pl-0">{children}</div>}
+    </div>
+  );
+}
+
+function CollectionMetric({ icon, label, value, detail, tone }: { icon: React.ReactNode; label: string; value: string; detail: string; tone: "orange" | "blue" }) {
+  const color = tone === "orange" ? "text-ops-orange bg-orange-400/10" : "text-blue-200 bg-blue-400/10";
+  return (
+    <div className="rounded-3xl border border-white/10 bg-black/20 p-4">
+      <span className={`mb-4 grid size-10 place-items-center rounded-2xl ${color}`}>{icon}</span>
+      <span className="block text-sm text-ops-muted">{label}</span>
+      <strong className="mt-2 block text-2xl tracking-[-0.04em]">{value}</strong>
+      <span className="mt-3 block border-t border-white/10 pt-3 text-xs text-ops-muted">{detail}</span>
+    </div>
   );
 }
 
@@ -190,20 +450,6 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       {label}
       {children}
     </label>
-  );
-}
-
-function Toggle({ label, description, checked, onChange }: { label: string; description: string; checked: boolean; onChange: (value: boolean) => void }) {
-  return (
-    <button type="button" onClick={() => onChange(!checked)} className="flex items-center justify-between border-b border-white/[0.07] py-3 text-left">
-      <span>
-        <strong className="block text-sm text-white">{label}</strong>
-        <span className="text-xs text-ops-muted">{description}</span>
-      </span>
-      <span className={`h-7 w-12 rounded-full p-1 ${checked ? "bg-ops-orange" : "bg-white/10"}`}>
-        <i className={`block size-5 rounded-full bg-white transition ${checked ? "translate-x-5" : ""}`} />
-      </span>
-    </button>
   );
 }
 
