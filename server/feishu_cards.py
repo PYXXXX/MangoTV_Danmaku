@@ -578,7 +578,7 @@ def build_recording_card(
         if clips:
             lines = ["**最近片段**"]
             for clip in clips[-5:]:
-                lines.append(f"- {clip.get('label') or '未命名片段'}：{clip.get('startSeconds', 0)}s–{clip.get('endSeconds', 0)}s")
+                lines.append(f"- {clip.get('label') or '未命名片段'}：{clip.get('startSeconds', 0)}s-{clip.get('endSeconds', 0)}s")
             elements.append({"tag": "markdown", "content": "\n".join(lines)})
             elements.append(action_row(button("生成最近片段分析场次", "analyze_latest_clip", "primary")))
         elements.append(recording_marker_form())

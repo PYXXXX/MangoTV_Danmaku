@@ -6,8 +6,8 @@ import {
 } from "@phosphor-icons/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { apiPatch, apiPost, getBootstrap, getSystemLogs, getSystemStatus } from "../../api/client";
-import type { ActivityItem, RoundSession, SystemLogEvent, SystemStatus } from "../../api/types";
+import { apiDelete, apiGet, apiPatch, apiPost, getBootstrap, getSystemLogs, getSystemStatus } from "../../api/client";
+import type { ActivityItem, RecordingTimeline, RoundSession, SystemLogEvent, SystemLogsResponse, SystemStatus } from "../../api/types";
 import { Card, PageHeading, PrimaryButton, Shell, StatusBadge } from "../../components/Shell";
 import { MetricCard } from "../../components/MetricCard";
 import { RankingTable } from "../../components/RankingTable";
@@ -218,12 +218,27 @@ function OperationsPage({ rounds, activeRound, defaultActivity }: { rounds: Roun
     url: ""
   });
   const [renameValue, setRenameValue] = useState("");
+  const [selectedRecordingId, setSelectedRecordingId] = useState(activeRound?.id || rounds.find((item) => item.recording)?.id || "");
+  const [markerForm, setMarkerForm] = useState({ label: "", atSeconds: 0 });
+  const [clipForm, setClipForm] = useState({ label: "", startSeconds: 0, endSeconds: 0 });
   useEffect(() => {
     setRoundForm((current) => ({
       ...current,
       activity: current.activity || defaultActivity || activeRound?.activity || "歌手 2026"
     }));
   }, [defaultActivity, activeRound?.activity]);
+  useEffect(() => {
+    if (!selectedRecordingId) {
+      setSelectedRecordingId(activeRound?.id || rounds.find((item) => item.recording)?.id || "");
+    }
+  }, [activeRound?.id, rounds, selectedRecordingId]);
+  const recordingRound = rounds.find((item) => item.id === selectedRecordingId) || activeRound;
+  const recordingTimeline = useQuery<RecordingTimeline>({
+    queryKey: ["recording-timeline", recordingRound?.id],
+    queryFn: () => apiGet<RecordingTimeline>(`/api/recordings/${encodeURIComponent(recordingRound?.id || "")}/timeline`),
+    enabled: Boolean(recordingRound?.id && recordingRound?.recording),
+    refetchInterval: recordingRound?.recording?.status === "recording" ? 10_000 : false
+  });
   const startRound = useMutation({
     mutationFn: () => apiPost("/api/rounds/start", {
       activity: roundForm.activity,
@@ -250,7 +265,50 @@ function OperationsPage({ rounds, activeRound, defaultActivity }: { rounds: Roun
     mutationFn: () => apiPatch("/api/rounds/" + encodeURIComponent(activeRound?.id || ""), { name: renameValue }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
   });
-  const operationError = startRound.error || endRound.error || publish.error || pushFeishu.error || renameRound.error;
+  const deleteRound = useMutation({
+    mutationFn: ({ publish }: { publish: boolean }) => apiDelete(`/api/rounds/${encodeURIComponent(activeRound?.id || "")}?publish=${publish ? "1" : "0"}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
+  });
+  const deleteActivity = useMutation({
+    mutationFn: ({ activity, publish }: { activity: string; publish: boolean }) => apiDelete(`/api/activities/${encodeURIComponent(activity)}?publish=${publish ? "1" : "0"}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
+  });
+  const addMarker = useMutation({
+    mutationFn: () => apiPost(`/api/rounds/${encodeURIComponent(recordingRound?.id || "")}/recording/markers`, markerForm),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["recording-timeline", recordingRound?.id] });
+      queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] });
+    }
+  });
+  const createClip = useMutation({
+    mutationFn: () => apiPost(`/api/rounds/${encodeURIComponent(recordingRound?.id || "")}/recording/clips`, clipForm),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["recording-timeline", recordingRound?.id] });
+      queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] });
+    }
+  });
+  const createAnalysisRound = useMutation({
+    mutationFn: (clipId: string) => apiPost(`/api/rounds/${encodeURIComponent(recordingRound?.id || "")}/recording/clips/${encodeURIComponent(clipId)}/analysis-round`, { name: clipForm.label || "片段分析" }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
+  });
+  const deleteCurrentRound = () => {
+    if (!activeRound) return;
+    if (!window.confirm(`确认删除场次「${roundName(activeRound)}」？删除后不可在管理台恢复。`)) return;
+    const publishAfterDelete = window.confirm("删除后是否立即同步远端公开页？\n确定：立即同步\n取消：仅本地删除，稍后手动发布");
+    deleteRound.mutate({ publish: publishAfterDelete });
+  };
+  const deleteCurrentActivity = () => {
+    const activity = activeRound?.activity || roundForm.activity || defaultActivity;
+    if (!activity) return;
+    if (!window.confirm(`确认删除活动「${activity}」下全部已结束场次？删除后不可在管理台恢复。`)) return;
+    const publishAfterDelete = window.confirm("删除后是否立即同步远端公开页？\n确定：立即同步\n取消：仅本地删除，稍后手动发布");
+    deleteActivity.mutate({ activity, publish: publishAfterDelete });
+  };
+  const operationError = startRound.error || endRound.error || publish.error || pushFeishu.error || renameRound.error || deleteRound.error || deleteActivity.error || addMarker.error || createClip.error || createAnalysisRound.error || recordingTimeline.error;
+  const timeline = recordingTimeline.data;
+  const density = timeline?.danmakuDensity || [];
+  const maxDensity = Math.max(1, ...density.map((item) => item.count));
+  const recording = timeline?.recording || recordingRound?.recording || null;
   return (
     <section>
       <PageHeading
@@ -316,6 +374,12 @@ function OperationsPage({ rounds, activeRound, defaultActivity }: { rounds: Roun
                 </Field>
                 <button type="button" className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-black text-slate-100" disabled={!activeRound || !renameValue.trim() || renameRound.isPending} onClick={() => renameRound.mutate()}>重命名</button>
               </div>
+              <div className="grid gap-2 rounded-2xl border border-red-400/25 bg-red-400/10 p-4">
+                <strong className="text-sm text-red-100">删除管理</strong>
+                <p className="text-xs leading-6 text-red-100/75">只能删除已结束场次；删除活动会移除该活动下全部已结束场次。删除时可选择是否立即同步公开页。</p>
+                <button type="button" className="rounded-xl border border-red-400/35 bg-red-400/15 px-4 py-3 text-sm font-black text-red-100" disabled={!activeRound || activeRound.status === "running" || deleteRound.isPending} onClick={deleteCurrentRound}>删除场次</button>
+                <button type="button" className="rounded-xl border border-red-400/35 bg-red-400/15 px-4 py-3 text-sm font-black text-red-100" disabled={(!activeRound?.activity && !roundForm.activity && !defaultActivity) || activeRound?.status === "running" || deleteActivity.isPending} onClick={deleteCurrentActivity}>删除活动</button>
+              </div>
             </div>
           </div>
         </Card>
@@ -337,19 +401,101 @@ function OperationsPage({ rounds, activeRound, defaultActivity }: { rounds: Roun
         </Card>
       </div>
 
-      <Card title="录制后处理" className="mt-4">
-        <div className="grid grid-cols-[280px_minmax(0,1fr)_320px] gap-5 max-xl:grid-cols-1">
-          <div className="aspect-video rounded-2xl border border-white/10 bg-black/60" />
-          <div className="grid content-center gap-4">
-            <div className="h-2 rounded-full bg-gradient-to-r from-ops-orange via-ops-blue to-purple-400" />
-            <div className="grid grid-cols-5 gap-3 text-center text-xs text-ops-muted">
-              {["开始", "选歌环节", "演唱环节", "互动投票", "结果公布"].map((item) => <span key={item}>{item}</span>)}
+      <Card title="录制后处理" className="mt-4" action={<StatusBadge tone={recording?.status === "recording" ? "orange" : recording ? "green" : "neutral"}>{recording?.status || "暂无录制"}</StatusBadge>}>
+        <div className="grid grid-cols-[320px_minmax(0,1fr)_360px] gap-5 max-xl:grid-cols-1">
+          <div className="grid content-start gap-3">
+            <Field label="选择录制场次">
+              <select className="ops-input" value={recordingRound?.id || ""} onChange={(event) => setSelectedRecordingId(event.target.value)}>
+                {[...rounds].filter((item) => item.recording).map((item) => (
+                  <option key={item.id} value={item.id}>{item.activity || "未分类活动"} / {roundName(item)}</option>
+                ))}
+                {!rounds.some((item) => item.recording) && <option value="">暂无录制</option>}
+              </select>
+            </Field>
+            <div className="overflow-hidden rounded-2xl border border-white/10 bg-black/70">
+              {recording?.hasVideo && recording.videoUrl ? (
+                <video className="aspect-video w-full bg-black" controls src={recording.videoUrl} />
+              ) : (
+                <div className="grid aspect-video place-items-center text-sm text-ops-muted">
+                  {recording ? "录制文件暂不可播放" : "选择有录制的场次后显示播放器"}
+                </div>
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <MiniMetric label="录制时长" value={formatDuration(timeline?.durationSeconds)} />
+              <MiniMetric label="片段数量" value={formatCount((timeline?.clips || recording?.clips || []).length)} />
             </div>
           </div>
+
+          <div className="grid content-start gap-4">
+            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <strong className="text-sm">弹幕密度时间轴</strong>
+                <span className="text-xs text-ops-muted">{density.length ? `${density.length} 个时间桶` : "暂无密度数据"}</span>
+              </div>
+              <div className="flex h-28 items-end gap-1 rounded-xl bg-black/30 p-3">
+                {density.length ? density.slice(0, 80).map((item) => (
+                  <span
+                    key={item.t}
+                    className="min-w-1 flex-1 rounded-t bg-gradient-to-t from-ops-blue to-ops-orange"
+                    style={{ height: `${Math.max(5, (item.count / maxDensity) * 100)}%` }}
+                    title={`${item.t}s: ${item.count} 条`}
+                  />
+                )) : <span className="grid h-full w-full place-items-center text-sm text-ops-muted">录制弹幕后会显示密度</span>}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 max-md:grid-cols-1">
+              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <strong className="mb-3 block text-sm">标记</strong>
+                <div className="grid max-h-48 gap-2 overflow-auto">
+                  {(timeline?.markers || recording?.markers || []).map((marker) => (
+                    <div key={marker.id} className="flex justify-between rounded-xl bg-white/[0.04] px-3 py-2 text-sm">
+                      <span>{marker.label}</span>
+                      <b className="font-mono text-ops-gold">{formatDuration(marker.atSeconds)}</b>
+                    </div>
+                  ))}
+                  {!(timeline?.markers || recording?.markers || []).length && <p className="text-sm text-ops-muted">暂无标记</p>}
+                </div>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <strong className="mb-3 block text-sm">片段</strong>
+                <div className="grid max-h-48 gap-2 overflow-auto">
+                  {(timeline?.clips || recording?.clips || []).map((clip) => (
+                    <div key={clip.id} className="grid gap-2 rounded-xl bg-white/[0.04] p-3 text-sm">
+                      <div className="flex justify-between gap-3">
+                        <span>{clip.label}</span>
+                        <b className="font-mono text-ops-gold">{formatDuration(clip.startSeconds)} - {formatDuration(clip.endSeconds)}</b>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {clip.url && <a className="text-xs text-blue-200" href={clip.url}>视频</a>}
+                        {clip.danmakuUrl && <a className="text-xs text-blue-200" href={clip.danmakuUrl}>弹幕</a>}
+                        <button type="button" className="text-xs text-emerald-200" disabled={createAnalysisRound.isPending} onClick={() => createAnalysisRound.mutate(clip.id)}>生成分析场次</button>
+                      </div>
+                    </div>
+                  ))}
+                  {!(timeline?.clips || recording?.clips || []).length && <p className="text-sm text-ops-muted">暂无片段</p>}
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div className="grid content-start gap-3">
-            <button className="rounded-xl border border-orange-400/40 bg-orange-400/15 px-4 py-3 text-sm font-black text-ops-gold" type="button">添加标记</button>
-            <button className="rounded-xl border border-blue-400/40 bg-blue-400/15 px-4 py-3 text-sm font-black text-blue-100" type="button">截取片段</button>
-            <button className="rounded-xl border border-emerald-400/40 bg-emerald-400/15 px-4 py-3 text-sm font-black text-emerald-100" type="button">生成分析场次</button>
+            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+              <strong className="mb-3 block text-sm">添加标记</strong>
+              <Field label="标记名称"><input className="ops-input" value={markerForm.label} onChange={(event) => setMarkerForm({ ...markerForm, label: event.target.value })} placeholder="例如：选歌环节" /></Field>
+              <Field label="时间点（秒）"><input className="ops-input" type="number" value={markerForm.atSeconds} onChange={(event) => setMarkerForm({ ...markerForm, atSeconds: Number(event.target.value) })} /></Field>
+              <button className="mt-3 w-full rounded-xl border border-orange-400/40 bg-orange-400/15 px-4 py-3 text-sm font-black text-ops-gold" type="button" disabled={!recordingRound?.id || addMarker.isPending} onClick={() => addMarker.mutate()}>添加标记</button>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+              <strong className="mb-3 block text-sm">截取片段</strong>
+              <Field label="片段名称"><input className="ops-input" value={clipForm.label} onChange={(event) => setClipForm({ ...clipForm, label: event.target.value })} placeholder="例如：互动投票片段" /></Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="开始（秒）"><input className="ops-input" type="number" value={clipForm.startSeconds} onChange={(event) => setClipForm({ ...clipForm, startSeconds: Number(event.target.value) })} /></Field>
+                <Field label="结束（秒）"><input className="ops-input" type="number" value={clipForm.endSeconds} onChange={(event) => setClipForm({ ...clipForm, endSeconds: Number(event.target.value) })} /></Field>
+              </div>
+              <button className="mt-3 w-full rounded-xl border border-blue-400/40 bg-blue-400/15 px-4 py-3 text-sm font-black text-blue-100" type="button" disabled={!recordingRound?.id || createClip.isPending} onClick={() => createClip.mutate()}>截取片段</button>
+            </div>
           </div>
         </div>
       </Card>
@@ -628,21 +774,6 @@ function SettingsToggle({ label, checked, onChange }: { label: string; checked: 
   );
 }
 
-function SettingsColumn({ title, items }: { title: string; items: string[] }) {
-  return (
-    <Card title={title}>
-      <div className="grid gap-3">
-        {items.map((item) => (
-          <div key={item} className="rounded-2xl border border-white/10 bg-black/20 p-4">
-            <strong className="block text-sm">{item}</strong>
-            <span className="mt-1 block text-xs text-ops-muted">等待接入 schema form 与校验接口</span>
-          </div>
-        ))}
-      </div>
-    </Card>
-  );
-}
-
 function Impact({ tone, title, items }: { tone: "green" | "blue" | "orange"; title: string; items: string[] }) {
   const toneClass = tone === "green" ? "text-emerald-200 bg-emerald-400/10" : tone === "blue" ? "text-blue-200 bg-blue-400/10" : "text-ops-gold bg-orange-400/10";
   return (
@@ -658,6 +789,26 @@ function Impact({ tone, title, items }: { tone: "green" | "blue" | "orange"; tit
 function MachineStatusPage({ initial }: { initial?: SystemStatus }) {
   const status = useQuery({ queryKey: ["system-status"], queryFn: getSystemStatus, initialData: initial, refetchInterval: 15_000 });
   const payload = status.data;
+  const [history, setHistory] = useState<Array<{ at: string; cpu: number; memory: number; network: number; danmaku: number }>>([]);
+  useEffect(() => {
+    if (!payload) return;
+    setHistory((current) => {
+      const memoryPercent = payload.memory?.totalBytes ? ((payload.memory.usedBytes || 0) / payload.memory.totalBytes) * 100 : 0;
+      const networkTotal = Number(payload.network?.rxBytes || 0) + Number(payload.network?.txBytes || 0);
+      const danmakuRate = Number(payload.services?.collector?.activeCount || 0);
+      const next = [
+        ...current,
+        {
+          at: payload.systemTime || new Date().toISOString(),
+          cpu: Number(payload.cpu?.loadPercent || 0),
+          memory: memoryPercent,
+          network: networkTotal,
+          danmaku: danmakuRate
+        }
+      ];
+      return next.slice(-60);
+    });
+  }, [payload?.generatedAt, payload?.systemTime]);
   return (
     <section>
       <PageHeading kicker="System Health" title="机器状态监控" description="实时监控服务器与服务运行状态，保障直播运营稳定可靠。" />
@@ -683,10 +834,48 @@ function MachineStatusPage({ initial }: { initial?: SystemStatus }) {
           </div>
         </Card>
         <Card title="最近告警" className="col-span-2 max-lg:col-span-1">
-          <p className="text-sm leading-7 text-ops-muted">错误数：{payload?.health?.recentErrorCount || 0}。后续将接入 alerts API 和 15 分钟趋势。</p>
+          <p className="text-sm leading-7 text-ops-muted">错误数：{payload?.health?.recentErrorCount || 0}。如果出现录制失败、直播源检测失败或 GitHub 发布失败，请跳转系统日志查看同一时间段事件。</p>
+        </Card>
+        <Card title="性能趋势（最近采样）" className="col-span-4 max-2xl:col-span-2 max-lg:col-span-1">
+          <div className="grid grid-cols-4 gap-4 max-xl:grid-cols-2 max-md:grid-cols-1">
+            <TrendCard label="CPU 使用率" suffix="%" values={history.map((item) => item.cpu)} />
+            <TrendCard label="内存使用率" suffix="%" values={history.map((item) => item.memory)} />
+            <TrendCard label="网络流量" suffix="B" values={history.map((item) => item.network)} format={formatBytes} />
+            <TrendCard label="采集活跃度" suffix="" values={history.map((item) => item.danmaku)} />
+          </div>
         </Card>
       </div>
     </section>
+  );
+}
+
+function TrendCard({ label, values, suffix, format }: { label: string; values: number[]; suffix?: string; format?: (value: unknown) => string }) {
+  const latest = values.at(-1) || 0;
+  return (
+    <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <span className="text-sm text-ops-muted">{label}</span>
+        <strong className="font-mono text-lg">{format ? format(latest) : `${Math.round(latest)}${suffix || ""}`}</strong>
+      </div>
+      <Sparkline values={values} />
+    </div>
+  );
+}
+
+function Sparkline({ values }: { values: number[] }) {
+  const points = values.length ? values : [0];
+  const max = Math.max(1, ...points);
+  const width = 280;
+  const height = 72;
+  const path = points.map((value, index) => {
+    const x = points.length === 1 ? 0 : (index / (points.length - 1)) * width;
+    const y = height - (value / max) * (height - 8) - 4;
+    return `${index === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="h-20 w-full overflow-visible">
+      <path d={path} fill="none" stroke="#ff861f" strokeWidth="3" strokeLinecap="round" />
+    </svg>
   );
 }
 
@@ -700,22 +889,56 @@ function BigMetric({ value, detail }: { value: string; detail: string }) {
 }
 
 function SystemLogsPage({ initialLogs }: { initialLogs: SystemLogEvent[] }) {
-  const logs = useQuery({ queryKey: ["system-logs"], queryFn: () => getSystemLogs(160), initialData: { events: initialLogs }, refetchInterval: 10_000 });
+  const [filters, setFilters] = useState({ q: "", level: "", source: "" });
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const query = new URLSearchParams();
+  query.set("limit", "160");
+  if (filters.q.trim()) query.set("q", filters.q.trim());
+  if (filters.level) query.set("level", filters.level);
+  if (filters.source) query.set("source", filters.source);
+  const logs = useQuery({
+    queryKey: ["system-logs", filters],
+    queryFn: () => apiGet<SystemLogsResponse>(`/api/system/logs?${query.toString()}`),
+    initialData: { events: initialLogs },
+    refetchInterval: 10_000
+  });
   const items = logs.data.events || logs.data.items || [];
-  const selected = items[0];
+  const sources = Array.from(new Set(items.map((item) => item.source).filter(Boolean))) as string[];
+  const selected = items[selectedIndex] || items[0];
+  const exportLogs = () => {
+    const blob = new Blob([JSON.stringify(items, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `mgtv-system-logs-${Date.now()}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
   return (
     <section>
       <PageHeading kicker="System Logs" title="系统日志" description="按时间查看系统运行日志，支持搜索、过滤、导出和排障摘要。" />
       <div className="mb-4 grid grid-cols-[minmax(260px,1fr)_140px_160px_auto] gap-3 rounded-3xl border border-white/10 bg-white/[0.04] p-4 max-lg:grid-cols-1">
-        <input className="rounded-xl border border-white/10 bg-black/30 px-4 py-3 text-sm outline-none" placeholder="搜索错误、场次 ID、关键词…" />
-        <select className="rounded-xl border border-white/10 bg-black/30 px-4 py-3 text-sm"><option>全部级别</option><option>INFO</option><option>WARN</option><option>ERROR</option></select>
-        <select className="rounded-xl border border-white/10 bg-black/30 px-4 py-3 text-sm"><option>全部来源</option></select>
-        <button className="rounded-xl bg-blue-500 px-4 py-3 text-sm font-black text-white" type="button">导出日志</button>
+        <input className="ops-input" value={filters.q} onChange={(event) => setFilters({ ...filters, q: event.target.value })} placeholder="搜索错误、场次 ID、关键词…" />
+        <select className="ops-input" value={filters.level} onChange={(event) => setFilters({ ...filters, level: event.target.value })}>
+          <option value="">全部级别</option>
+          <option value="INFO">INFO</option>
+          <option value="WARN">WARN</option>
+          <option value="ERROR">ERROR</option>
+        </select>
+        <select className="ops-input" value={filters.source} onChange={(event) => setFilters({ ...filters, source: event.target.value })}>
+          <option value="">全部来源</option>
+          {sources.map((source) => <option key={source} value={source}>{source}</option>)}
+        </select>
+        <button className="rounded-xl bg-blue-500 px-4 py-3 text-sm font-black text-white" type="button" onClick={exportLogs}>导出日志</button>
       </div>
       <div className="grid grid-cols-[minmax(0,1fr)_420px] gap-4 max-xl:grid-cols-1">
         <Card>
           <div className="grid gap-2">
-            {items.length ? items.map((event, index) => <LogRow key={`${event.time}-${index}`} event={event} active={index === 0} />) : <div className="grid min-h-80 place-items-center text-ops-muted">暂无日志</div>}
+            {items.length ? items.map((event, index) => (
+              <button key={`${event.time}-${index}`} type="button" onClick={() => setSelectedIndex(index)} className="text-left">
+                <LogRow event={event} active={index === selectedIndex} />
+              </button>
+            )) : <div className="grid min-h-80 place-items-center text-ops-muted">暂无日志</div>}
           </div>
         </Card>
         <Card title="日志详情">
@@ -723,6 +946,11 @@ function SystemLogsPage({ initialLogs }: { initialLogs: SystemLogEvent[] }) {
             <pre className="whitespace-pre-wrap rounded-2xl border border-white/10 bg-black/30 p-4 font-mono text-xs leading-6 text-slate-200">{JSON.stringify(selected, null, 2)}</pre>
           ) : (
             <p className="text-sm text-ops-muted">选择日志查看详情。</p>
+          )}
+          {selected?.level === "ERROR" && (
+            <div className="mt-4 rounded-2xl border border-orange-400/30 bg-orange-400/10 p-4 text-sm leading-7 text-ops-gold">
+              建议排障：先查看同一来源前后 5 条日志，确认是否与录制、直播源检测、GitHub 发布或飞书推送有关；必要时导出日志交给运维 agent。
+            </div>
           )}
           <div className="mt-5">
             <Timeline items={items.slice(0, 5).map((event) => ({ title: event.summary || "事件", description: `${event.source || "service"} · ${event.time ? new Date(event.time).toLocaleTimeString("zh-CN", { hour12: false }) : ""}`, tone: event.level === "ERROR" ? "warn" : "done" }))} />

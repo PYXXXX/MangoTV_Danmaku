@@ -1,5 +1,6 @@
-import { GithubLogo, LinkSimple, ShieldCheck, DownloadSimple } from "@phosphor-icons/react";
+import { GithubLogo, LinkSimple, ShieldCheck, DownloadSimple, Microphone } from "@phosphor-icons/react";
 import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { getPublicPageState } from "../../api/client";
 import { Card } from "../../components/Shell";
 import { RankingTable } from "../../components/RankingTable";
@@ -10,8 +11,18 @@ const dataSource = "https://pyxxxx.github.io/MangoTV_Danmaku/";
 export function PublicResultsApp() {
   const query = useQuery({ queryKey: ["public-results"], queryFn: getPublicPageState });
   const state = query.data;
-  const session = currentRound(state?.sessions || [], state?.activeSessionId);
-  const result = selectedResult(session, session?.defaultResultType || "rough");
+  const [selectedSessionId, setSelectedSessionId] = useState<string>("");
+  const [resultType, setResultType] = useState<"rough" | "precise">("rough");
+  const sessions = state?.sessions || [];
+  const defaultSession = currentRound(sessions, state?.activeSessionId);
+  useEffect(() => {
+    if (!selectedSessionId && defaultSession?.id) {
+      setSelectedSessionId(defaultSession.id);
+      setResultType(defaultSession.defaultResultType || "rough");
+    }
+  }, [defaultSession?.id, defaultSession?.defaultResultType, selectedSessionId]);
+  const session = sessions.find((item) => item.id === selectedSessionId) || defaultSession;
+  const result = selectedResult(session, resultType);
   const rows = rankingRows(session, result.data);
   const leader = rows[0];
   const total = rows.reduce((sum, item) => sum + item.votes, 0);
@@ -20,8 +31,11 @@ export function PublicResultsApp() {
     (result.type === "precise" ? session?.resultImageUrls?.precise : session?.resultImageUrls?.rough)
     || session?.resultImageUrl
     || (session ? `/exports/rounds/${encodeURIComponent(session.id)}/result.png?result=${result.type}` : "#");
+  const recent = [...sessions]
+    .sort((a, b) => String(b.stoppedAt || b.startedAt || "").localeCompare(String(a.stoppedAt || a.startedAt || "")))
+    .slice(0, 5);
   return (
-    <div className="min-h-dvh text-[#fff7ea]">
+    <div className="min-h-dvh text-[#fff7ea] public-stage">
       <nav className="sticky top-0 z-10 flex min-h-16 items-center justify-between border-b border-white/10 bg-[#06090d]/80 px-8 backdrop-blur-2xl max-md:flex-col max-md:items-start max-md:gap-3 max-md:py-4">
         <a className="flex items-center gap-3 text-xl font-black tracking-[-0.045em]" href="./">
           <span className="orange-glow grid size-10 place-items-center rounded-full bg-gradient-to-br from-[#ff9d35] to-[#ff7417] text-[#160b04]">▶</span>
@@ -62,8 +76,19 @@ export function PublicResultsApp() {
               {leader ? (
                 <>
                   <span className="rounded-full bg-orange-400/15 px-3 py-1 text-xs font-black text-ops-gold">当前领先</span>
-                  <strong className="mt-4 block text-4xl font-black tracking-[-0.055em]">{leader.name}</strong>
-                  <small className="mt-2 block text-xl font-black text-ops-gold">{formatCount(leader.votes)} 票 · {leader.percent.toFixed(1)}%</small>
+                  <div className="mt-4 grid grid-cols-[86px_minmax(0,1fr)_120px] items-center gap-4 max-sm:grid-cols-1">
+                    <div className="orange-glow grid size-20 place-items-center rounded-full border border-orange-300/40 bg-[radial-gradient(circle,#ffc077,#ff861f_58%,#2a1305)] text-[#2a1305]">
+                      <Microphone size={42} weight="fill" />
+                    </div>
+                    <div>
+                      <strong className="block text-4xl font-black tracking-[-0.055em]">{leader.name}</strong>
+                      <small className="mt-2 block text-xl font-black text-ops-gold">{formatCount(leader.votes)} 票</small>
+                    </div>
+                    <strong className="font-mono text-5xl font-black text-ops-orange">{leader.percent.toFixed(1)}%</strong>
+                  </div>
+                  <div className="mt-5 h-2 overflow-hidden rounded-full bg-white/10">
+                    <span className="block h-full rounded-full bg-gradient-to-r from-ops-orange to-ops-gold" style={{ width: `${Math.max(3, leader.percent)}%` }} />
+                  </div>
                 </>
               ) : (
                 <p className="text-sm text-ops-muted">结果将在这里显示</p>
@@ -79,7 +104,16 @@ export function PublicResultsApp() {
         </div>
 
         <section className="grid grid-cols-[minmax(0,1.35fr)_minmax(390px,.95fr)] gap-5 max-xl:grid-cols-1">
-          <Card title="实时弹幕投票排名" className="min-h-[520px]" action={<Badge tone={session?.status === "running" ? "orange" : "green"}>{session?.status === "running" ? "LIVE · 粗略统计中" : "本轮已保存"}</Badge>}>
+          <Card
+            title="实时弹幕投票排名"
+            className="min-h-[520px]"
+            action={
+              <div className="grid grid-cols-2 rounded-xl border border-white/10 bg-black/20 p-1">
+                <button className={`rounded-lg px-4 py-2 text-sm font-black ${result.type === "rough" ? "bg-orange-400/15 text-ops-gold" : "text-ops-muted"}`} type="button" onClick={() => setResultType("rough")}>粗略结果</button>
+                <button className={`rounded-lg px-4 py-2 text-sm font-black ${result.type === "precise" ? "bg-orange-400/15 text-ops-gold" : "text-ops-muted"}`} type="button" disabled={!session?.results?.precise} onClick={() => setResultType("precise")}>精确结果</button>
+              </div>
+            }
+          >
             <div id="ranking">
               <RankingTable rows={rows} />
             </div>
@@ -103,7 +137,7 @@ export function PublicResultsApp() {
             <Card title="场次时间线">
               <div id="timeline" className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
                 {(state?.sessions || []).map((item) => (
-                  <button key={item.id} type="button" className={`min-h-24 rounded-2xl border p-4 text-left ${item.id === session?.id ? "border-orange-400/60 bg-orange-400/10" : "border-white/10 bg-black/20"}`}>
+                  <button key={item.id} type="button" onClick={() => { setSelectedSessionId(item.id); setResultType(item.defaultResultType || "rough"); }} className={`min-h-24 rounded-2xl border p-4 text-left ${item.id === session?.id ? "border-orange-400/60 bg-orange-400/10" : "border-white/10 bg-black/20"}`}>
                     <strong className="block text-sm">{roundName(item)}</strong>
                     <span className="mt-2 block text-xs leading-5 text-ops-muted">{item.timeRange || item.status} · {formatCount(item.messageCount)} 样本</span>
                   </button>
@@ -116,6 +150,18 @@ export function PublicResultsApp() {
                 <p className="flex gap-2"><ShieldCheck size={20} className="mt-1 text-ops-green" /> 页面数据来自公开弹幕采集与统计分析。</p>
                 <p>公开结果页地址：<a className="text-ops-gold" href={dataSource}>{dataSource}</a></p>
                 <p>统计数据不代表湖南卫视 &amp; 芒果 TV 立场，仅供娱乐参考。</p>
+              </div>
+            </Card>
+
+            <Card title="最近发布">
+              <div className="grid gap-3">
+                {recent.map((item) => (
+                  <button key={item.id} type="button" onClick={() => setSelectedSessionId(item.id)} className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-left text-sm">
+                    <span className="truncate">{roundName(item)} · {item.defaultResultType === "precise" ? "精确结果" : "粗略结果"}</span>
+                    <time className="shrink-0 text-xs text-ops-muted">{item.stoppedAt ? new Date(item.stoppedAt).toLocaleTimeString("zh-CN", { hour12: false }) : item.status}</time>
+                  </button>
+                ))}
+                {!recent.length && <p className="text-sm text-ops-muted">暂无发布记录</p>}
               </div>
             </Card>
           </aside>

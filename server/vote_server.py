@@ -116,8 +116,8 @@ def format_beijing_display_range(start: str | None, end: str | None = None) -> s
         return f"{start_dt:%Y/%m/%d %H:%M:%S} 起"
     end_dt = parse_iso(end).astimezone(BEIJING_TZ)
     if start_dt.date() == end_dt.date():
-        return f"{start_dt:%Y/%m/%d %H:%M:%S} – {end_dt:%H:%M:%S}"
-    return f"{start_dt:%Y/%m/%d %H:%M:%S} – {end_dt:%Y/%m/%d %H:%M:%S}"
+        return f"{start_dt:%Y/%m/%d %H:%M:%S} - {end_dt:%H:%M:%S}"
+    return f"{start_dt:%Y/%m/%d %H:%M:%S} - {end_dt:%Y/%m/%d %H:%M:%S}"
 
 
 def strip_embedded_time_range(name: str, base_name: str) -> str:
@@ -3985,7 +3985,14 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_post("/api/update/apply", apply_update)
     app.router.add_get("/api/recordings", recordings)
     app.router.add_get("/api/recordings/{round_id}", recording_by_round)
+    app.router.add_get("/api/recordings/{round_id}/video", round_recording_video)
     app.router.add_get("/api/recordings/{round_id}/timeline", recording_timeline)
+    app.router.add_post("/api/recordings/{round_id}/markers", add_recording_marker)
+    app.router.add_post("/api/recordings/{round_id}/clips", create_recording_clip)
+    app.router.add_get("/api/recordings/{round_id}/clips/{clip_id}.mp4", recording_clip)
+    app.router.add_get("/api/recordings/{round_id}/clips/{clip_id}.jsonl", recording_clip_export)
+    app.router.add_get("/api/recordings/{round_id}/clips/{clip_id}/raw.jsonl", recording_clip_raw_export)
+    app.router.add_post("/api/recordings/{round_id}/clips/{clip_id}/analysis-round", create_clip_analysis_round)
     app.router.add_get("/api/rounds", list_rounds)
     app.router.add_post("/api/rounds/start", start_round_api)
     app.router.add_patch("/api/rounds/{round_id}", patch_round)

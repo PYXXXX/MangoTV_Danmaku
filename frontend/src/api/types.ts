@@ -48,6 +48,16 @@ export interface Recording {
   clips?: RecordingClip[];
 }
 
+export interface RecordingTimeline {
+  roundId: string;
+  durationSeconds?: number;
+  bucketSeconds?: number;
+  danmakuDensity?: Array<{ t: number; count: number }>;
+  markers?: RecordingMarker[];
+  clips?: RecordingClip[];
+  recording?: Recording;
+}
+
 export interface RoundSession {
   id: string;
   activity?: string;
@@ -58,6 +68,7 @@ export interface RoundSession {
   status: "running" | "stopped" | string;
   startedAt?: string;
   endedAt?: string;
+  stoppedAt?: string;
   timeRange?: string;
   compactTimeRange?: string;
   pageUrl?: string;

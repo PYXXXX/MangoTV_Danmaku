@@ -841,7 +841,7 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                 public = service.public_state()["sessions"][0]
                 self.assertEqual(public["displayName"], "第一轮")
                 self.assertIn("timeRange", public)
-                self.assertIn(" – ", public["timeRange"])
+                self.assertIn(" - ", public["timeRange"])
                 exported = service.store.export_round_jsonl(meta.id).splitlines()[0]
                 exported_meta = json.loads(exported)
                 self.assertEqual(exported_meta["name"], "第一轮")
@@ -905,6 +905,6 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(meta.name, "第 1 轮")
                 public = service.public_state()["sessions"][0]
                 self.assertEqual(public["displayName"], "第 1 轮")
-                self.assertEqual(public["timeRange"], "2026/07/05 11:32:26 – 11:32:40")
+                self.assertEqual(public["timeRange"], "2026/07/05 11:32:26 - 11:32:40")
             finally:
                 service.collector.fingerprints.close()

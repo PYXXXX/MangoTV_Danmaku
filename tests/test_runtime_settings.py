@@ -539,6 +539,19 @@ class SettingsApiHttpTest(SettingsHttpBase):
         self.assertEqual(timeline["roundId"], meta.id)
         self.assertEqual(timeline["markers"][0]["label"], "开场")
 
+        response = await self.client.post(
+            f"/api/recordings/{meta.id}/markers",
+            json={"label": "副歌", "atSeconds": 12.5},
+        )
+        self.assertEqual(response.status, 200)
+        marker_result = await response.json()
+        self.assertEqual(marker_result["marker"]["label"], "副歌")
+
+        response = await self.client.get(f"/api/recordings/{meta.id}")
+        self.assertEqual(response.status, 200)
+        recording = await response.json()
+        self.assertEqual(recording["markers"][-1]["label"], "副歌")
+
 
 if __name__ == "__main__":
     unittest.main()

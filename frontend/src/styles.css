@@ -44,6 +44,26 @@ body::before {
   mask-image: linear-gradient(to bottom, black, transparent 82%);
 }
 
+.public-stage {
+  position: relative;
+  overflow-x: hidden;
+}
+
+.public-stage::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at 56% 8%, rgba(255, 192, 119, .32), transparent 28rem),
+    radial-gradient(ellipse at 72% 16%, rgba(255, 134, 31, .20), transparent 22rem),
+    radial-gradient(ellipse at 50% 24%, rgba(255, 134, 31, .13), transparent 40rem),
+    linear-gradient(100deg, transparent 0 34%, rgba(255, 192, 119, .18) 48%, transparent 58%),
+    repeating-radial-gradient(ellipse at 50% 26%, rgba(255, 192, 119, .18) 0 1px, transparent 2px 18px);
+  mask-image: linear-gradient(to bottom, black 0 64%, transparent 92%);
+  opacity: .88;
+}
+
 #root {
   min-height: 100dvh;
 }
