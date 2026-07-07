@@ -14,6 +14,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 DATA_SOURCE_URL = "https://pyxxxx.github.io/MangoTV_Danmaku/"
+DISCLAIMER_TEXT = "非官方正式统计，不代表湖南卫视 & 芒果 TV 立场，仅供娱乐参考。"
 
 
 @dataclass(frozen=True)
@@ -212,13 +213,13 @@ def render_result_png(state: dict[str, Any], round_id: str, requested_result: st
 
     footer_y = height - 118
     draw.rounded_rectangle((left, footer_y, right, footer_y + 54), radius=14, fill="#17181b", outline="#2c2e33")
-    draw.text((left + 18, footer_y + 16), "统计数据不代表湖南卫视 & 芒果 TV 立场，仅供娱乐参考。", fill="#b9bbc1", font=fonts.small)
+    draw.text((left + 18, footer_y + 16), DISCLAIMER_TEXT, fill="#b9bbc1", font=fonts.small)
     draw.line((left, height - 44, right, height - 44), fill="#222428", width=1)
     publish_text = f"数据发布于 {_format_beijing(state.get('publishedAt'))}"
     export_text = f"导出时间 {_format_beijing()}"
     source_text = f"数据来源：{DATA_SOURCE_URL}"
     draw.text((left, height - 58), source_text, fill="#858890", font=fonts.small)
-    draw.text((left, height - 30), "页面仅展示聚合票数，不包含观众昵称与原始弹幕", fill="#666970", font=fonts.small)
+    draw.text((left, height - 30), "页面仅展示聚合人气统计，不包含观众昵称与原始弹幕", fill="#666970", font=fonts.small)
     draw.text((right - _text_width(draw, export_text, fonts.small), height - 30), export_text, fill="#666970", font=fonts.small)
     draw.text((right - _text_width(draw, publish_text, fonts.small), height - 58), publish_text, fill="#666970", font=fonts.small)
 

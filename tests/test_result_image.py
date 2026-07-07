@@ -1,6 +1,6 @@
 import unittest
 
-from server.result_image import DATA_SOURCE_URL, render_result_png
+from server.result_image import DATA_SOURCE_URL, DISCLAIMER_TEXT, render_result_png
 
 
 class ResultImageTest(unittest.TestCase):
@@ -37,6 +37,7 @@ class ResultImageTest(unittest.TestCase):
         self.assertGreater(len(body), 10_000)
         self.assertEqual(filename, "mgtv-result-round-1-rough.png")
         self.assertEqual(DATA_SOURCE_URL, "https://pyxxxx.github.io/MangoTV_Danmaku/")
+        self.assertEqual(DISCLAIMER_TEXT, "非官方正式统计，不代表湖南卫视 & 芒果 TV 立场，仅供娱乐参考。")
 
     def test_render_result_png_prefers_precise_when_requested(self):
         state = {

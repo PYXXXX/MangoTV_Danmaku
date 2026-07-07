@@ -7,6 +7,7 @@ import { RankingTable } from "../../components/RankingTable";
 import { currentRound, formatCount, rankingRows, roundName, selectedResult } from "../../lib/format";
 
 const dataSource = "https://pyxxxx.github.io/MangoTV_Danmaku/";
+const disclaimer = "非官方正式统计，不代表湖南卫视 & 芒果 TV 立场，仅供娱乐参考。";
 
 export function PublicResultsApp() {
   const query = useQuery({ queryKey: ["public-results"], queryFn: getPublicPageState });
@@ -57,7 +58,7 @@ export function PublicResultsApp() {
           <section className="grid content-center">
             <p className="mb-4 font-mono text-xs font-black uppercase tracking-[0.18em] text-ops-orange">Public Live Report</p>
             <h1 className="max-w-4xl text-6xl font-black leading-[.96] tracking-[-0.065em] max-md:text-4xl">
-              <span className="text-ops-gold">{activity}</span> · 直播弹幕投票统计
+              <span className="text-ops-gold">{activity}</span> · 直播弹幕人气统计
             </h1>
             <p className="mt-5 max-w-3xl text-xl leading-8 text-[#d6d0c6]">
               实时弹幕切片分析与公开结果发布。数据每 30 秒自动刷新一次。
@@ -149,7 +150,7 @@ export function PublicResultsApp() {
               <div id="source" className="grid gap-3 text-sm leading-7 text-ops-muted">
                 <p className="flex gap-2"><ShieldCheck size={20} className="mt-1 text-ops-green" /> 页面数据来自公开弹幕采集与统计分析。</p>
                 <p className="min-w-0 [overflow-wrap:anywhere]">公开结果页地址：<a className="text-ops-gold" href={dataSource}>{dataSource}</a></p>
-                <p>统计数据不代表湖南卫视 &amp; 芒果 TV 立场，仅供娱乐参考。</p>
+                <p>{disclaimer}</p>
               </div>
             </Card>
 

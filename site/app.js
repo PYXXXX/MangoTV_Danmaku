@@ -31,6 +31,7 @@ let selectedSessionId = null;
 const selectedResultBySession = {};
 let currentView = null;
 const DATA_SOURCE_URL = "https://pyxxxx.github.io/MangoTV_Danmaku/";
+const DISCLAIMER_TEXT = "非官方正式统计，不代表湖南卫视 & 芒果 TV 立场，仅供娱乐参考。";
 
 function formatCount(value) {
   const number = Number(value || 0);
@@ -314,7 +315,7 @@ function renderCurrentPng() {
   ctx.stroke();
   ctx.fillStyle = "#b9bbc1";
   ctx.font = `18px ${fontStack}`;
-  ctx.fillText("统计数据不代表湖南卫视 & 芒果 TV 立场，仅供娱乐参考。", left + 18, footerY + 34);
+  ctx.fillText(DISCLAIMER_TEXT, left + 18, footerY + 34);
   ctx.strokeStyle = "#222428";
   ctx.beginPath();
   ctx.moveTo(left, height - 44);
@@ -323,7 +324,7 @@ function renderCurrentPng() {
   ctx.fillStyle = "#858890";
   ctx.fillText(`数据来源：${DATA_SOURCE_URL}`, left, height - 58);
   ctx.fillStyle = "#666970";
-  ctx.fillText("页面仅展示聚合票数，不包含观众昵称与原始弹幕", left, height - 30);
+  ctx.fillText("页面仅展示聚合人气统计，不包含观众昵称与原始弹幕", left, height - 30);
   const publishText = `数据发布于 ${formatDateTime(publicState?.publishedAt)}`;
   const exportText = `导出时间 ${formatDateTime()}`;
   ctx.fillText(publishText, right - ctx.measureText(publishText).width, height - 58);
@@ -369,7 +370,7 @@ function render() {
   currentView = { session, result: current.data, resultType: current.type, rows, total };
   elements.exportPng.disabled = false;
   if (elements.exportPngSide) elements.exportPngSide.disabled = false;
-  elements.pageTitle.textContent = `${session.activity || selectedActivity || "直播活动"} · 直播弹幕投票统计`;
+  elements.pageTitle.textContent = `${session.activity || selectedActivity || "直播活动"} · 直播弹幕人气统计`;
   if (elements.publicActivityNav) elements.publicActivityNav.textContent = session.activity || selectedActivity || "直播活动";
   elements.currentRound.textContent = sessionDisplayName(session);
   elements.currentRoundMeta.textContent = sessionTimeRange(session) || (session.status === "running" ? "正在采集" : "暂无场次时间");

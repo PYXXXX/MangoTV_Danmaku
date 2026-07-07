@@ -59,6 +59,8 @@ class WebuiSettingsJsTest(unittest.TestCase):
         source = (ROOT / "site" / "app.js").read_text(encoding="utf-8")
         self.assertIn("exportPng", html)
         self.assertIn("PUBLIC LIVE REPORT", html)
+        self.assertIn("直播弹幕人气统计", html)
+        self.assertIn("非官方正式统计，不代表湖南卫视 &amp; 芒果 TV 立场", html)
         self.assertIn("currentRound", html)
         self.assertIn("timeline", html)
         self.assertIn("renderCurrentPng", source)
@@ -66,6 +68,8 @@ class WebuiSettingsJsTest(unittest.TestCase):
         self.assertIn("renderWinner", source)
         self.assertIn("canvas.toDataURL(\"image/png\")", source)
         self.assertIn("https://pyxxxx.github.io/MangoTV_Danmaku/", source)
+        self.assertIn("直播弹幕人气统计", source)
+        self.assertIn("非官方正式统计，不代表湖南卫视 & 芒果 TV 立场", source)
 
     def test_settings_js_keeps_recording_config_fields(self):
         html = (ROOT / "server" / "webui" / "index.html").read_text(encoding="utf-8")
