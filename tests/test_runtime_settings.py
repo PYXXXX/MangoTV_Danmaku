@@ -441,6 +441,104 @@ class SettingsApiHttpTest(SettingsHttpBase):
         self.assertFalse(result["published"])
         self.assertIsNone(self.service.store.active_round_id)
 
+    async def test_studio_activity_and_round_contracts(self):
+        response = await self.client.get("/api/studio/bootstrap")
+        self.assertEqual(response.status, 200)
+        bootstrap = await response.json()
+        self.assertTrue(bootstrap["ok"])
+        self.assertIn("activities", bootstrap)
+
+        response = await self.client.post(
+            "/api/activities",
+            json={
+                "name": "歌手 2026",
+                "url": "https://www.mgtv.com/z/1001668.html",
+                "monitorEnabled": True,
+                "policy": {
+                    "autoDetectSource": True,
+                    "autoRecordVideo": False,
+                    "autoRecordDanmaku": True,
+                    "feishuNotify": False,
+                    "pollSeconds": 30,
+                    "preferredQuality": "720P",
+                },
+            },
+        )
+        self.assertEqual(response.status, 200)
+        activity_result = await response.json()
+        self.assertTrue(activity_result["ok"])
+        self.assertEqual(self.service.config["vote"]["activity"], "歌手 2026")
+        self.assertEqual(self.service.config["monitor"]["url"], "https://www.mgtv.com/z/1001668.html")
+        self.assertTrue(self.service.config["monitor"]["enabled"])
+        self.assertEqual(self.service.config["recording"]["preferred_quality"], "720P")
+
+        response = await self.client.get("/api/activities")
+        self.assertEqual(response.status, 200)
+        activities = await response.json()
+        self.assertEqual(activities["selectedId"], "1001668")
+        self.assertEqual(activities["items"][0]["name"], "歌手 2026")
+
+        response = await self.client.post("/api/activities/1001668/monitor/stop")
+        self.assertEqual(response.status, 200)
+        self.assertFalse(self.service.config["monitor"]["enabled"])
+
+        meta = await self.service.store.create_round(
+            "歌手 2026",
+            "第一轮",
+            "https://www.mgtv.com/z/1001668.html",
+            self.service.default_candidates,
+            self.service.default_policy,
+        )
+        await self.service.store.stop_active()
+
+        response = await self.client.get("/api/rounds")
+        self.assertEqual(response.status, 200)
+        rounds = await response.json()
+        self.assertEqual(rounds["items"][0]["id"], meta.id)
+
+        response = await self.client.patch(f"/api/rounds/{meta.id}", json={"name": "选歌环节"})
+        self.assertEqual(response.status, 200)
+        renamed = await response.json()
+        self.assertEqual(renamed["name"], "选歌环节")
+
+        response = await self.client.get(f"/api/rounds/{meta.id}/results")
+        self.assertEqual(response.status, 200)
+        results = await response.json()
+        self.assertEqual(results["roundId"], meta.id)
+        self.assertEqual(results["ranking"][0]["name"], "甲")
+
+        response = await self.client.post(f"/api/rounds/{meta.id}/publish", json={"resultKind": "rough"})
+        self.assertEqual(response.status, 200)
+        publish = await response.json()
+        self.assertTrue(publish["ok"])
+
+    async def test_recording_timeline_contract(self):
+        meta = await self.service.store.create_round(
+            "旧活动",
+            "第一轮",
+            "https://www.mgtv.com/z/1/2.html",
+            self.service.default_candidates,
+            self.service.default_policy,
+        )
+        self.service.recorder.records[meta.id] = {
+            "roundId": meta.id,
+            "activity": meta.activity,
+            "roundName": meta.name,
+            "path": str(Path(self.temp.name) / "missing.mp4"),
+            "status": "finished",
+            "startedAt": meta.startedAt,
+            "endedAt": meta.startedAt,
+            "markers": [{"id": "m1", "label": "开场", "atSeconds": 0}],
+            "clips": [],
+        }
+        self.service.recorder.save()
+
+        response = await self.client.get(f"/api/recordings/{meta.id}/timeline")
+        self.assertEqual(response.status, 200)
+        timeline = await response.json()
+        self.assertEqual(timeline["roundId"], meta.id)
+        self.assertEqual(timeline["markers"][0]["label"], "开场")
+
 
 if __name__ == "__main__":
     unittest.main()

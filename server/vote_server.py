@@ -2011,6 +2011,288 @@ class VoteService:
             self.add_system_event("warn", "feishu", "活动监控飞书通知失败", str(exc), roundId=meta.id)
         return self.monitor_status_view()
 
+    @staticmethod
+    def activity_id_from_url(url: str, name: str = "") -> str:
+        match = re.search(r"/z/(\d+)(?:[/?#.]|$)", str(url or ""))
+        if match:
+            return match.group(1)
+        text = normalize(name) or "default"
+        slug = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff_-]+", "-", text).strip("-_")
+        return slug or "default"
+
+    def activities_view(self) -> dict[str, Any]:
+        public = self.public_state()
+        monitor = self.monitor_status_view()
+        monitor_config = monitor.get("config") or {}
+        monitor_state = monitor.get("state") or {}
+        items: dict[str, dict[str, Any]] = {}
+
+        def ensure_activity(name: str, url: str = "") -> dict[str, Any]:
+            activity_name = normalize(name) or "未分类活动"
+            activity_url = str(url or "")
+            activity_id = self.activity_id_from_url(activity_url, activity_name)
+            item = items.setdefault(activity_id, {
+                "id": activity_id,
+                "name": activity_name,
+                "url": activity_url,
+                "status": "waiting",
+                "monitorEnabled": False,
+                "roundCount": 0,
+                "runningRoundCount": 0,
+                "messageCount": 0,
+                "createdAt": "",
+                "updatedAt": "",
+            })
+            if activity_url and not item.get("url"):
+                item["url"] = activity_url
+            return item
+
+        primary = ensure_activity(str(monitor_config.get("activity") or ""), str(monitor_config.get("url") or ""))
+        primary.update({
+            "status": str(monitor_state.get("status") or "waiting"),
+            "monitorEnabled": bool(monitor_config.get("enabled")),
+            "monitor": monitor,
+        })
+
+        for session in public.get("sessions") or []:
+            item = ensure_activity(str(session.get("activity") or ""), str(session.get("pageUrl") or ""))
+            item["roundCount"] = int(item.get("roundCount") or 0) + 1
+            item["messageCount"] = int(item.get("messageCount") or 0) + int(session.get("messageCount") or 0)
+            if session.get("status") == "running":
+                item["runningRoundCount"] = int(item.get("runningRoundCount") or 0) + 1
+                item["status"] = "running"
+            updated = str(session.get("updatedAt") or session.get("startedAt") or "")
+            if updated and updated > str(item.get("updatedAt") or ""):
+                item["updatedAt"] = updated
+            created = str(session.get("startedAt") or "")
+            if created and (not item.get("createdAt") or created < str(item.get("createdAt"))):
+                item["createdAt"] = created
+
+        return {
+            "items": sorted(
+                items.values(),
+                key=lambda item: (item.get("monitorEnabled") is not True, item.get("updatedAt") or ""),
+            ),
+            "selectedId": primary["id"],
+            "monitor": monitor,
+        }
+
+    def _current_vote_settings_payload(self, activity: str) -> dict[str, Any]:
+        vote = self.config.get("vote") or {}
+        return {
+            "activity": normalize(activity) or str(vote.get("activity") or "未分类活动"),
+            "multi_candidate_policy": str(vote.get("multi_candidate_policy") or "all"),
+            "candidates": copy.deepcopy(vote.get("candidates") or [asdict(candidate) for candidate in self.default_candidates]),
+        }
+
+    def _current_mgtv_settings_payload(self, url: str) -> dict[str, Any]:
+        mgtv = self.config.get("mgtv") or {}
+        return {
+            "url": str(url or mgtv.get("url") or ""),
+            "history_api": str(mgtv.get("history_api") or "https://lb.bz.mgtv.com/get_history"),
+            "flag": str(mgtv.get("flag") or "liveshow"),
+            "room_id": str(mgtv.get("room_id") or ""),
+            "camera_id": str(mgtv.get("camera_id") or ""),
+            "poll_seconds": mgtv.get("poll_seconds", 2),
+            "reconnect_seconds": mgtv.get("reconnect_seconds", 5),
+            "count_initial_history": bool(mgtv.get("count_initial_history", False)),
+            "dedup_hot_cache_size": int(mgtv.get("dedup_hot_cache_size") or 200_000),
+            "dedup_max_records": int(mgtv.get("dedup_max_records") or 100_000_000),
+            "dedup_db_path": str(mgtv.get("dedup_db_path") or "server/data/fingerprints.sqlite3"),
+        }
+
+    def _current_recording_settings_payload(self, preferred_quality: str | None = None) -> dict[str, Any]:
+        recording = self.config.get("recording") or {}
+        return {
+            "enabled": bool(recording.get("enabled", False)),
+            "preferred_quality": str(preferred_quality or recording.get("preferred_quality") or "auto"),
+            "ffmpeg_path": str(recording.get("ffmpeg_path") or "ffmpeg"),
+            "directory": str(recording.get("directory") or "server/data/recordings"),
+        }
+
+    async def save_activity_settings(self, payload: dict[str, Any], loop: asyncio.AbstractEventLoop) -> dict[str, Any]:
+        monitor = self.monitor_config()
+        policy = payload.get("policy") if isinstance(payload.get("policy"), dict) else {}
+        name = normalize(payload.get("name") or payload.get("activity") or monitor["activity"])
+        url = str(payload.get("url") or monitor["url"] or "").strip()
+        if not name:
+            raise SettingsValidationError("活动名称不能为空")
+        if not url:
+            raise SettingsValidationError("活动链接不能为空")
+
+        def pick_bool(camel: str, snake: str, default: bool) -> bool:
+            if camel in payload:
+                return bool(payload.get(camel))
+            if snake in payload:
+                return bool(payload.get(snake))
+            if camel in policy:
+                return bool(policy.get(camel))
+            if snake in policy:
+                return bool(policy.get(snake))
+            return default
+
+        settings_payload: dict[str, Any] = {
+            "vote": self._current_vote_settings_payload(name),
+            "mgtv": self._current_mgtv_settings_payload(url),
+            "monitor": {
+                "enabled": pick_bool("monitorEnabled", "enabled", bool(monitor.get("enabled"))),
+                "activity": name,
+                "url": url,
+                "auto_detect_source": pick_bool("autoDetectSource", "auto_detect_source", bool(monitor.get("autoDetectSource", True))),
+                "auto_record_video": pick_bool("autoRecordVideo", "auto_record_video", bool(monitor.get("autoRecordVideo", False))),
+                "auto_record_danmaku": pick_bool("autoRecordDanmaku", "auto_record_danmaku", bool(monitor.get("autoRecordDanmaku", True))),
+                "feishu_notify": pick_bool("feishuNotify", "feishu_notify", bool(monitor.get("feishuNotify", True))),
+                "poll_seconds": int(payload.get("pollSeconds") or policy.get("pollSeconds") or monitor.get("pollSeconds") or 45),
+                "round_name": str(payload.get("roundName") or policy.get("roundName") or monitor.get("roundName") or "").strip(),
+            },
+        }
+        preferred_quality = payload.get("preferredQuality") or policy.get("preferredQuality")
+        if preferred_quality:
+            settings_payload["recording"] = self._current_recording_settings_payload(str(preferred_quality))
+        result = await self.apply_settings(settings_payload, loop)
+        if bool((settings_payload.get("monitor") or {}).get("enabled")):
+            self.start_background_tasks(loop)
+        activities = self.activities_view()
+        selected_activity = next((item for item in activities.get("items") or [] if item.get("id") == activities.get("selectedId")), None)
+        return {
+            "ok": True,
+            "activity": selected_activity,
+            "settings": result,
+        }
+
+    async def set_activity_monitor_enabled(self, enabled: bool, loop: asyncio.AbstractEventLoop) -> dict[str, Any]:
+        monitor = self.monitor_config()
+        result = await self.save_activity_settings({
+            "name": monitor["activity"],
+            "url": monitor["url"],
+            "monitorEnabled": enabled,
+            "policy": {
+                "autoDetectSource": monitor["autoDetectSource"],
+                "autoRecordVideo": monitor["autoRecordVideo"],
+                "autoRecordDanmaku": monitor["autoRecordDanmaku"],
+                "feishuNotify": monitor["feishuNotify"],
+                "pollSeconds": monitor["pollSeconds"],
+                "roundName": monitor["roundName"],
+            },
+        }, loop)
+        self._set_monitor_state(
+            status="armed" if enabled else "disabled",
+            message="活动监控已启动。" if enabled else "活动监控已停止。",
+            activity=monitor["activity"],
+            url=monitor["url"],
+            lastError="",
+        )
+        return result
+
+    def round_results_view(self, round_id: str, result_kind: str | None = None) -> dict[str, Any]:
+        public = self.public_state()
+        session = next((item for item in public.get("sessions") or [] if item.get("id") == round_id), None)
+        if not session:
+            raise KeyError(f"找不到场次：{round_id}")
+        current = result_kind if result_kind in {"rough", "precise"} else session.get("defaultResultType") or "rough"
+        results = session.get("results") or {}
+        data = results.get(current) or results.get("rough") or {}
+        counts = data.get("voteCounts") or session.get("voteCounts") or {}
+        candidates = session.get("candidates") or []
+        total = max(1, sum(int(value or 0) for value in counts.values()))
+        ranking = []
+        for candidate in candidates:
+            candidate_id = str(candidate.get("id") or "")
+            votes = int(counts.get(candidate_id) or 0)
+            ranking.append({
+                "candidateId": candidate_id,
+                "name": candidate.get("name") or candidate_id,
+                "votes": votes,
+                "percent": round((votes / total) * 100, 1) if votes else 0,
+                "trend": 0,
+                "leader": False,
+            })
+        ranking.sort(key=lambda item: item["votes"], reverse=True)
+        if ranking:
+            ranking[0]["leader"] = True
+        return {
+            "roundId": round_id,
+            "currentType": current,
+            "rough": results.get("rough"),
+            "precise": results.get("precise"),
+            "ranking": ranking,
+            "publishedAt": public.get("publishedAt"),
+            "session": session,
+        }
+
+    def rounds_view(self, *, activity_id: str = "", status: str = "", limit: int = 200) -> dict[str, Any]:
+        public = self.public_state()
+        sessions = list(public.get("sessions") or [])
+        if activity_id:
+            sessions = [
+                item for item in sessions
+                if self.activity_id_from_url(str(item.get("pageUrl") or ""), str(item.get("activity") or "")) == activity_id
+                or normalize(str(item.get("activity") or "")) == normalize(activity_id)
+            ]
+        if status:
+            sessions = [item for item in sessions if str(item.get("status") or "") == status]
+        return {
+            "items": sessions[: max(1, min(500, limit))],
+            "activeRoundId": public.get("activeSessionId"),
+        }
+
+    def studio_bootstrap_view(self) -> dict[str, Any]:
+        public = self.public_state()
+        activities = self.activities_view()
+        logs = self.system_logs(60)
+        return {
+            "ok": True,
+            "generatedAt": now_iso(),
+            "defaults": {
+                "activityName": (public.get("defaults") or {}).get("activity") or "未分类活动",
+                "publicResultsUrl": (public.get("defaults") or {}).get("publicResultsUrl") or "",
+            },
+            "activity": next((item for item in activities.get("items") or [] if item.get("id") == activities.get("selectedId")), None),
+            "activities": activities.get("items") or [],
+            "monitor": self.monitor_status_view(),
+            "publicState": public,
+            "activeRound": next((item for item in public.get("sessions") or [] if item.get("id") == public.get("activeSessionId")), None),
+            "rounds": public.get("sessions") or [],
+            "recordings": self.recorder.public_records(),
+            "systemStatus": self.system_status(),
+            "logs": logs.get("events") or [],
+            "settings": self.settings_view(),
+            "permissions": {"operatorAuthenticated": True},
+        }
+
+    def recording_timeline_view(self, round_id: str, bucket_seconds: int = 30) -> dict[str, Any]:
+        record = self.recorder.record_for(round_id)
+        if not record:
+            raise KeyError(f"找不到录制：{round_id}")
+        bucket = max(5, min(300, int(bucket_seconds or 30)))
+        started = parse_iso(str(record.get("startedAt") or self.store.require_round(round_id).sliceStartTime))
+        counts: dict[int, int] = {}
+        for item in self.store.iter_slice_records(round_id) or []:
+            try:
+                offset = int((parse_iso(str(item.get("ts") or "")) - started).total_seconds())
+            except ValueError:
+                continue
+            if offset >= 0:
+                key = (offset // bucket) * bucket
+                counts[key] = counts.get(key, 0) + 1
+        ended_at = str(record.get("endedAt") or "")
+        if ended_at:
+            duration = max(0.0, (parse_iso(ended_at) - started).total_seconds())
+        elif counts:
+            duration = max(counts) + bucket
+        else:
+            duration = float(record.get("durationSeconds") or 0)
+        public_record = next((item for item in self.recorder.public_records() if item.get("roundId") == round_id), dict(record))
+        return {
+            "roundId": round_id,
+            "durationSeconds": duration,
+            "bucketSeconds": bucket,
+            "danmakuDensity": [{"t": key, "count": counts[key]} for key in sorted(counts)],
+            "markers": public_record.get("markers") or [],
+            "clips": public_record.get("clips") or [],
+            "recording": public_record,
+        }
+
     def public_base_url(self) -> str:
         return str((self.config.get("listen") or {}).get("public_base_url") or "").rstrip("/")
 
@@ -3070,11 +3352,80 @@ def create_app(service: VoteService) -> web.Application:
             limit = int(request.query.get("limit", "120"))
         except ValueError:
             limit = 120
+        payload = service.system_logs(limit)
+        events = payload.get("events") or []
+        level = str(request.query.get("level") or "").strip().upper()
+        source = str(request.query.get("source") or "").strip()
+        query = normalize(str(request.query.get("q") or ""))
+        if level:
+            events = [item for item in events if str(item.get("level") or "").upper() == level]
+        if source:
+            events = [item for item in events if str(item.get("source") or "") == source]
+        if query:
+            events = [
+                item for item in events
+                if query in normalize(json.dumps(item, ensure_ascii=False))
+            ]
+        payload["events"] = events
         return web.json_response(
-            service.system_logs(limit),
+            payload,
             dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
             headers={"Cache-Control": "no-store"},
         )
+
+    async def studio_bootstrap(_: web.Request) -> web.Response:
+        return web.json_response(
+            service.studio_bootstrap_view(),
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def list_activities(_: web.Request) -> web.Response:
+        return web.json_response(
+            service.activities_view(),
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def save_activity(request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+            result = await service.save_activity_settings(data, asyncio.get_running_loop())
+        except SettingsValidationError as exc:
+            return web.json_response({"error": str(exc)}, status=400, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except (OSError, RuntimeError) as exc:
+            return web.json_response({"error": str(exc)}, status=500, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response(result, dumps=lambda payload: json.dumps(payload, ensure_ascii=False), headers={"Cache-Control": "no-store"})
+
+    async def get_activity_monitor(_: web.Request) -> web.Response:
+        return web.json_response(
+            service.monitor_status_view(),
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def start_activity_monitor(_: web.Request) -> web.Response:
+        try:
+            result = await service.set_activity_monitor_enabled(True, asyncio.get_running_loop())
+        except SettingsValidationError as exc:
+            return web.json_response({"error": str(exc)}, status=400, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response(result, dumps=lambda payload: json.dumps(payload, ensure_ascii=False), headers={"Cache-Control": "no-store"})
+
+    async def stop_activity_monitor(_: web.Request) -> web.Response:
+        try:
+            result = await service.set_activity_monitor_enabled(False, asyncio.get_running_loop())
+        except SettingsValidationError as exc:
+            return web.json_response({"error": str(exc)}, status=400, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response(result, dumps=lambda payload: json.dumps(payload, ensure_ascii=False), headers={"Cache-Control": "no-store"})
+
+    async def detect_activity_source(request: web.Request) -> web.Response:
+        data = await request.json() if request.can_read_body else {}
+        monitor = service.monitor_config()
+        url = str(data.get("url") or monitor.get("url") or "")
+        quality = str(data.get("quality") or (service.config.get("recording") or {}).get("preferred_quality") or "auto")
+        result = await service.detect_mgtv_recording_source(url, quality)
+        status = 200 if result.get("ok") else 409
+        return web.json_response(result, status=status, dumps=lambda payload: json.dumps(payload, ensure_ascii=False), headers={"Cache-Control": "no-store"})
 
     async def get_settings(_: web.Request) -> web.Response:
         return web.json_response(
@@ -3251,6 +3602,64 @@ def create_app(service: VoteService) -> web.Application:
             headers={"Cache-Control": "no-store"},
         )
 
+    async def list_rounds(request: web.Request) -> web.Response:
+        try:
+            limit = int(request.query.get("limit", "200"))
+        except ValueError:
+            limit = 200
+        return web.json_response(
+            service.rounds_view(
+                activity_id=str(request.query.get("activityId") or ""),
+                status=str(request.query.get("status") or ""),
+                limit=limit,
+            ),
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def patch_round(request: web.Request) -> web.Response:
+        round_id = request.match_info["round_id"]
+        data = await request.json()
+        try:
+            meta = await service.store.rename_round(round_id, str(data.get("name") or ""))
+        except KeyError as exc:
+            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        await service.publisher.publish(force=True, result_kind="rough")
+        service.add_system_event("info", "round", "场次已重命名", f"{meta.activity} / {meta.name}", roundId=meta.id)
+        return web.json_response(
+            {"ok": True, "roundId": meta.id, "name": meta.name, "round": service.round_results_view(meta.id)["session"]},
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def publish_round(request: web.Request) -> web.Response:
+        round_id = request.match_info["round_id"]
+        data = await request.json() if request.can_read_body else {}
+        result_kind = str(data.get("resultKind") or data.get("result") or "rough")
+        if result_kind not in {"rough", "precise"}:
+            return web.json_response({"error": "resultKind 只能是 rough 或 precise"}, status=400, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        try:
+            service.store.require_round(round_id)
+            url = await service.publisher.publish(force=True, result_kind=result_kind)
+        except KeyError as exc:
+            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except RuntimeError as exc:
+            return web.json_response({"error": str(exc)}, status=502, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        service.add_system_event("info", "publisher", "公开页已发布", f"{result_kind}: {url}", roundId=round_id)
+        return web.json_response(
+            {"ok": True, "roundId": round_id, "resultKind": result_kind, "publishUrl": url, "publishedAt": now_iso()},
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def round_results_api(request: web.Request) -> web.Response:
+        round_id = request.match_info["round_id"]
+        try:
+            payload = service.round_results_view(round_id, str(request.query.get("result") or ""))
+        except KeyError as exc:
+            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response(payload, dumps=lambda payload: json.dumps(payload, ensure_ascii=False), headers={"Cache-Control": "no-store"})
+
     async def push_feishu_card(_: web.Request) -> web.Response:
         try:
             result = await service.push_feishu_control_card()
@@ -3281,6 +3690,17 @@ def create_app(service: VoteService) -> web.Application:
         payload["hasVideo"] = path.exists()
         payload["videoUrl"] = f"/api/rounds/{quote(round_id, safe='')}/recording/video" if path.exists() else ""
         return web.json_response(payload, dumps=lambda data: json.dumps(data, ensure_ascii=False), headers={"Cache-Control": "no-store"})
+
+    async def recording_by_round(request: web.Request) -> web.Response:
+        return await round_recording(request)
+
+    async def recording_timeline(request: web.Request) -> web.Response:
+        round_id = request.match_info["round_id"]
+        try:
+            payload = service.recording_timeline_view(round_id)
+        except KeyError as exc:
+            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response(payload, dumps=lambda payload: json.dumps(payload, ensure_ascii=False), headers={"Cache-Control": "no-store"})
 
     async def round_recording_video(request: web.Request) -> web.StreamResponse:
         round_id = request.match_info["round_id"]
@@ -3540,10 +3960,18 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_get("/webui/index.html", webui_index)
     app.router.add_static("/webui", webui_dir)
     app.router.add_get("/healthz", health)
+    app.router.add_get("/api/studio/bootstrap", studio_bootstrap)
     app.router.add_get("/api/system/status", system_status)
     app.router.add_get("/api/system/logs", system_logs)
     app.router.add_get("/docs/precise-result-agent", precise_result_doc)
     app.router.add_get("/api/results.json", results)
+    app.router.add_get("/api/activities", list_activities)
+    app.router.add_post("/api/activities", save_activity)
+    app.router.add_patch("/api/activities/{activity_id}", save_activity)
+    app.router.add_get("/api/activities/{activity_id}/monitor", get_activity_monitor)
+    app.router.add_post("/api/activities/{activity_id}/monitor/start", start_activity_monitor)
+    app.router.add_post("/api/activities/{activity_id}/monitor/stop", stop_activity_monitor)
+    app.router.add_post("/api/activities/{activity_id}/source/detect", detect_activity_source)
     app.router.add_get("/api/settings", get_settings)
     app.router.add_post("/api/settings", update_settings)
     app.router.add_get("/api/mgtv/auth", mgtv_auth_status)
@@ -3556,8 +3984,14 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_get("/api/update/status", update_status)
     app.router.add_post("/api/update/apply", apply_update)
     app.router.add_get("/api/recordings", recordings)
+    app.router.add_get("/api/recordings/{round_id}", recording_by_round)
+    app.router.add_get("/api/recordings/{round_id}/timeline", recording_timeline)
+    app.router.add_get("/api/rounds", list_rounds)
     app.router.add_post("/api/rounds/start", start_round_api)
+    app.router.add_patch("/api/rounds/{round_id}", patch_round)
     app.router.add_post("/api/rounds/{round_id}/end", end_round_api)
+    app.router.add_post("/api/rounds/{round_id}/publish", publish_round)
+    app.router.add_get("/api/rounds/{round_id}/results", round_results_api)
     app.router.add_get("/api/rounds/{round_id}.jsonl", round_export)
     app.router.add_get("/api/rounds/{round_id}/raw.jsonl", round_raw_export)
     app.router.add_get("/api/rounds/{round_id}/result.png", round_result_png)

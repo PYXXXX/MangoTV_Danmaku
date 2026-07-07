@@ -43,6 +43,19 @@ export async function apiPost<T>(url: string, body?: unknown): Promise<T> {
   return parseJson<T>(response);
 }
 
+export async function apiPatch<T>(url: string, body?: unknown): Promise<T> {
+  const response = await fetch(url, {
+    method: "PATCH",
+    headers: jsonHeaders,
+    body: JSON.stringify(body ?? {})
+  });
+  if (response.status === 401) {
+    window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+    throw new ApiError("登录已过期", 401);
+  }
+  return parseJson<T>(response);
+}
+
 export async function getPublicState(): Promise<PublicState> {
   return apiGet<PublicState>("/api/results.json");
 }
@@ -61,15 +74,5 @@ export async function getSystemLogs(limit = 120): Promise<SystemLogsResponse> {
 }
 
 export async function getBootstrap(): Promise<StudioBootstrap> {
-  const [publicState, systemStatus, logs] = await Promise.all([
-    getPublicState(),
-    getSystemStatus().catch(() => undefined),
-    getSystemLogs(40).then((payload) => payload.events ?? payload.items ?? []).catch(() => [])
-  ]);
-  return {
-    generatedAt: new Date().toISOString(),
-    publicState,
-    systemStatus,
-    logs
-  };
+  return apiGet<StudioBootstrap>("/api/studio/bootstrap");
 }

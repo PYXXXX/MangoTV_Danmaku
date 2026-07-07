@@ -93,6 +93,20 @@ export interface PublicState {
   sessions?: RoundSession[];
 }
 
+export interface ActivityItem {
+  id: string;
+  name: string;
+  url?: string;
+  status?: string;
+  monitorEnabled?: boolean;
+  roundCount?: number;
+  runningRoundCount?: number;
+  messageCount?: number;
+  createdAt?: string;
+  updatedAt?: string;
+  monitor?: MonitorView;
+}
+
 export interface MonitorView {
   config?: {
     enabled?: boolean;
@@ -175,9 +189,23 @@ export interface SystemLogsResponse {
 
 export interface StudioBootstrap {
   generatedAt: string;
+  defaults?: {
+    activityName?: string;
+    publicResultsUrl?: string;
+  };
+  activity?: ActivityItem | null;
+  activities?: ActivityItem[];
+  monitor?: MonitorView;
+  activeRound?: RoundSession | null;
+  rounds?: RoundSession[];
+  recordings?: Recording[];
   publicState: PublicState;
   systemStatus?: SystemStatus;
   logs?: SystemLogEvent[];
+  settings?: unknown;
+  permissions?: {
+    operatorAuthenticated?: boolean;
+  };
 }
 
 export interface RankingRow {
