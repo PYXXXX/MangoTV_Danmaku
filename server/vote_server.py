@@ -14,7 +14,9 @@ import hashlib
 import html
 import json
 import os
+import platform
 import re
+import resource
 import secrets
 import shutil
 import signal
@@ -1362,6 +1364,42 @@ class VoteService:
         self.user_selection: dict[str, str] = {}
         self.feishu_connection: Any = None
         self.updater = GitUpdater(self.repo_root)
+        self.started_at = now_iso()
+        self.system_events: list[dict[str, Any]] = []
+        self.add_system_event("info", "service", "服务已启动", "直播运营工作台后端进程已初始化。")
+
+    def add_system_event(
+        self,
+        level: str,
+        source: str,
+        summary: str,
+        detail: str = "",
+        **extra: Any,
+    ) -> None:
+        """Keep a small redacted in-memory event stream for the WebUI log page."""
+        event = {
+            "time": now_iso(),
+            "level": level.upper() if level else "INFO",
+            "source": source or "service",
+            "summary": normalize(summary),
+            "detail": self._redact_log_text(detail),
+        }
+        for key, value in extra.items():
+            if value is not None:
+                event[key] = self._redact_log_text(str(value)) if isinstance(value, str) else value
+        self.system_events.append(event)
+        self.system_events = self.system_events[-300:]
+
+    @staticmethod
+    def _redact_log_text(value: str) -> str:
+        text = str(value or "")
+        patterns = [
+            (r"(?i)(app_secret|token|cookie|session|device_code|user_code|password)(['\":=\s]+)[^,\s\"']+", r"\1\2***"),
+            (r"(?i)(Authorization:\s*Bearer\s+)[^\s]+", r"\1***"),
+        ]
+        for pattern, replacement in patterns:
+            text = re.sub(pattern, replacement, text)
+        return text
 
     def _initial_feishu_binding_state(self) -> dict[str, Any]:
         return {
@@ -1475,6 +1513,162 @@ class VoteService:
             session["recording"] = recordings.get(session.get("id"))
         return state
 
+    def _process_rss_bytes(self) -> int:
+        proc_status = Path("/proc/self/status")
+        if proc_status.exists():
+            for line in proc_status.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[1].isdigit():
+                        return int(parts[1]) * 1024
+        rss = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        if platform.system() == "Darwin":
+            return rss
+        return rss * 1024
+
+    def _memory_snapshot(self) -> dict[str, Any]:
+        total = 0
+        available = 0
+        meminfo = Path("/proc/meminfo")
+        if meminfo.exists():
+            raw: dict[str, int] = {}
+            for line in meminfo.read_text(encoding="utf-8", errors="ignore").splitlines():
+                key, _, value = line.partition(":")
+                parts = value.strip().split()
+                if parts and parts[0].isdigit():
+                    raw[key] = int(parts[0]) * 1024
+            total = raw.get("MemTotal", 0)
+            available = raw.get("MemAvailable", raw.get("MemFree", 0))
+        elif hasattr(os, "sysconf"):
+            try:
+                pages = int(os.sysconf("SC_PHYS_PAGES"))
+                page_size = int(os.sysconf("SC_PAGE_SIZE"))
+                total = pages * page_size
+            except (OSError, ValueError):
+                total = 0
+        used = max(0, total - available) if total and available else 0
+        return {
+            "totalBytes": total,
+            "availableBytes": available,
+            "usedBytes": used,
+            "processRssBytes": self._process_rss_bytes(),
+        }
+
+    @staticmethod
+    def _disk_snapshot(path: Path) -> dict[str, Any]:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            usage = shutil.disk_usage(path)
+            return {
+                "path": str(path),
+                "totalBytes": usage.total,
+                "usedBytes": usage.used,
+                "freeBytes": usage.free,
+                "ok": True,
+            }
+        except OSError as exc:
+            return {"path": str(path), "ok": False, "error": str(exc)}
+
+    @staticmethod
+    def _network_snapshot() -> dict[str, Any]:
+        proc_net = Path("/proc/net/dev")
+        if not proc_net.exists():
+            return {"available": False, "rxBytes": 0, "txBytes": 0}
+        rx_total = 0
+        tx_total = 0
+        for line in proc_net.read_text(encoding="utf-8", errors="ignore").splitlines()[2:]:
+            name, _, stats = line.partition(":")
+            iface = name.strip()
+            if iface == "lo":
+                continue
+            parts = stats.split()
+            if len(parts) >= 16:
+                rx_total += int(parts[0])
+                tx_total += int(parts[8])
+        return {"available": True, "rxBytes": rx_total, "txBytes": tx_total}
+
+    def system_status(self) -> dict[str, Any]:
+        runtime = self.settings_runtime()
+        config = self.config or {}
+        recording = config.get("recording") or {}
+        recording_dir = self.recorder.directory
+        storage_dir = self.store.directory
+        data_disk = self._disk_snapshot(storage_dir)
+        recording_disk = self._disk_snapshot(recording_dir)
+        load_average = list(os.getloadavg()) if hasattr(os, "getloadavg") else []
+        feishu_thread = getattr(self.feishu_connection, "thread", None)
+        active_recordings = [item for item in self.recorder.public_records() if item.get("status") == "recording"]
+        update_in_progress = self.update_task is not None and not self.update_task.done()
+        health = "warning" if self.pending_restart_fields else "ok"
+        recent_errors = [event for event in self.system_events[-50:] if event.get("level") == "ERROR"]
+        if recent_errors:
+            health = "error"
+        return {
+            "ok": True,
+            "generatedAt": now_iso(),
+            "systemTime": datetime.now(BEIJING_TZ).isoformat(timespec="seconds"),
+            "timezone": "Asia/Shanghai",
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+            "startedAt": self.started_at,
+            "uptimeSeconds": max(0, int((parse_iso(now_iso()) - parse_iso(self.started_at)).total_seconds())),
+            "process": {
+                "pid": os.getpid(),
+                "name": "mgtv-danmaku",
+                "rssBytes": self._process_rss_bytes(),
+            },
+            "cpu": {
+                "count": os.cpu_count() or 0,
+                "loadAverage": load_average,
+                "loadPercent": round((load_average[0] / max(1, os.cpu_count() or 1)) * 100, 1) if load_average else None,
+            },
+            "memory": self._memory_snapshot(),
+            "network": self._network_snapshot(),
+            "disk": {
+                "data": data_disk,
+                "recordings": recording_disk,
+            },
+            "services": {
+                "collector": {"status": "running" if self.collector.running() else "idle", "activeRoundId": self.store.active_round_id},
+                "recorder": {"status": "recording" if active_recordings else "idle", "activeCount": len(active_recordings), "enabled": self.recorder.enabled()},
+                "feishu": {"status": "connected" if feishu_thread and feishu_thread.is_alive() else ("enabled" if self.feishu.enabled() else "disabled")},
+                "github": {"status": "enabled" if (config.get("github") or {}).get("enabled") else "disabled"},
+                "updater": {"status": "running" if update_in_progress else "idle", "progress": self.update_progress},
+                "recordingSource": {
+                    "configured": bool(recording.get("stream_url")),
+                    "quality": recording.get("last_detected_quality") or recording.get("preferred_quality") or "auto",
+                    "detectedAt": recording.get("last_detected_at") or "",
+                },
+            },
+            "health": {
+                "status": health,
+                "restartRequired": runtime["restartRequired"],
+                "restartFields": runtime["restartFields"],
+                "recentErrorCount": len(recent_errors),
+            },
+        }
+
+    def system_logs(self, limit: int = 120) -> dict[str, Any]:
+        events = list(reversed(self.system_events[-max(1, min(300, limit)):]))
+        if self.update_progress.get("logs"):
+            update_events = [
+                {
+                    "time": self.update_progress.get("updatedAt") or now_iso(),
+                    "level": "INFO" if self.update_progress.get("stage") != "failed" else "ERROR",
+                    "source": "updater",
+                    "summary": self._redact_log_text(item),
+                    "detail": "",
+                }
+                for item in reversed(self.update_progress.get("logs") or [])
+            ]
+            events = update_events + events
+        return {
+            "ok": True,
+            "generatedAt": now_iso(),
+            "events": events[:limit],
+            "sources": sorted({str(event.get("source") or "service") for event in events}),
+        }
+
     def public_base_url(self) -> str:
         return str((self.config.get("listen") or {}).get("public_base_url") or "").rstrip("/")
 
@@ -1563,6 +1757,14 @@ class VoteService:
                 self.config = target
                 self.recorder.apply_config(rec)
                 self.collector.apply_config(mgtv)
+            self.add_system_event(
+                "info",
+                "mgtv",
+                "直播源检测成功",
+                f"quality={result.get('actualQuality') or result.get('quality') or preferred}, camera_id={result.get('cameraId') or ''}",
+            )
+        elif result.get("error"):
+            self.add_system_event("warn", "mgtv", "直播源检测失败，等待重试", str(result.get("error") or ""))
         redacted = dict(result)
         if redacted.get("streamUrl"):
             redacted["streamUrl"] = "已解析，已隐藏"
@@ -1779,6 +1981,12 @@ class VoteService:
             self.collector.apply_config(runtime_mgtv)
             self.recorder.apply_config(new_config.get("recording", {}) or {})
             self.mgtv_auth.config = new_config.get("mgtv_auth", {}) or {}
+            self.add_system_event(
+                "info",
+                "settings",
+                "配置已热应用" if not self.pending_restart_fields else "配置已保存，等待安全重启",
+                "restartFields=" + ",".join(self.pending_restart_fields),
+            )
 
             old_feishu = old_config.get("feishu") or {}
             new_feishu = new_config.get("feishu") or {}
@@ -2065,6 +2273,7 @@ class VoteService:
         meta = await self.store.create_round(activity, name, url, self.default_candidates, self.default_policy)
         await self.recorder.start(meta, recording_source)
         await self.collector.start(meta.id, url)
+        self.add_system_event("info", "collector", "场次已开始", f"{meta.activity} / {meta.name}", roundId=meta.id)
         return meta
 
     async def end_round(self, publish: bool = True) -> RoundMeta | None:
@@ -2074,6 +2283,8 @@ class VoteService:
             await self.recorder.stop(meta.id)
         if publish and meta:
             await self.publisher.publish(force=True, result_kind="rough")
+        if meta:
+            self.add_system_event("info", "collector", "场次已结束", f"{meta.activity} / {meta.name}", roundId=meta.id)
         return meta
 
     async def delete_round(self, round_id: str, publish: bool = True) -> tuple[RoundMeta, str]:
@@ -2085,6 +2296,8 @@ class VoteService:
                 publish_url = await self.publisher.publish(force=True, result_kind="rough")
             except RuntimeError as exc:
                 publish_url = f"公开结果同步失败：{exc}"
+                self.add_system_event("warn", "github", "删除场次后公开页同步失败", str(exc), roundId=round_id)
+        self.add_system_event("info", "collector", "场次已删除", f"{meta.activity} / {meta.name}", roundId=meta.id)
         return meta, publish_url
 
     async def delete_activity(self, activity: str, publish: bool = True) -> tuple[list[RoundMeta], str]:
@@ -2097,6 +2310,8 @@ class VoteService:
                 publish_url = await self.publisher.publish(force=True, result_kind="rough")
             except RuntimeError as exc:
                 publish_url = f"公开结果同步失败：{exc}"
+                self.add_system_event("warn", "github", "删除活动后公开页同步失败", str(exc))
+        self.add_system_event("info", "collector", "活动已删除", f"{activity} · {len(metas)} 个场次")
         return metas, publish_url
 
     async def publish_precise_file(self, round_id: str, filename: str, content: bytes) -> tuple[RoundMeta, str]:
@@ -2370,6 +2585,24 @@ def create_app(service: VoteService) -> web.Application:
             "restartRequired": runtime["restartRequired"],
             "restartFields": runtime["restartFields"],
         })
+
+    async def system_status(_: web.Request) -> web.Response:
+        return web.json_response(
+            service.system_status(),
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def system_logs(request: web.Request) -> web.Response:
+        try:
+            limit = int(request.query.get("limit", "120"))
+        except ValueError:
+            limit = 120
+        return web.json_response(
+            service.system_logs(limit),
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
 
     async def get_settings(_: web.Request) -> web.Response:
         return web.json_response(
@@ -2662,6 +2895,7 @@ def create_app(service: VoteService) -> web.Application:
                 raise ValueError("请通过 file 字段上传 .json 或 .xml 文件")
             content = await field.read(decode=False)
             meta, url = await service.publish_precise_file(round_id, field.filename, content)
+            service.add_system_event("info", "publisher", "精确结果已发布", f"{meta.activity} / {meta.name}", roundId=meta.id)
         except KeyError as exc:
             return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
         except (ValueError, web.HTTPBadRequest) as exc:
@@ -2772,6 +3006,8 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_get("/webui/index.html", webui_index)
     app.router.add_static("/webui", webui_dir)
     app.router.add_get("/healthz", health)
+    app.router.add_get("/api/system/status", system_status)
+    app.router.add_get("/api/system/logs", system_logs)
     app.router.add_get("/docs/precise-result-agent", precise_result_doc)
     app.router.add_get("/api/results.json", results)
     app.router.add_get("/api/settings", get_settings)

@@ -1,4 +1,11 @@
 const elements = {
+  pageTitle: document.querySelector("#pageTitle"),
+  resultBadge: document.querySelector("#resultBadge"),
+  precisionBadge: document.querySelector("#precisionBadge"),
+  updatedBadge: document.querySelector("#updatedBadge"),
+  currentRound: document.querySelector("#currentRound"),
+  currentRoundMeta: document.querySelector("#currentRoundMeta"),
+  winnerCard: document.querySelector("#winnerCard"),
   activitySelect: document.querySelector("#activitySelect"),
   sessionSelect: document.querySelector("#sessionSelect"),
   resultButtons: Array.from(document.querySelectorAll("#resultMode [data-result-type]")),
@@ -6,6 +13,9 @@ const elements = {
   liveText: document.querySelector("#liveState span"),
   program: document.querySelector("#program"),
   exportPng: document.querySelector("#exportPng"),
+  exportPngSide: document.querySelector("#exportPngSide"),
+  copyShare: document.querySelector("#copyShare"),
+  timeline: document.querySelector("#timeline"),
   messages: document.querySelector("#messages"),
   votes: document.querySelector("#votes"),
   reviews: document.querySelector("#reviews"),
@@ -82,6 +92,44 @@ function sortedRows(session, result) {
   return (session.candidates || [])
     .map((candidate) => ({ ...candidate, count: result?.voteCounts?.[candidate.id] || 0 }))
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "zh-CN"));
+}
+
+function renderWinner(rows, total) {
+  if (!rows.length || !rows[0].count) {
+    elements.winnerCard.textContent = "结果将在这里显示";
+    return;
+  }
+  const leader = rows[0];
+  const percent = total ? ((leader.count / total) * 100).toFixed(1) : "0.0";
+  elements.winnerCard.innerHTML = "";
+  const label = document.createElement("span");
+  label.textContent = "当前领先";
+  const name = document.createElement("strong");
+  name.textContent = leader.name;
+  const meta = document.createElement("small");
+  meta.textContent = formatCount(leader.count) + " 票 · " + percent + "%";
+  elements.winnerCard.append(label, name, meta);
+}
+
+function renderTimeline(sessions, selectedId) {
+  elements.timeline.replaceChildren(...(sessions.length ? sessions.map((session) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = session.id === selectedId ? "active" : "";
+    const title = document.createElement("strong");
+    title.textContent = (session.results && session.results.precise ? "精确已校验 · " : "") + sessionDisplayName(session);
+    const meta = document.createElement("span");
+    meta.textContent = (session.status === "running" ? "进行中" : "已发布")
+      + (sessionTimeRange(session) ? (" · " + sessionTimeRange(session)) : "")
+      + " · " + formatCount(session.messageCount) + " 样本";
+    button.append(title, meta);
+    button.addEventListener("click", () => {
+      selectedSessionId = session.id;
+      selectedActivity = session.activity || "未分类活动";
+      render();
+    });
+    return button;
+  }) : [Object.assign(document.createElement("div"), { className: "empty", textContent: "暂无场次" })]));
 }
 
 function sessionDisplayName(session) {
@@ -299,6 +347,17 @@ function render() {
   const total = renderRanking(session, current.data);
   currentView = { session, result: current.data, resultType: current.type, rows, total };
   elements.exportPng.disabled = false;
+  if (elements.exportPngSide) elements.exportPngSide.disabled = false;
+  elements.pageTitle.textContent = `${session.activity || selectedActivity || "直播活动"} · 直播弹幕投票统计`;
+  elements.currentRound.textContent = sessionDisplayName(session);
+  elements.currentRoundMeta.textContent = sessionTimeRange(session) || (session.status === "running" ? "正在采集" : "暂无场次时间");
+  elements.resultBadge.textContent = current.type === "precise" ? "精确结果" : "粗略结果";
+  elements.precisionBadge.textContent = session.results?.precise ? "精确结果已发布" : "精确结果待发布";
+  elements.updatedBadge.textContent = publicState?.publishedAt
+    ? `数据更新于 ${new Date(publicState.publishedAt).toLocaleString("zh-CN", { hour12: false })}`
+    : "尚未同步";
+  renderWinner(rows, total);
+  renderTimeline(filtered, session.id);
   const active = session.status === "running";
   elements.liveState.classList.toggle("active", active);
   elements.liveText.textContent = current.type === "precise" ? "精确结果 · 已清洗" : (active ? "LIVE · 粗略统计中" : "粗略结果 · 本轮已结束");
@@ -321,7 +380,9 @@ function render() {
   elements.votes.title = total.toLocaleString("zh-CN");
   elements.reviews.textContent = formatCount(reviewCount);
   elements.reviews.title = Number(reviewCount || 0).toLocaleString("zh-CN");
-  elements.updated.textContent = `数据发布于 ${new Date(publicState.publishedAt).toLocaleString("zh-CN", { hour12: false })}`;
+  elements.updated.textContent = publicState?.publishedAt
+    ? `数据发布于 ${new Date(publicState.publishedAt).toLocaleString("zh-CN", { hour12: false })}`
+    : "尚未同步";
 }
 
 async function load() {
@@ -334,6 +395,7 @@ async function load() {
     elements.liveText.textContent = "数据暂不可用";
     elements.updated.textContent = `读取失败：${error.message}`;
     elements.exportPng.disabled = true;
+    if (elements.exportPngSide) elements.exportPngSide.disabled = true;
   }
 }
 
@@ -351,6 +413,14 @@ elements.resultButtons.forEach((button) => button.addEventListener("click", () =
   render();
 }));
 elements.exportPng.addEventListener("click", renderCurrentPng);
+if (elements.exportPngSide) elements.exportPngSide.addEventListener("click", renderCurrentPng);
+if (elements.copyShare) elements.copyShare.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(window.location.href);
+  } catch (_) {
+    // Clipboard is optional on static hosting.
+  }
+});
 
 load();
 setInterval(load, 30000);

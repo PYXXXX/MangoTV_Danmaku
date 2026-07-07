@@ -7,389 +7,516 @@
     <link rel="stylesheet" href="/webui/styles.css?v={{STATIC_VERSION}}" />
   </head>
   <body>
-    <main>
-      <header>
-        <div>
-          <p class="kicker">LIVE OPS CONTROL</p>
-          <h1>直播运营工作台</h1>
-          <p id="subtitle" class="program">等待服务器状态</p>
-        </div>
-        <div class="controls">
-          <div class="operator-tools">
-            <button id="settingsToggle" class="settings-toggle" type="button">系统配置</button>
-            <!-- OPERATOR_AUTH_CONTROL -->
-          </div>
-          <label for="activitySelect">活动</label>
-          <select id="activitySelect" disabled><option>暂无活动</option></select>
-          <label for="roundSelect">投票场次</label>
-          <select id="roundSelect" disabled><option>暂无场次</option></select>
-          <span class="control-label">结果版本</span>
-          <div id="resultMode" class="result-toggle" role="group" aria-label="结果版本">
-            <button type="button" data-result-type="rough" aria-pressed="true" disabled>粗略结果</button>
-            <button type="button" data-result-type="precise" aria-pressed="false" disabled>精确结果</button>
-          </div>
-          <div id="liveState" class="live-state"><i></i><span>读取中</span></div>
-        </div>
-      </header>
-      <section class="workflow-section" aria-labelledby="realtimeTitle">
-        <div class="workflow-heading">
+    <main class="app-shell">
+      <aside class="sidebar" aria-label="主导航">
+        <div class="brand">
+          <span class="brand-mark">M</span>
           <div>
-            <p class="kicker">REALTIME OPS</p>
-            <h2 id="realtimeTitle">实时运营</h2>
-            <p class="panel-copy">适合你能实时观看直播的场景：开一轮、实时切片弹幕、结束后发布粗略结果。</p>
+            <strong>直播运营工作台</strong>
+            <span>Live Ops Studio</span>
           </div>
         </div>
-        <div class="command-grid" aria-label="场次控制">
-        <form id="startForm" class="panel">
-          <h2>开始新一轮</h2>
-          <label for="activityName">活动名称</label>
-          <input id="activityName" type="text" placeholder="例如：歌手 2026" />
-          <label for="roundName">场次名称</label>
-          <input id="roundName" type="text" placeholder="例如：第一轮 · 在线观众选择" />
-          <label for="liveUrl">直播 URL（可选）</label>
-          <input id="liveUrl" type="url" placeholder="默认使用 server/config.json 中的 mgtv.url" />
-          <button class="primary" type="submit">开始采集</button>
-        </form>
-        <section class="panel">
-          <h2>当前操作</h2>
-          <div class="button-row">
-            <button id="endRound" class="danger" type="button">结束本轮</button>
-            <button id="publish" class="secondary" type="button">发布粗略结果</button>
+        <nav class="side-nav">
+          <button class="nav-item active" type="button" data-page-target="activityPage"><span>◇</span>活动监控</button>
+          <button class="nav-item" type="button" data-page-target="opsPage"><span>▶</span>运营工作区</button>
+          <button id="settingsToggle" class="nav-item settings-toggle" type="button" data-page-target="settingsPanel"><span>⚙</span>系统配置</button>
+          <button class="nav-item" type="button" data-page-target="machinePage"><span>▣</span>机器状态</button>
+          <button class="nav-item" type="button" data-page-target="logsPage"><span>≡</span>系统日志</button>
+        </nav>
+        <div class="sidebar-footer">
+          <!-- OPERATOR_AUTH_CONTROL -->
+        </div>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="kicker">LIVE OPS CONTROL</p>
+            <h1>直播运营工作台</h1>
+            <p id="subtitle" class="program">等待服务器状态</p>
           </div>
-          <label for="renameInput">重命名所选场次</label>
-          <div class="inline-row">
-            <input id="renameInput" type="text" placeholder="输入新名称" />
-            <button id="rename" class="secondary" type="button">重命名</button>
+          <div class="top-pills">
+            <span id="globalActivityPill" class="status-pill warn">等待活动</span>
+            <span id="globalCollectPill" class="status-pill">弹幕未采集</span>
+            <span id="globalFeishuPill" class="status-pill">飞书待检测</span>
+            <div id="liveState" class="live-state"><i></i><span>读取中</span></div>
           </div>
-          <div class="button-row lower">
-            <a id="downloadSlice" class="link-button disabled" href="#" download>导出切片 JSONL</a>
-            <a id="downloadRaw" class="link-button disabled" href="#" download>导出原始弹幕</a>
-            <a id="downloadPng" class="link-button disabled" href="#" download>导出结果 PNG</a>
-            <button id="refresh" class="ghost" type="button">刷新</button>
-          </div>
-          <div class="danger-zone">
+        </header>
+
+        <section id="activityPage" class="app-page active" aria-labelledby="activityTitle">
+          <div class="page-heading">
             <div>
-              <strong>删除管理</strong>
-              <span>只能删除已结束场次；删除活动会移除该活动下全部已结束场次。删除后可选择是否立即同步远端公开页。</span>
+              <p class="kicker">ACTIVITY MONITOR</p>
+              <h2 id="activityTitle">活动监控</h2>
+              <p class="panel-copy">先告诉系统要盯哪个官方活动页，再决定开播后自动做哪些动作。直播源检测可以自动轮询，手动检测只作为兜底。</p>
             </div>
-            <div class="button-row">
-              <button id="deleteRound" class="danger" type="button" disabled>删除所选场次</button>
-              <button id="deleteActivity" class="danger" type="button" disabled>删除当前活动</button>
-            </div>
+            <button id="monitorCheck" class="secondary" type="button">立即检测一次</button>
+          </div>
+          <div class="monitor-grid">
+            <section class="panel span-2">
+              <div class="section-heading">
+                <h3>活动信息</h3>
+                <span id="monitorState" class="update-status">等待配置</span>
+              </div>
+              <div class="settings-grid compact">
+                <label>活动名称<input id="monitorActivity" type="text" placeholder="例如：歌手 2026" /></label>
+                <label class="wide">官方活动页或直播 URL<input id="monitorUrl" type="url" placeholder="例如：https://www.mgtv.com/z/1001668.html?..." /></label>
+              </div>
+              <p id="monitorHint" class="field-hint">保存后会同步到系统默认活动和默认直播 URL；开轮次时自动使用这组信息。</p>
+            </section>
+            <section class="panel">
+              <h3>监控策略</h3>
+              <label class="switch-line"><input id="monitorEnabled" type="checkbox" checked /> 监控直播状态</label>
+              <label class="switch-line"><input id="monitorAutoSource" type="checkbox" checked /> 开播后自动检测直播源</label>
+              <label class="switch-line"><input id="monitorRecordVideo" type="checkbox" /> 检测成功后录制视频</label>
+              <label class="switch-line"><input id="monitorRecordDanmaku" type="checkbox" checked /> 检测成功后录制弹幕</label>
+              <label class="switch-line"><input id="monitorFeishuNotify" type="checkbox" checked /> 状态变化通知飞书</label>
+              <button id="monitorSave" class="primary" type="button">保存监控策略</button>
+            </section>
+            <section class="panel">
+              <h3>运行状态</h3>
+              <div class="status-timeline" id="monitorTimeline">
+                <div><span></span><strong>活动页待识别</strong><small>保存活动链接后开始</small></div>
+                <div><span></span><strong>直播源待检测</strong><small>直播开始后自动解析</small></div>
+                <div><span></span><strong>录制与采集待命</strong><small>按策略自动执行</small></div>
+              </div>
+            </section>
           </div>
         </section>
-        <section class="panel precise-panel">
-          <div>
-            <h2>精确结果发布</h2>
-            <p class="panel-copy">先结束场次并导出切片，按清洗规范生成 <code>precise_result.json</code> 或 XML，再上传。系统校验通过后会立即发布。</p>
-            <a class="doc-link" href="/docs/precise-result-agent" target="_blank" rel="noreferrer">查看 Agent 清洗规范</a>
+
+        <section id="opsPage" class="app-page" aria-labelledby="opsTitle">
+          <div class="page-heading">
+            <div>
+              <p class="kicker">OPERATIONS WORKSPACE</p>
+              <h2 id="opsTitle">运营工作区</h2>
+              <p class="panel-copy">实时开轮次、录制后切片、飞书同步和公开发布都在这里完成。系统配置不再打扰日常操作。</p>
+            </div>
+            <div class="quick-selects">
+              <label for="activitySelect">活动</label>
+              <select id="activitySelect" disabled><option>暂无活动</option></select>
+              <label for="roundSelect">场次</label>
+              <select id="roundSelect" disabled><option>暂无场次</option></select>
+            </div>
           </div>
-          <form id="preciseForm" class="upload-form">
-            <label for="preciseFile">精确结果文件（JSON/XML，最大 2 MB）</label>
-            <input id="preciseFile" type="file" accept=".json,.xml,application/json,application/xml,text/xml" required />
-            <button id="uploadPrecise" class="primary" type="submit">上传并发布精确结果</button>
+
+          <div class="ops-grid">
+            <section class="panel live-card">
+              <div class="section-heading">
+                <h3>当前直播状态</h3>
+                <span id="liveStatusChip" class="update-status">等待场次</span>
+              </div>
+              <div class="status-timeline">
+                <div><span class="ok"></span><strong>活动页</strong><small id="timelineActivity">等待配置</small></div>
+                <div><span></span><strong>直播源</strong><small id="timelineSource">待检测</small></div>
+                <div><span></span><strong>视频录制</strong><small id="timelineRecording">未录制</small></div>
+                <div><span></span><strong>弹幕采集</strong><small id="timelineDanmaku">0 条</small></div>
+              </div>
+              <button id="detectFromOps" class="ghost wide-button" type="button">立即检测直播源</button>
+            </section>
+
+            <section class="panel rounds-card span-2">
+              <div class="section-heading">
+                <div>
+                  <h3>场次与切片</h3>
+                  <p class="panel-copy">直播中用“实时运营”；直播后回看、打标和生成分析场次走“录制后处理”。</p>
+                </div>
+                <div id="resultMode" class="result-toggle" role="group" aria-label="结果版本">
+                  <button type="button" data-result-type="rough" aria-pressed="true" disabled>粗略结果</button>
+                  <button type="button" data-result-type="precise" aria-pressed="false" disabled>精确结果</button>
+                </div>
+              </div>
+              <div class="tab-strip" role="tablist" aria-label="运营模式">
+                <button class="active" type="button" data-work-tab="realtimeTools">实时运营</button>
+                <button type="button" data-work-tab="postTools">录制后处理</button>
+              </div>
+              <div id="realtimeTools" class="work-tab active">
+                <div class="command-grid">
+                  <form id="startForm" class="sub-panel">
+                    <h4>开始新一轮</h4>
+                    <label for="activityName">活动名称</label>
+                    <input id="activityName" type="text" placeholder="例如：歌手 2026" />
+                    <label for="roundName">场次名称</label>
+                    <input id="roundName" type="text" placeholder="例如：第一轮 · 在线观众选择" />
+                    <label for="liveUrl">直播 URL（可选）</label>
+                    <input id="liveUrl" type="url" placeholder="默认使用活动监控中的链接" />
+                    <button class="primary" type="submit">开始新一轮</button>
+                  </form>
+                  <section class="sub-panel">
+                    <h4>当前操作</h4>
+                    <div class="button-row">
+                      <button id="endRound" class="danger" type="button">结束并发布粗略结果</button>
+                      <button id="publish" class="secondary" type="button">发布公开页</button>
+                    </div>
+                    <label for="renameInput">重命名所选场次</label>
+                    <div class="inline-row">
+                      <input id="renameInput" type="text" placeholder="输入新名称" />
+                      <button id="rename" class="secondary" type="button">重命名</button>
+                    </div>
+                    <div class="button-row lower">
+                      <a id="downloadSlice" class="link-button disabled" href="#" download>导出切片</a>
+                      <a id="downloadRaw" class="link-button disabled" href="#" download>导出原始弹幕</a>
+                      <a id="downloadPng" class="link-button disabled" href="#" download>导出 PNG</a>
+                      <button id="refresh" class="ghost" type="button">刷新</button>
+                    </div>
+                    <div class="danger-zone">
+                      <div>
+                        <strong>删除管理</strong>
+                        <span>只能删除已结束场次；删除后可选择是否立即同步公开页。</span>
+                      </div>
+                      <div class="button-row">
+                        <button id="deleteRound" class="danger" type="button" disabled>删除场次</button>
+                        <button id="deleteActivity" class="danger" type="button" disabled>删除活动</button>
+                      </div>
+                    </div>
+                  </section>
+                </div>
+              </div>
+              <div id="postTools" class="work-tab">
+                <section class="recording-start-panel">
+                  <form id="postRecordForm" class="sub-panel">
+                    <h4>开始全程录制与弹幕</h4>
+                    <p class="panel-copy">会先刷新活动页解析机位；若启用录制，会检测清晰度并开始录屏。</p>
+                    <label for="postActivityName">活动名称</label>
+                    <input id="postActivityName" type="text" placeholder="默认使用活动监控中的活动名称" />
+                    <label for="postRoundName">全程场次名称</label>
+                    <input id="postRoundName" type="text" placeholder="例如：歌手 2026 全程录制" />
+                    <label for="postLiveUrl">官方活动页或直播 URL</label>
+                    <input id="postLiveUrl" type="url" placeholder="例如：https://www.mgtv.com/z/1001668.html?..." />
+                    <button id="postStartRecord" class="primary" type="submit">开始全程录制与弹幕</button>
+                  </form>
+                  <div class="sub-panel">
+                    <h4>回看与切片</h4>
+                    <p id="recordingStatus" class="panel-copy">选择场次后显示录屏状态。</p>
+                    <video id="recordingPlayer" class="recording-player" controls preload="metadata"></video>
+                  </div>
+                </section>
+                <section class="sub-panel recording-tools">
+                  <label for="markerLabel">当前位置标记</label>
+                  <div class="inline-row">
+                    <input id="markerLabel" type="text" placeholder="例如：高能片段 / 主持人口播" />
+                    <button id="addMarker" class="secondary" type="button" disabled>添加标记</button>
+                  </div>
+                  <div id="markerList" class="marker-list">暂无标记</div>
+                  <div class="clip-grid">
+                    <label>截取开始（秒）<input id="clipStart" type="number" min="0" step="0.1" placeholder="0" /></label>
+                    <label>截取结束（秒）<input id="clipEnd" type="number" min="0" step="0.1" placeholder="60" /></label>
+                    <label class="wide">片段名称<input id="clipLabel" type="text" placeholder="例如：第一段回放" /></label>
+                  </div>
+                  <button id="createClip" class="secondary" type="button" disabled>截取片段</button>
+                  <div id="clipList" class="marker-list">暂无片段</div>
+                </section>
+              </div>
+            </section>
+
+            <section class="panel publish-card">
+              <div class="section-heading">
+                <h3>飞书协同与发布</h3>
+                <span id="publishStatusChip" class="update-status">待同步</span>
+              </div>
+              <div class="feishu-preview">
+                <strong id="previewActivity">暂无活动</strong>
+                <span id="previewRound">等待场次</span>
+                <div class="mini-metrics">
+                  <div><span>弹幕</span><b id="messages">0</b></div>
+                  <div><span>有效</span><b id="votes">0</b></div>
+                  <div><span>待审</span><b id="reviews">0</b></div>
+                </div>
+              </div>
+              <div class="button-stack">
+                <button id="syncFeishu" class="secondary" type="button">同步到飞书</button>
+                <button id="copyPublicLink" class="ghost" type="button">复制公开链接</button>
+              </div>
+            </section>
+          </div>
+
+          <section class="result-and-rounds">
+            <div class="panel">
+              <div class="section-heading">
+                <h3 id="resultHeading">粗略结果</h3>
+                <span id="updated">尚未同步</span>
+              </div>
+              <div id="ranking" class="ranking" aria-live="polite">
+                <div class="empty">结果将在这里显示</div>
+              </div>
+            </div>
+            <aside class="panel">
+              <div class="section-heading">
+                <h3>场次列表</h3>
+                <span id="roundCount">0 场</span>
+              </div>
+              <div id="roundList" class="round-list"></div>
+            </aside>
+          </section>
+
+          <section class="panel precise-panel">
+            <div>
+              <h3>精确结果发布</h3>
+              <p class="panel-copy">先结束场次并导出切片，按清洗规范生成 <code>precise_result.json</code> 或 XML，再上传。系统校验通过后会立即发布。</p>
+              <a class="doc-link" href="/docs/precise-result-agent" target="_blank" rel="noreferrer">查看 Agent 清洗规范</a>
+            </div>
+            <form id="preciseForm" class="upload-form">
+              <label for="preciseFile">精确结果文件（JSON/XML，最大 2 MB）</label>
+              <input id="preciseFile" type="file" accept=".json,.xml,application/json,application/xml,text/xml" required />
+              <button id="uploadPrecise" class="primary" type="submit">上传并发布精确结果</button>
+            </form>
+          </section>
+        </section>
+
+        <section id="settingsPanel" class="app-page settings-panel" hidden aria-labelledby="settingsTitle">
+          <div class="page-heading">
+            <div>
+              <p class="kicker">SYSTEM SETTINGS</p>
+              <h2 id="settingsTitle">系统配置</h2>
+              <p class="panel-copy">低频配置集中在这里；活动 URL 与日常操作请在前两个面板完成。保存后自动校验并热应用。</p>
+            </div>
+            <div class="settings-actions-top">
+              <span id="configStatus" class="config-status">尚未读取</span>
+              <button id="settingsClose" class="ghost" type="button">收起配置</button>
+            </div>
+          </div>
+          <form id="settingsForm" class="settings-form">
+            <div class="settings-columns">
+              <section class="settings-column">
+                <h3>连接与账号</h3>
+                <details open>
+                  <summary>芒果 TV 扫码登录</summary>
+                  <div class="feishu-binding-card flush">
+                    <div class="feishu-binding-head">
+                      <h4>登录态与播放源权限</h4>
+                      <span id="mgtvAuthStatus" class="update-status">未读取</span>
+                    </div>
+                    <p id="mgtvAuthMessage" class="panel-copy">用于检测 1080P/VIP 清晰度并解析可录制播放流。登录态只保存在服务器配置中，不会回显。</p>
+                    <div class="feishu-binding-meta">
+                      <div><span>登录态</span><code id="mgtvAuthCookie">未配置</code></div>
+                      <div><span>账号</span><code id="mgtvAuthUser">-</code></div>
+                      <div><span>VIP</span><code id="mgtvAuthVip">未知</code></div>
+                      <div><span>方式</span><code id="mgtvAuthProtocol">未检测</code></div>
+                    </div>
+                    <div id="mgtvAuthQrWrap" class="mgtv-qr-wrap" hidden>
+                      <img id="mgtvAuthQr" alt="芒果 TV 登录二维码截图" />
+                      <p class="panel-copy">请用芒果 TV App 扫码并确认登录。</p>
+                    </div>
+                    <p id="mgtvSourceFeedback" class="panel-copy">检测播放源会尝试解析可直录 m3u8；若返回需要 VIP/DRM/接口变化，请以提示为准。</p>
+                    <div class="feishu-binding-actions">
+                      <button id="startMgtvAuth" class="secondary" type="button">重新扫码</button>
+                      <button id="checkMgtvSource" class="secondary" type="button">检测播放源</button>
+                    </div>
+                  </div>
+                </details>
+                <details open>
+                  <summary>飞书 Bot</summary>
+                  <div class="feishu-binding-card flush">
+                    <div class="feishu-binding-head">
+                      <h4>一键绑定飞书</h4>
+                      <span id="feishuBindStatus" class="update-status">未读取</span>
+                    </div>
+                    <p id="feishuBindMessage" class="panel-copy">点击“发起绑定”后会打开飞书授权页；授权完成后自动保存 App ID/Secret 并热重载 Bot。</p>
+                    <div class="feishu-binding-meta">
+                      <div><span>App ID</span><code id="feishuBindAppId">未配置</code></div>
+                      <div><span>open_id</span><code id="feishuBindOpenId">-</code></div>
+                      <div><span>租户</span><code id="feishuBindTenant">-</code></div>
+                      <div><span>长连接</span><code id="feishuBindWorker">-</code></div>
+                    </div>
+                    <div id="feishuBindingPending" class="feishu-binding-pending" hidden>
+                      <p>请在飞书授权页完成绑定。若浏览器没有自动打开，手动点击下面链接：</p>
+                      <a id="feishuBindingLink" class="doc-link" href="#" target="_blank" rel="noreferrer">打开飞书授权链接</a>
+                      <p>授权码：<code id="feishuBindingCode">-</code> · 剩余时间：<code id="feishuBindingExpires">-</code></p>
+                    </div>
+                    <p id="feishuBindingFeedback" class="panel-copy">群控可把机器人加入运营群后发送“我的ID”，再把 chat_id 填入白名单。</p>
+                    <div class="feishu-binding-actions">
+                      <button id="startFeishuBinding" class="secondary" type="button">发起飞书绑定</button>
+                    </div>
+                  </div>
+                  <div class="settings-grid">
+                    <label class="check-label"><input id="cfgFeishuEnabled" type="checkbox" /> 启用飞书 Bot</label>
+                    <span id="feishuSecretState" class="secret-state"></span>
+                    <label>连接模式<select id="cfgFeishuMode"><option value="websocket">WebSocket 长连接</option><option value="webhook">HTTP 回调</option></select></label>
+                    <label>App ID<input id="cfgFeishuAppId" type="text" /></label>
+                    <label class="wide">App Secret（留空保留现值）<input id="cfgFeishuSecret" type="password" autocomplete="new-password" /></label>
+                    <label class="wide">Verification Token（仅 webhook；留空保留）<input id="cfgFeishuToken" type="password" autocomplete="new-password" /></label>
+                    <label class="wide">允许操作的 open_id<textarea id="cfgFeishuOpenIds" rows="3"></textarea></label>
+                    <label class="wide">允许操作的 chat_id<textarea id="cfgFeishuChatIds" rows="3"></textarea></label>
+                    <label class="wide">公开结果页 URL<input id="cfgFeishuPublicUrl" type="url" /></label>
+                  </div>
+                </details>
+                <details>
+                  <summary>GitHub 发布</summary>
+                  <div class="settings-grid">
+                    <label class="check-label"><input id="cfgGithubEnabled" type="checkbox" /> 启用 GitHub 发布</label>
+                    <span id="githubSecretState" class="secret-state"></span>
+                    <label>仓库所有者<input id="cfgGithubOwner" type="text" /></label>
+                    <label>仓库名称<input id="cfgGithubRepo" type="text" /></label>
+                    <label>分支<input id="cfgGithubBranch" type="text" /></label>
+                    <label>结果文件路径<input id="cfgGithubPath" type="text" /></label>
+                    <label class="wide">Fine-grained Token（留空保留现值）<input id="cfgGithubToken" type="password" autocomplete="new-password" /></label>
+                  </div>
+                </details>
+              </section>
+
+              <section class="settings-column">
+                <h3>采集与录制</h3>
+                <details open>
+                  <summary>节目、候选人与计票</summary>
+                  <div class="settings-grid">
+                    <label>默认活动名称<input id="cfgActivity" type="text" required /></label>
+                    <label>多人弹幕策略<select id="cfgPolicy"><option value="all">all · 每位各计 1 票</option><option value="review">review · 留待语义审核</option></select></label>
+                    <label class="wide">候选人与别名（每行一位：正式名, 别名1, 别名2）<textarea id="cfgCandidates" rows="7" required></textarea></label>
+                  </div>
+                </details>
+                <details open>
+                  <summary>弹幕采集参数</summary>
+                  <div class="settings-grid">
+                    <label class="wide">默认直播 URL<input id="cfgLiveUrl" type="url" required /><span id="mgtvUrlHint" class="field-hint">粘贴芒果活动页或直播页后会自动识别。</span></label>
+                    <label>room_id<input id="cfgRoomId" type="text" placeholder="例如 liveshow-5366" /></label>
+                    <label>camera_id<input id="cfgCameraId" type="text" /></label>
+                    <label class="wide">历史弹幕接口<input id="cfgHistoryApi" type="url" required /></label>
+                    <label>room_id 前缀<input id="cfgFlag" type="text" required /></label>
+                    <label>轮询间隔（秒）<input id="cfgPollSeconds" type="number" min="0.25" max="60" step="0.25" required /></label>
+                    <label>重连间隔（秒）<input id="cfgReconnectSeconds" type="number" min="1" max="300" step="1" required /></label>
+                    <label class="check-label"><input id="cfgCountInitial" type="checkbox" /> 首批历史弹幕计入场次</label>
+                    <label>内存去重缓存<input id="cfgDedupHot" type="number" min="1000" max="10000000" required /></label>
+                    <label>去重记录上限<input id="cfgDedupMax" type="number" min="10000" max="1000000000" required /></label>
+                    <label class="wide">SQLite 去重路径（空闲时热切换）<input id="cfgDedupDb" type="text" required /></label>
+                  </div>
+                </details>
+                <details open>
+                  <summary>直播录制参数</summary>
+                  <div class="settings-grid">
+                    <label class="check-label"><input id="cfgRecordingEnabled" type="checkbox" /> 启用场次自动录屏</label>
+                    <label>默认清晰度<select id="cfgRecordingQuality"><option value="auto">自动最高可用</option><option value="1080P">1080P</option><option value="720P">720P</option><option value="540P">540P</option><option value="480P">480P</option></select></label>
+                    <label class="wide">录屏直播流 URL<input id="cfgRecordingStreamUrl" type="url" placeholder="例如：https://example.com/live.m3u8" /></label>
+                    <label>ffmpeg 路径<input id="cfgRecordingFfmpeg" type="text" placeholder="ffmpeg" /></label>
+                    <label>录制目录（空闲时热切换）<input id="cfgRecordingDir" type="text" placeholder="server/data/recordings" /></label>
+                  </div>
+                </details>
+              </section>
+
+              <section class="settings-column">
+                <h3>安全、存储与更新</h3>
+                <details open>
+                  <summary>运营端登录安全</summary>
+                  <div class="settings-grid">
+                    <label class="check-label"><input id="cfgAuthEnabled" type="checkbox" /> 启用运营密码</label>
+                    <span id="authSecretState" class="secret-state"></span>
+                    <label class="wide">设置新密码（至少 10 个字符；留空保留现值）<input id="cfgNewPassword" type="password" minlength="10" autocomplete="new-password" /></label>
+                    <label>会话有效期（小时）<input id="cfgSessionHours" type="number" min="1" max="168" required /></label>
+                    <label class="check-label"><input id="cfgSecureCookie" type="checkbox" /> Cookie 仅通过 HTTPS 发送</label>
+                    <label>失败次数上限<input id="cfgMaxFailures" type="number" min="3" max="20" required /></label>
+                    <label>限速窗口（秒）<input id="cfgFailureWindow" type="number" min="60" max="3600" required /></label>
+                  </div>
+                </details>
+                <details open>
+                  <summary>高级服务参数</summary>
+                  <p class="settings-warning">只有监听地址、端口和主数据目录需要安全重启；SQLite 去重路径和录制目录空闲时热切换。</p>
+                  <div class="settings-grid">
+                    <label>监听地址<input id="cfgListenHost" type="text" required /></label>
+                    <label>监听端口<input id="cfgListenPort" type="number" min="1" max="65535" required /></label>
+                    <label class="wide">外部访问 URL<input id="cfgPublicBaseUrl" type="url" /></label>
+                    <label class="wide">数据目录（修改后需重启）<input id="cfgStorageDir" type="text" required /></label>
+                  </div>
+                </details>
+                <details open>
+                  <summary>程序版本升级</summary>
+                  <div class="settings-grid update-grid">
+                    <div><span class="field-label">当前 commit</span><code id="updateCurrentCommit">尚未检查</code></div>
+                    <div><span class="field-label">远端 commit</span><code id="updateRemoteCommit">尚未检查</code></div>
+                    <div><span class="field-label">目标分支</span><code id="updateBranch">尚未检查</code></div>
+                    <div><span class="field-label">升级状态</span><span id="updateStatus" class="update-status">尚未检查</span></div>
+                    <p id="updateFeedback" class="panel-copy wide">不会自动合并分叉，也不会覆盖部署目录里的未提交变更。</p>
+                  </div>
+                  <div id="updateProgressWrap" class="update-progress" hidden>
+                    <div class="update-progress-meta"><span id="updateProgressStage">等待升级</span><span id="updateProgressPercent">0%</span></div>
+                    <div class="update-progress-track"><div id="updateProgressBar" class="update-progress-bar"></div></div>
+                    <p id="updateProgressDetail" class="panel-copy">尚未开始升级。</p>
+                    <p class="update-progress-speed">传输速度：<code id="updateProgressSpeed">-</code></p>
+                    <pre id="updateProgressLog" class="update-progress-log">等待升级。</pre>
+                  </div>
+                  <div class="settings-update-actions">
+                    <button id="checkUpdate" class="secondary" type="button">检查新版本</button>
+                    <button id="applyUpdate" class="danger" type="button" hidden>立即升级并重启</button>
+                  </div>
+                </details>
+              </section>
+            </div>
+            <div class="settings-footer">
+              <p id="settingsFeedback" class="panel-copy">敏感字段不会回显；留空表示保留服务器现值。</p>
+              <div class="settings-submit-actions">
+                <button id="restartService" class="danger" type="button" hidden>安全重启服务</button>
+                <button id="saveSettings" class="primary" type="submit">保存并热应用</button>
+              </div>
+            </div>
           </form>
         </section>
-        </div>
-      </section>
-      <section class="workflow-section postprocess-section" aria-labelledby="postprocessTitle">
-        <div class="workflow-heading">
-          <div>
-            <p class="kicker">RECORD & POST</p>
-            <h2 id="postprocessTitle">录制后处理</h2>
-            <p class="panel-copy">适合你不能一直盯直播的场景：先全程录制视频和弹幕，回看时打标、截取片段，再把片段弹幕生成分析场次。</p>
+
+        <section id="machinePage" class="app-page" aria-labelledby="machineTitle">
+          <div class="page-heading">
+            <div>
+              <p class="kicker">SYSTEM HEALTH</p>
+              <h2 id="machineTitle">机器状态监控</h2>
+              <p class="panel-copy">不需要 SSH，也能先判断是服务器资源、录制磁盘、网络还是服务状态出了问题。</p>
+            </div>
+            <button id="refreshSystem" class="secondary" type="button">立即刷新</button>
           </div>
-        </div>
-        <section class="panel recording-start-panel">
-          <form id="postRecordForm">
-            <h2>开始全程录制与弹幕</h2>
-            <p class="panel-copy">会先自动刷新官方活动页，解析直播机位；如果已启用录制，会检测当前清晰度是否可录制。</p>
-            <label for="postActivityName">活动名称</label>
-            <input id="postActivityName" type="text" placeholder="默认使用系统配置中的活动名称" />
-            <label for="postRoundName">全程场次名称</label>
-            <input id="postRoundName" type="text" placeholder="例如：歌手 2026 全程录制" />
-            <label for="postLiveUrl">官方活动页或直播 URL</label>
-            <input id="postLiveUrl" type="url" placeholder="例如：https://www.mgtv.com/z/1001668.html?..." />
-            <button id="postStartRecord" class="primary" type="submit">开始全程录制与弹幕</button>
-          </form>
-          <div>
-            <h2>回看与切片</h2>
-            <p id="recordingStatus" class="panel-copy">选择场次后显示录屏状态。录屏需要在系统配置中启用，并通过“检测播放源”拿到可录制清晰度。</p>
-            <video id="recordingPlayer" class="recording-player" controls preload="metadata"></video>
+          <div class="health-summary">
+            <article><span>系统时间</span><strong id="sysTime">--</strong></article>
+            <article><span>服务运行时长</span><strong id="sysUptime">--</strong></article>
+            <article><span>当前进程</span><strong id="sysProcess">mgtv-danmaku</strong></article>
+            <article><span>健康状态</span><strong id="sysHealth">读取中</strong></article>
+          </div>
+          <div class="health-grid">
+            <section class="panel"><h3>CPU</h3><div id="cpuGauge" class="big-metric">--</div><p id="cpuDetail" class="panel-copy">等待读取</p></section>
+            <section class="panel"><h3>内存</h3><div id="memGauge" class="big-metric">--</div><p id="memDetail" class="panel-copy">等待读取</p></section>
+            <section class="panel"><h3>网络</h3><div id="netGauge" class="big-metric">--</div><p id="netDetail" class="panel-copy">等待读取</p></section>
+            <section class="panel"><h3>磁盘</h3><div id="diskGauge" class="big-metric">--</div><p id="diskDetail" class="panel-copy">等待读取</p></section>
+            <section class="panel span-2"><h3>服务运行状态</h3><div id="serviceGrid" class="service-grid"></div></section>
+            <section class="panel"><h3>最近告警</h3><div id="alertList" class="log-list muted">暂无告警</div></section>
+            <section class="panel span-3"><h3>近况趋势</h3><div class="sparkline-grid"><div></div><div></div><div></div><div></div></div><p class="panel-copy">轻量版本展示当前采样；后续可接入历史采样绘制 15 分钟趋势。</p></section>
           </div>
         </section>
-        <section class="panel recording-panel">
-          <div class="recording-tools">
-            <label for="markerLabel">当前位置标记</label>
-            <div class="inline-row">
-              <input id="markerLabel" type="text" placeholder="例如：高能片段 / 主持人口播" />
-              <button id="addMarker" class="secondary" type="button" disabled>打标</button>
+
+        <section id="logsPage" class="app-page" aria-labelledby="logsTitle">
+          <div class="page-heading">
+            <div>
+              <p class="kicker">SYSTEM LOGS</p>
+              <h2 id="logsTitle">系统日志</h2>
+              <p class="panel-copy">搜索、过滤、导出关键事件，排障前先把问题缩小到具体模块。</p>
             </div>
-            <div id="markerList" class="marker-list">暂无标记</div>
-            <div class="clip-grid">
-              <label>截取开始（秒）<input id="clipStart" type="number" min="0" step="0.1" placeholder="0" /></label>
-              <label>截取结束（秒）<input id="clipEnd" type="number" min="0" step="0.1" placeholder="60" /></label>
-              <label class="wide">片段名称<input id="clipLabel" type="text" placeholder="例如：第一段回放" /></label>
+            <div class="log-actions">
+              <button id="refreshLogs" class="secondary" type="button">刷新日志</button>
+              <button id="copyLogSummary" class="ghost" type="button">生成排障摘要</button>
             </div>
-            <button id="createClip" class="secondary" type="button" disabled>截取片段</button>
-            <div id="clipList" class="marker-list">暂无片段</div>
+          </div>
+          <div class="log-toolbar">
+            <input id="logSearch" type="search" placeholder="搜索错误、场次 ID、关键词…" />
+            <select id="logLevel"><option value="">全部级别</option><option>INFO</option><option>WARN</option><option>ERROR</option></select>
+            <select id="logSource"><option value="">全部来源</option></select>
+            <label class="switch-line follow"><input id="logFollow" type="checkbox" checked /> 实时跟随</label>
+          </div>
+          <div class="logs-layout">
+            <section class="panel">
+              <div id="systemLogRows" class="system-log-rows"></div>
+            </section>
+            <aside class="panel">
+              <h3>日志详情</h3>
+              <div id="logInspector" class="log-inspector">选择一条日志查看详情。</div>
+              <h3>事件时间线</h3>
+              <div id="eventTimeline" class="status-timeline compact"></div>
+            </aside>
           </div>
         </section>
-      </section>
-      <section id="settingsPanel" class="settings-panel" hidden aria-labelledby="settingsTitle">
-        <div class="settings-heading">
-          <div>
-            <p class="kicker">RUNTIME CONFIG</p>
-            <h2 id="settingsTitle">系统配置</h2>
-            <p class="panel-copy">保存后自动校验并热应用。正在采集的场次保持启动时的候选人与计票口径；只有监听地址、端口和主数据目录需要安全重启。</p>
-          </div>
-          <div class="settings-actions-top">
-            <span id="configStatus" class="config-status">尚未读取</span>
-            <button id="settingsClose" class="ghost" type="button">关闭</button>
-          </div>
-        </div>
-        <form id="settingsForm" class="settings-form">
-          <details open>
-            <summary>节目、候选人与计票</summary>
-            <div class="settings-grid">
-              <label>默认活动名称<input id="cfgActivity" type="text" required /></label>
-              <label>多人弹幕策略
-                <select id="cfgPolicy">
-                  <option value="all">all · 每位各计 1 票</option>
-                  <option value="review">review · 留待语义审核</option>
-                </select>
-              </label>
-              <label class="wide">候选人与别名（每行一位：正式名, 别名1, 别名2）
-                <textarea id="cfgCandidates" rows="7" required></textarea>
-              </label>
-            </div>
-          </details>
 
-          <details>
-            <summary>弹幕采集与去重</summary>
-            <div class="settings-grid">
-              <label class="wide">默认直播 URL<input id="cfgLiveUrl" type="url" required /><span id="mgtvUrlHint" class="field-hint">粘贴芒果直播页后会自动填充 room_id 和 camera_id。</span></label>
-              <label>room_id<input id="cfgRoomId" type="text" placeholder="例如 liveshow-5366" /></label>
-              <label>camera_id<input id="cfgCameraId" type="text" /></label>
-              <label class="wide">历史弹幕接口<input id="cfgHistoryApi" type="url" required /></label>
-              <label>room_id 前缀<input id="cfgFlag" type="text" required /></label>
-              <label>轮询间隔（秒）<input id="cfgPollSeconds" type="number" min="0.25" max="60" step="0.25" required /></label>
-              <label>重连间隔（秒）<input id="cfgReconnectSeconds" type="number" min="1" max="300" step="1" required /></label>
-              <label class="check-label"><input id="cfgCountInitial" type="checkbox" /> 将首批历史弹幕计入场次</label>
-              <label>内存去重缓存<input id="cfgDedupHot" type="number" min="1000" max="10000000" required /></label>
-              <label>去重记录上限<input id="cfgDedupMax" type="number" min="10000" max="1000000000" required /></label>
-              <label class="wide">SQLite 去重路径（空闲时热切换）<input id="cfgDedupDb" type="text" required /></label>
-            </div>
-          </details>
-
-          <details>
-            <summary>直播录屏与后处理</summary>
-            <p class="settings-warning">录屏依赖 ffmpeg。直播流 URL 需要是 ffmpeg 可直接读取的地址，例如 m3u8；普通网页 URL 不一定能录制。配置变更只对下一场生效。</p>
-            <div class="feishu-binding-card">
-              <div>
-                <div class="feishu-binding-head">
-                  <h3>芒果 TV 扫码登录</h3>
-                  <span id="mgtvAuthStatus" class="update-status">未读取</span>
-                </div>
-                <p id="mgtvAuthMessage" class="panel-copy">用于检测 1080P/VIP 清晰度并解析可录制播放流。登录态只保存在服务器配置中，不会回显。</p>
-              </div>
-              <div class="feishu-binding-meta">
-                <div><span>登录态</span><code id="mgtvAuthCookie">未配置</code></div>
-                <div><span>账号</span><code id="mgtvAuthUser">-</code></div>
-                <div><span>VIP</span><code id="mgtvAuthVip">未知</code></div>
-                <div><span>登录方式</span><code id="mgtvAuthProtocol">未检测</code></div>
-              </div>
-              <div id="mgtvAuthQrWrap" class="mgtv-qr-wrap" hidden>
-                <img id="mgtvAuthQr" alt="芒果 TV 登录二维码截图" />
-                <p class="panel-copy">请用芒果 TV App 扫码并确认登录；页面会自动刷新状态。</p>
-              </div>
-              <p id="mgtvSourceFeedback" class="panel-copy">检测播放源会尝试打开直播页并捕获可直录 m3u8；若返回需要 VIP/DRM/接口变化，请以提示为准。</p>
-              <div class="feishu-binding-actions">
-                <button id="startMgtvAuth" class="secondary" type="button">发起扫码登录</button>
-                <button id="checkMgtvSource" class="secondary" type="button">检测播放源</button>
-              </div>
-            </div>
-            <div class="settings-grid">
-              <label class="check-label"><input id="cfgRecordingEnabled" type="checkbox" /> 启用场次自动录屏</label>
-              <label>默认清晰度
-                <select id="cfgRecordingQuality">
-                  <option value="auto">自动最高可用</option>
-                  <option value="1080P">1080P</option>
-                  <option value="720P">720P</option>
-                  <option value="540P">540P</option>
-                  <option value="480P">480P</option>
-                </select>
-              </label>
-              <label class="wide">录屏直播流 URL<input id="cfgRecordingStreamUrl" type="url" placeholder="例如：https://example.com/live.m3u8" /></label>
-              <label>ffmpeg 路径<input id="cfgRecordingFfmpeg" type="text" placeholder="ffmpeg" /></label>
-              <label>录制目录（空闲时热切换）<input id="cfgRecordingDir" type="text" placeholder="server/data/recordings" /></label>
-            </div>
-          </details>
-
-          <details>
-            <summary>GitHub 公开结果发布</summary>
-            <div class="settings-grid">
-              <label class="check-label"><input id="cfgGithubEnabled" type="checkbox" /> 启用 GitHub 发布</label>
-              <span id="githubSecretState" class="secret-state"></span>
-              <label>仓库所有者<input id="cfgGithubOwner" type="text" /></label>
-              <label>仓库名称<input id="cfgGithubRepo" type="text" /></label>
-              <label>分支<input id="cfgGithubBranch" type="text" /></label>
-              <label>结果文件路径<input id="cfgGithubPath" type="text" /></label>
-              <label class="wide">Fine-grained Token（留空保留现值）<input id="cfgGithubToken" type="password" autocomplete="new-password" /></label>
-            </div>
-          </details>
-
-          <details>
-            <summary>飞书 Bot</summary>
-            <div class="feishu-binding-card">
-              <div>
-                <div class="feishu-binding-head">
-                  <h3>一键绑定飞书</h3>
-                  <span id="feishuBindStatus" class="update-status">未读取</span>
-                </div>
-                <p id="feishuBindMessage" class="panel-copy">点击“发起绑定”后会打开飞书授权页；授权完成后本页会自动保存 App ID/Secret 并热重载 Bot。</p>
-              </div>
-              <div class="feishu-binding-meta">
-                <div><span>App ID</span><code id="feishuBindAppId">未配置</code></div>
-                <div><span>授权 open_id</span><code id="feishuBindOpenId">-</code></div>
-                <div><span>租户</span><code id="feishuBindTenant">-</code></div>
-                <div><span>长连接</span><code id="feishuBindWorker">-</code></div>
-              </div>
-              <div id="feishuBindingPending" class="feishu-binding-pending" hidden>
-                <p>请在飞书授权页完成绑定。若浏览器没有自动打开，手动点击下面链接：</p>
-                <a id="feishuBindingLink" class="doc-link" href="#" target="_blank" rel="noreferrer">打开飞书授权链接</a>
-                <p>授权码：<code id="feishuBindingCode">-</code> · 剩余时间：<code id="feishuBindingExpires">-</code></p>
-              </div>
-              <p id="feishuBindingFeedback" class="panel-copy">绑定成功后，请把机器人添加到运营群，并在群里发送“我的ID”获取 chat_id，再填入下方白名单。</p>
-              <div class="feishu-binding-actions">
-                <button id="startFeishuBinding" class="secondary" type="button">发起飞书绑定</button>
-              </div>
-            </div>
-            <div class="settings-grid">
-              <label class="check-label"><input id="cfgFeishuEnabled" type="checkbox" /> 启用飞书 Bot</label>
-              <span id="feishuSecretState" class="secret-state"></span>
-              <label>连接模式
-                <select id="cfgFeishuMode">
-                  <option value="websocket">WebSocket 长连接</option>
-                  <option value="webhook">HTTP 回调</option>
-                </select>
-              </label>
-              <label>App ID<input id="cfgFeishuAppId" type="text" /></label>
-              <label class="wide">App Secret（留空保留现值）<input id="cfgFeishuSecret" type="password" autocomplete="new-password" /></label>
-              <label class="wide">Verification Token（仅 webhook；留空保留）<input id="cfgFeishuToken" type="password" autocomplete="new-password" /></label>
-              <label class="wide">允许操作的 open_id（逗号或换行分隔）<textarea id="cfgFeishuOpenIds" rows="3"></textarea></label>
-              <label class="wide">允许操作的 chat_id（逗号或换行分隔）<textarea id="cfgFeishuChatIds" rows="3"></textarea></label>
-              <label class="wide">公开结果页 URL<input id="cfgFeishuPublicUrl" type="url" /></label>
-            </div>
-          </details>
-
-          <details>
-            <summary>运营端登录安全</summary>
-            <div class="settings-grid">
-              <label class="check-label"><input id="cfgAuthEnabled" type="checkbox" /> 启用运营密码</label>
-              <span id="authSecretState" class="secret-state"></span>
-              <label class="wide">设置新密码（至少 10 个字符；留空保留现值）<input id="cfgNewPassword" type="password" minlength="10" autocomplete="new-password" /></label>
-              <label>会话有效期（小时）<input id="cfgSessionHours" type="number" min="1" max="168" required /></label>
-              <label class="check-label"><input id="cfgSecureCookie" type="checkbox" /> Cookie 仅通过 HTTPS 发送</label>
-              <label>失败次数上限<input id="cfgMaxFailures" type="number" min="3" max="20" required /></label>
-              <label>限速窗口（秒）<input id="cfgFailureWindow" type="number" min="60" max="3600" required /></label>
-            </div>
-          </details>
-
-          <details>
-            <summary>程序版本升级</summary>
-            <p class="settings-warning">点击检查后会读取 GitHub 远端 commit；确认升级后仅执行 fast-forward 更新、安装服务端依赖并自动重启。采集中的场次会阻止升级。</p>
-            <div class="settings-grid update-grid">
-              <div>
-                <span class="field-label">当前 commit</span>
-                <code id="updateCurrentCommit">尚未检查</code>
-              </div>
-              <div>
-                <span class="field-label">远端 commit</span>
-                <code id="updateRemoteCommit">尚未检查</code>
-              </div>
-              <div>
-                <span class="field-label">目标分支</span>
-                <code id="updateBranch">尚未检查</code>
-              </div>
-              <div>
-                <span class="field-label">升级状态</span>
-                <span id="updateStatus" class="update-status">尚未检查</span>
-              </div>
-              <p id="updateFeedback" class="panel-copy wide">不会自动合并分叉，也不会覆盖部署目录里的未提交变更。</p>
-            </div>
-            <div id="updateProgressWrap" class="update-progress" hidden>
-              <div class="update-progress-meta">
-                <span id="updateProgressStage">等待升级</span>
-                <span id="updateProgressPercent">0%</span>
-              </div>
-              <div class="update-progress-track" aria-hidden="true">
-                <div id="updateProgressBar" class="update-progress-bar"></div>
-              </div>
-              <p id="updateProgressDetail" class="panel-copy">尚未开始升级。</p>
-              <p class="update-progress-speed">传输速度：<code id="updateProgressSpeed">-</code></p>
-              <pre id="updateProgressLog" class="update-progress-log">等待升级。</pre>
-            </div>
-            <div class="settings-update-actions">
-              <button id="checkUpdate" class="secondary" type="button">检查新版本</button>
-              <button id="applyUpdate" class="danger" type="button" hidden>立即升级并重启</button>
-            </div>
-          </details>
-
-          <details>
-            <summary>高级服务参数</summary>
-            <p class="settings-warning">监听地址、端口、数据目录和 SQLite 路径涉及 socket 或持久化文件，保存后需要由 systemd 重启服务。不要在场次采集中切换。</p>
-            <div class="settings-grid">
-              <label>监听地址<input id="cfgListenHost" type="text" required /></label>
-              <label>监听端口<input id="cfgListenPort" type="number" min="1" max="65535" required /></label>
-              <label class="wide">外部访问 URL<input id="cfgPublicBaseUrl" type="url" /></label>
-              <label class="wide">数据目录（修改后需重启）<input id="cfgStorageDir" type="text" required /></label>
-            </div>
-          </details>
-
-          <div class="settings-footer">
-            <p id="settingsFeedback" class="panel-copy">敏感字段不会回显；留空表示保留服务器现值。</p>
-            <div class="settings-submit-actions">
-              <button id="restartService" class="danger" type="button" hidden>安全重启服务</button>
-              <button id="saveSettings" class="primary" type="submit">保存并热应用</button>
-            </div>
-          </div>
-        </form>
-      </section>
-      <section class="metrics" aria-label="投票概览">
-        <div><span>弹幕样本</span><strong id="messages">0</strong></div>
-        <div><span>有效计票</span><strong id="votes">0</strong></div>
-        <div><span>语义待审</span><strong id="reviews">0</strong></div>
-      </section>
-      <section class="content-grid">
-        <section>
+        <section class="log-panel" aria-live="polite">
           <div class="section-heading">
-            <h2 id="resultHeading">粗略结果</h2>
-            <span id="updated">尚未同步</span>
+            <h3>操作回执</h3>
+            <span>最近 20 条</span>
           </div>
-          <div id="ranking" class="ranking" aria-live="polite">
-            <div class="empty">结果将在这里显示</div>
-          </div>
+          <pre id="log">管理台已就绪。</pre>
         </section>
-        <aside class="side-panel">
-          <div class="section-heading">
-            <h2>场次列表</h2>
-            <span id="roundCount">0 场</span>
-          </div>
-          <div id="roundList" class="round-list"></div>
-        </aside>
+        <footer>
+          <span>管理台仅面向运营使用；公开页面仍只展示聚合结果。</span>
+          <span>统计数据不代表湖南卫视 &amp; 芒果 TV 立场，仅供娱乐参考。</span>
+        </footer>
       </section>
-      <section class="log-panel" aria-live="polite">
-        <div class="section-heading">
-          <h2>操作回执</h2>
-          <span>最近 20 条</span>
-        </div>
-        <pre id="log">管理台已就绪。</pre>
-      </section>
-      <footer>
-        <span>管理台仅面向运营使用；公开页面仍只展示聚合结果。</span>
-        <span>统计数据不代表湖南卫视 &amp; 芒果 TV 立场，仅供娱乐参考。</span>
-      </footer>
     </main>
     <script src="/webui/app.js?v={{STATIC_VERSION}}"></script>
     <script src="/webui/settings.js?v={{STATIC_VERSION}}"></script>

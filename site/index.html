@@ -3,32 +3,40 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="直播运营工作台公开数据看板" />
-    <title>直播运营数据看板</title>
+    <meta name="description" content="直播运营工作台公开结果页" />
+    <title>直播弹幕投票公开结果</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <main>
-      <header>
-        <div>
-          <p class="kicker">LIVE OPS DATA</p>
-          <h1>直播运营数据看板</h1>
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="kicker">PUBLIC LIVE REPORT</p>
+          <h1 id="pageTitle">直播弹幕投票公开结果</h1>
           <p id="program" class="program">等待发布数据</p>
-        </div>
-        <div class="controls">
-          <label for="activitySelect">活动</label>
-          <select id="activitySelect" disabled><option>暂无活动</option></select>
-          <label for="sessionSelect">投票场次</label>
-          <select id="sessionSelect" disabled><option>暂无场次</option></select>
-          <span class="control-label">结果版本</span>
-          <div id="resultMode" class="result-toggle" role="group" aria-label="结果版本">
-            <button type="button" data-result-type="rough" aria-pressed="true" disabled>粗略结果</button>
-            <button type="button" data-result-type="precise" aria-pressed="false" disabled>精确结果</button>
+          <div class="status-row">
+            <span id="resultBadge">粗略结果</span>
+            <span id="precisionBadge">精确结果待发布</span>
+            <span id="updatedBadge">尚未同步</span>
           </div>
-          <button id="exportPng" class="export-button" type="button" disabled>导出当前结果 PNG</button>
-          <div id="liveState" class="live-state"><i></i><span>等待同步</span></div>
         </div>
+        <aside class="current-card">
+          <span>当前场次</span>
+          <strong id="currentRound">等待发布</strong>
+          <small id="currentRoundMeta">暂无场次时间</small>
+          <div id="winnerCard" class="winner-card">结果将在这里显示</div>
+        </aside>
       </header>
+
+      <section class="toolbar">
+        <label>活动<select id="activitySelect" disabled><option>暂无活动</option></select></label>
+        <label>场次<select id="sessionSelect" disabled><option>暂无场次</option></select></label>
+        <div id="resultMode" class="result-toggle" role="group" aria-label="结果版本">
+          <button type="button" data-result-type="rough" aria-pressed="true" disabled>粗略结果</button>
+          <button type="button" data-result-type="precise" aria-pressed="false" disabled>精确结果</button>
+        </div>
+        <button id="exportPng" class="export-button" type="button" disabled>导出当前结果 PNG</button>
+      </section>
 
       <section class="metrics" aria-label="投票概览">
         <div><span>弹幕样本</span><strong id="messages">0</strong></div>
@@ -36,16 +44,42 @@
         <div><span>语义待审</span><strong id="reviews">0</strong></div>
       </section>
 
-      <section id="ranking" class="ranking" aria-live="polite">
-        <div class="empty">结果发布后将在这里显示</div>
+      <section class="content-grid">
+        <section class="result-panel">
+          <div class="section-heading">
+            <h2>结果排行</h2>
+            <span id="liveState"><i></i><span>等待同步</span></span>
+          </div>
+          <div id="ranking" class="ranking" aria-live="polite">
+            <div class="empty">结果发布后将在这里显示</div>
+          </div>
+        </section>
+        <aside class="side-stack">
+          <section class="side-card">
+            <h2>公开导出</h2>
+            <button id="exportPngSide" class="export-button" type="button" disabled>导出当前结果 PNG</button>
+            <button id="copyShare" class="ghost-button" type="button">复制分享链接</button>
+            <a class="ghost-button" href="./data/results.json" download>下载 JSON</a>
+          </section>
+          <section class="side-card">
+            <h2>场次时间线</h2>
+            <div id="timeline" class="timeline"></div>
+          </section>
+          <section class="side-card">
+            <h2>数据来源</h2>
+            <p>数据来源：<a href="https://pyxxxx.github.io/MangoTV_Danmaku/">https://pyxxxx.github.io/MangoTV_Danmaku/</a></p>
+            <p>统计数据不代表湖南卫视 &amp; 芒果 TV 立场，仅供娱乐参考。</p>
+          </section>
+        </aside>
       </section>
 
-      <section class="disclaimer" aria-label="免责声明">
-        统计数据不代表湖南卫视 &amp; 芒果 TV 立场，仅供娱乐参考。
+      <section class="disclaimer" aria-label="说明">
+        <strong>说明</strong>
+        <span>页面仅展示聚合票数，不包含观众昵称与原始弹幕；精确结果发布后会优先展示已校验版本。</span>
       </section>
 
       <footer>
-        <span>页面仅展示聚合票数，不包含观众昵称与原始弹幕</span>
+        <span>直播运营工作台公开结果页</span>
         <time id="updated">尚未同步</time>
       </footer>
     </main>

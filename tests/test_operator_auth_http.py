@@ -60,6 +60,23 @@ class FakeService:
             "restartFields": [],
         }
 
+    def system_status(self):
+        return {
+            "ok": True,
+            "systemTime": "2026-07-07T20:00:00+08:00",
+            "services": {"collector": {"status": "idle"}},
+            "health": {"status": "ok"},
+        }
+
+    def system_logs(self, limit=120):
+        return {
+            "ok": True,
+            "events": [
+                {"time": "2026-07-07T12:00:00Z", "level": "INFO", "source": "service", "summary": "服务已启动", "detail": ""}
+            ],
+            "sources": ["service"],
+        }
+
 
 @unittest.skipIf(AioHTTPTestCase is None, "aiohttp 未安装，跳过认证 HTTP 测试")
 class OperatorAuthHttpTest(AuthHttpTestBase):
@@ -84,6 +101,9 @@ class OperatorAuthHttpTest(AuthHttpTestBase):
 
         health = await self.client.get("/healthz")
         self.assertEqual(health.status, 200)
+
+        system_status = await self.client.get("/api/system/status")
+        self.assertEqual(system_status.status, 401)
 
         wrong = await self.client.post(
             "/auth/login",
@@ -111,6 +131,14 @@ class OperatorAuthHttpTest(AuthHttpTestBase):
         self.assertIn('/webui/app.js?v=', page)
         self.assertIn('/webui/settings.js?v=', page)
         self.assertNotIn("{{STATIC_VERSION}}", page)
+
+        system_status = await self.client.get("/api/system/status", headers={"Cookie": raw_cookie})
+        self.assertEqual(system_status.status, 200)
+        self.assertTrue((await system_status.json())["ok"])
+
+        system_logs = await self.client.get("/api/system/logs", headers={"Cookie": raw_cookie})
+        self.assertEqual(system_logs.status, 200)
+        self.assertEqual((await system_logs.json())["events"][0]["source"], "service")
 
         logout = await self.client.post(
             "/auth/logout",
