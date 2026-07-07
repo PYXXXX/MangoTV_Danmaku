@@ -1464,7 +1464,8 @@ class VoteService:
         state = dict(self.monitor_state or self._initial_monitor_state())
         previous_status = state.get("status") or ""
         state.update(updates)
-        state["taskRunning"] = bool(self.monitor_task is not None and not self.monitor_task.done())
+        monitor_enabled = bool((self.config.get("monitor") or {}).get("enabled"))
+        state["taskRunning"] = monitor_enabled and bool(self.monitor_task is not None and not self.monitor_task.done())
         state["autoStarted"] = bool(self.monitor_auto_started)
         self.monitor_state = state
         if updates and previous_status and previous_status != state.get("status"):

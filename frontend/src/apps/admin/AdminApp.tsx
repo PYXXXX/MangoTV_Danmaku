@@ -1245,10 +1245,31 @@ function SystemLogsPage({ initialLogs }: { initialLogs: SystemLogEvent[] }) {
             </div>
           )}
           <div className="mt-5">
+            <h4 className="mb-3 text-sm font-black text-slate-200">相邻事件</h4>
             <Timeline items={items.slice(0, 5).map((event) => ({ title: event.summary || "事件", description: `${event.source || "service"} · ${event.time ? new Date(event.time).toLocaleTimeString("zh-CN", { hour12: false }) : ""}`, tone: event.level === "ERROR" ? "warn" : "done" }))} />
           </div>
         </Card>
       </div>
+      <Card title="事件时间线" className="mt-4">
+        {items.length ? (
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] gap-3">
+            {items.slice(0, 6).map((event, index) => (
+              <article key={`${event.time}-timeline-${index}`} className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <span className={`rounded-full px-3 py-1 font-mono text-[11px] font-black ${event.level === "ERROR" ? "bg-red-400/15 text-red-200" : event.level === "WARN" ? "bg-yellow-400/15 text-yellow-100" : "bg-blue-400/15 text-blue-100"}`}>
+                    {event.level || "INFO"}
+                  </span>
+                  <time className="font-mono text-[11px] text-ops-muted">{event.time ? new Date(event.time).toLocaleTimeString("zh-CN", { hour12: false }) : "-"}</time>
+                </div>
+                <strong className="mt-4 block truncate text-sm">{event.summary || event.detail || "系统事件"}</strong>
+                <p className="mt-2 truncate text-xs text-ops-muted">{event.source || "service"}</p>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="grid min-h-36 place-items-center text-ops-muted">暂无可展示的事件时间线。</div>
+        )}
+      </Card>
     </section>
   );
 }

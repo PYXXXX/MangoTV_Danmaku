@@ -48,6 +48,7 @@ export function Shell({ activePage, title, subtitle, badges, children, onNavigat
             <button
               key={item.id}
               type="button"
+              data-testid={`studio-nav-${item.id}`}
               onClick={() => onNavigate(item.id)}
               className={[
                 "group flex min-h-16 min-w-56 items-center gap-4 rounded-2xl border px-4 text-left transition",
@@ -95,7 +96,7 @@ export function Shell({ activePage, title, subtitle, badges, children, onNavigat
             </button>
           </div>
         </header>
-        <main className="mx-auto w-full max-w-[1720px] px-7 py-7">{children}</main>
+        <main data-testid={`studio-page-${activePage}`} className="mx-auto w-full max-w-[1720px] px-7 py-7">{children}</main>
       </section>
     </div>
   );

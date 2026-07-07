@@ -463,6 +463,8 @@ class SettingsApiHttpTest(SettingsHttpBase):
         bootstrap = await response.json()
         self.assertTrue(bootstrap["ok"])
         self.assertIn("activities", bootstrap)
+        self.assertFalse(bootstrap["monitor"]["config"]["enabled"])
+        self.assertFalse(bootstrap["monitor"]["state"]["taskRunning"])
 
         response = await self.client.post(
             "/api/activities",
@@ -497,6 +499,10 @@ class SettingsApiHttpTest(SettingsHttpBase):
         response = await self.client.post("/api/activities/1001668/monitor/stop")
         self.assertEqual(response.status, 200)
         self.assertFalse(self.service.config["monitor"]["enabled"])
+        response = await self.client.get("/api/studio/bootstrap")
+        self.assertEqual(response.status, 200)
+        stopped_bootstrap = await response.json()
+        self.assertFalse(stopped_bootstrap["monitor"]["state"]["taskRunning"])
 
         meta = await self.service.store.create_round(
             "歌手 2026",
