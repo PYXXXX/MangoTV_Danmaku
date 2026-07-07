@@ -10,15 +10,18 @@
 2. **离线语义模式**：弹幕先落成 JSONL；本地规则完成绝大多数明确票，只把否定、比较、多人、泛称等歧义样本交给 Codex，最后合并票数。
 3. **服务器模式**：Python 服务端直接调用客户端同款弹幕历史接口，可由飞书 Bot 遥控开始/结束/发布，不依赖前端电脑或 Chrome。
 4. **公开结果页**：聚合票数可同步到 GitHub 仓库，由 GitHub Actions 自动部署到 `github.io`；不会公开昵称和原始弹幕。
+5. **录制后处理**：运营无法实时盯直播时，可全程录制视频和弹幕，回看打标、截取片段，再导出片段弹幕或生成分析场次。
 
-服务器模式采用“活动 → 场次”两级分类。活动可填写节目名（如“歌手 2026”）；结束场次时，会在运营定义的场次名后自动追加该切片的北京时间范围，例如：
+服务器模式采用“活动 → 场次”两级分类。活动可填写节目名（如“歌手 2026”）；场次名称保持运营命名，采集时间范围作为独立字段展示和导出，例如：
 
 ```text
-第一轮 · 20260704 21:30:54-20260704 21:35:18
+第一轮
+采集时间：2026/07/04 21:30:54 – 21:35:18
 ```
 
 当前已在以下页面结构上验证：
 
+- 官方活动页：`https://www.mgtv.com/z/{activityId}.html?...`
 - 直播页：`https://www.mgtv.com/z/{activityId}/{cameraId}.html`
 - 弹幕正文：`.u-hotchat-list .barrageContent`
 - 昵称：同一 `li` 内的 `.u-hc-name`
@@ -29,6 +32,8 @@ Chrome 扩展模式依赖 DOM；服务器模式默认直接调用客户端接口
 - 当前页面示例：`room_id=liveshow-5366`
 
 如果未来客户端接口变更，只需调整 [server/config.example.json](server/config.example.json) 的 `mgtv.history_api` 和 `mgtv.flag/camera_id/room_id`。
+
+服务端在“检测播放源”和“开始场次”前会尝试自动刷新官方活动页并解析机位；如果直播尚未开始、页面没有暴露 cameraId，会提示稍后重试或手动填写带 cameraId 的直播页。
 
 接口排查细节见 [server/interface_notes.md](server/interface_notes.md)。
 

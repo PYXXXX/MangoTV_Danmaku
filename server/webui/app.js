@@ -11,6 +11,10 @@ const el = {
   activityName: $("#activityName"),
   roundName: $("#roundName"),
   liveUrl: $("#liveUrl"),
+  postRecordForm: $("#postRecordForm"),
+  postActivityName: $("#postActivityName"),
+  postRoundName: $("#postRoundName"),
+  postLiveUrl: $("#postLiveUrl"),
   endRound: $("#endRound"),
   publish: $("#publish"),
   preciseForm: $("#preciseForm"),
@@ -82,16 +86,32 @@ function defaultRoundName() {
   return "第 " + (((state && state.sessions && state.sessions.length) || 0) + 1) + " 轮";
 }
 
+function defaultFullRecordingName() {
+  return defaultActivityName() + " 全程录制";
+}
+
 function applyStartDefaults() {
   const activity = defaultActivityName();
   if (el.activityName && document.activeElement !== el.activityName && !el.activityName.value.trim()) {
     el.activityName.value = activity;
   }
+  if (el.postActivityName && document.activeElement !== el.postActivityName && !el.postActivityName.value.trim()) {
+    el.postActivityName.value = activity;
+  }
   if (el.activityName) {
     el.activityName.placeholder = activity ? ("默认：" + activity) : "例如：歌手 2026";
   }
+  if (el.postActivityName) {
+    el.postActivityName.placeholder = activity ? ("默认：" + activity) : "例如：歌手 2026";
+  }
   if (el.roundName) {
     el.roundName.placeholder = "默认：" + defaultRoundName();
+  }
+  if (el.postRoundName) {
+    el.postRoundName.placeholder = "默认：" + defaultFullRecordingName();
+  }
+  if (el.postLiveUrl && !el.postLiveUrl.value && configuredDefaults().mgtvUrl) {
+    el.postLiveUrl.placeholder = configuredDefaults().mgtvUrl;
   }
 }
 
@@ -214,6 +234,49 @@ function formatSeconds(value) {
   return minutes + ":" + String(seconds).padStart(2, "0") + "." + tenths;
 }
 
+function clipActionUrl(round, clip, suffix) {
+  const base = "/api/rounds/" + encodeURIComponent(round.id) + "/recording/clips/" + encodeURIComponent(clip.id);
+  return base + suffix;
+}
+
+function renderClipItem(round, clip) {
+  const item = document.createElement("article");
+  item.className = "clip-item";
+  const title = document.createElement("strong");
+  title.textContent = formatSeconds(clip.startSeconds) + " – " + formatSeconds(clip.endSeconds) + " · " + (clip.label || "片段");
+  const actions = document.createElement("div");
+  actions.className = "clip-actions";
+  const video = document.createElement("a");
+  video.href = clip.url || clipActionUrl(round, clip, ".mp4");
+  video.download = "";
+  video.textContent = "下载视频";
+  const danmaku = document.createElement("a");
+  danmaku.href = clip.danmakuUrl || clipActionUrl(round, clip, ".jsonl");
+  danmaku.download = "";
+  danmaku.textContent = "导出片段弹幕";
+  const raw = document.createElement("a");
+  raw.href = clip.rawDanmakuUrl || clipActionUrl(round, clip, "/raw.jsonl");
+  raw.download = "";
+  raw.textContent = "导出原始弹幕";
+  const analyze = document.createElement("button");
+  analyze.type = "button";
+  analyze.className = "secondary";
+  analyze.textContent = "生成分析场次";
+  analyze.addEventListener("click", async () => {
+    try {
+      const payload = await postJson(clip.analysisUrl || clipActionUrl(round, clip, "/analysis-round"), {});
+      selectedRoundId = payload.roundId;
+      addLog("已从片段生成分析场次：" + (payload.roundName || payload.roundId) + "（" + formatCount(payload.messageCount) + " 条弹幕）");
+      await load();
+    } catch (error) {
+      addLog("生成分析场次失败：" + error.message);
+    }
+  });
+  actions.append(video, danmaku, raw, analyze);
+  item.append(title, actions);
+  return item;
+}
+
 function renderRecording(round) {
   const recording = round && round.recording;
   const hasVideo = Boolean(recording && recording.hasVideo && recording.videoUrl);
@@ -255,13 +318,7 @@ function renderRecording(round) {
     return button;
   }) : [document.createTextNode("暂无标记")]));
   const clips = recording.clips || [];
-  el.clipList.replaceChildren(...(clips.length ? clips.map((clip) => {
-    const link = document.createElement("a");
-    link.href = clip.url || "#";
-    link.download = "";
-    link.textContent = formatSeconds(clip.startSeconds) + " – " + formatSeconds(clip.endSeconds) + " · " + (clip.label || "片段");
-    return link;
-  }) : [document.createTextNode("暂无片段")]));
+  el.clipList.replaceChildren(...(clips.length ? clips.map((clip) => renderClipItem(round, clip)) : [document.createTextNode("暂无片段")]));
 }
 
 function renderRounds(round) {
@@ -390,6 +447,19 @@ el.startForm.addEventListener("submit", async (event) => {
   await sendCommand("开始 " + activity + "|" + name + (url ? (" " + url) : ""));
   el.activityName.value = defaultActivityName();
   el.roundName.value = "";
+});
+el.postRecordForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const activity = el.postActivityName.value.trim() || defaultActivityName();
+  const name = el.postRoundName.value.trim() || defaultFullRecordingName();
+  const url = el.postLiveUrl.value.trim() || configuredDefaults().mgtvUrl || "";
+  try {
+    await sendCommand("开始 " + activity + "|" + name + (url ? (" " + url) : ""));
+    el.postRoundName.value = "";
+    addLog("全程录制/弹幕场次已启动。结束后可在下方回看、打标和截片段。");
+  } catch (error) {
+    addLog("开始全程录制失败：" + error.message);
+  }
 });
 
 el.endRound.addEventListener("click", () => sendCommand("结束").catch((error) => addLog(error.message)));

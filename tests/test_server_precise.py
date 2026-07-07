@@ -6,9 +6,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 try:
-    from server.vote_server import VoteService
+    from server.vote_server import DanmakuMessage, VoteService
 except ModuleNotFoundError:
     VoteService = None
+    DanmakuMessage = None
 
 
 @unittest.skipIf(VoteService is None, "aiohttp 未安装，跳过服务端集成测试")
@@ -337,6 +338,96 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(marker["label"], "高能片段")
                 self.assertEqual(marker["atSeconds"], 12.5)
                 self.assertEqual(service.recorder.public_records()[0]["clipCount"], 0)
+            finally:
+                service.collector.fingerprints.close()
+
+    async def test_recording_clip_exports_danmaku_and_creates_analysis_round(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "recording": {"enabled": True, "stream_url": "", "directory": str(Path(temp) / "recordings")},
+                "mgtv": {"dedup_db_path": str(Path(temp) / "fingerprints.sqlite3")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {"enabled": False},
+            }
+            service = VoteService(config)
+            try:
+                meta = await service.store.create_round("歌手 2026", "全程录制", "", service.default_candidates, "all")
+                for seconds, content in [(5, "片段前"), (15, "甲中间"), (25, "片段后")]:
+                    await service.store.append_message(
+                        meta.id,
+                        DanmakuMessage(
+                            ts=f"2026-07-05T01:00:{seconds:02d}Z",
+                            nickname="观众",
+                            content=content,
+                            matches=["c1"] if "甲" in content else [],
+                            votes=["c1"] if "甲" in content else [],
+                            needsReview=False,
+                            url="https://www.mgtv.com/z/1001668/5366.html",
+                        ),
+                    )
+                await service.store.append_raw_danmaku_batch(
+                    meta.id,
+                    poll_seq=1,
+                    observed_at="2026-07-05T01:00:15Z",
+                    room_id="liveshow-5366",
+                    url=meta.pageUrl,
+                    items=[{"c": "甲中间"}],
+                )
+                await service.store.append_raw_danmaku_batch(
+                    meta.id,
+                    poll_seq=2,
+                    observed_at="2026-07-05T01:00:25Z",
+                    room_id="liveshow-5366",
+                    url=meta.pageUrl,
+                    items=[{"c": "片段后"}],
+                )
+                await service.store.stop_active()
+                service.recorder.records[meta.id] = {
+                    "roundId": meta.id,
+                    "activity": meta.activity,
+                    "roundName": meta.name,
+                    "sourceUrl": "",
+                    "path": str(Path(temp) / "recordings" / meta.id / "recording.mp4"),
+                    "status": "finished",
+                    "startedAt": "2026-07-05T01:00:00Z",
+                    "endedAt": "2026-07-05T01:01:00Z",
+                    "error": "",
+                    "markers": [],
+                    "clips": [{
+                        "id": "clip-1",
+                        "label": "第一段",
+                        "startSeconds": 10,
+                        "endSeconds": 20,
+                        "path": str(Path(temp) / "recordings" / meta.id / "clip-1.mp4"),
+                        "url": f"/api/rounds/{meta.id}/recording/clips/clip-1.mp4",
+                        "createdAt": "2026-07-05T01:02:00Z",
+                    }],
+                }
+
+                exported, filename = service.export_recording_clip_danmaku(meta.id, "clip-1")
+                self.assertIn("clip-1", filename)
+                self.assertIn("甲中间", exported)
+                self.assertNotIn("片段前", exported)
+                self.assertNotIn("片段后", exported)
+                raw_exported, _ = service.export_recording_clip_danmaku(meta.id, "clip-1", raw=True)
+                self.assertIn('"rawTrack":"observed_api_items"', raw_exported)
+                self.assertIn("甲中间", raw_exported)
+                self.assertNotIn("片段后", raw_exported)
+
+                derived = await service.create_analysis_round_from_clip(meta.id, "clip-1")
+                self.assertEqual(derived.status, "stopped")
+                self.assertEqual(derived.messageCount, 1)
+                self.assertEqual(derived.voteCounts["c1"], 1)
+                self.assertIn("第一段", derived.name)
+                derived_export = service.store.export_round_jsonl(derived.id)
+                self.assertIn('"sourceRoundId"', derived_export)
+                self.assertIn("甲中间", derived_export)
             finally:
                 service.collector.fingerprints.close()
 

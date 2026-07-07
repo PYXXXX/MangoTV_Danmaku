@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass, field
 from http.cookies import SimpleCookie
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from aiohttp import ClientSession, ClientTimeout, CookieJar
 
@@ -98,6 +98,37 @@ def parse_mgtv_activity_camera(page_url: str) -> tuple[str, str]:
     activity_id = match.group(1).strip()
     camera_id = re.sub(r"\.html$", "", match.group(2).strip(), flags=re.I)
     return activity_id, camera_id
+
+
+def parse_mgtv_activity_id(page_url: str) -> str:
+    parsed = urlparse(str(page_url or ""))
+    match = re.search(r"^/z2?/([^/?#]+?)(?:\.html)?/?$", parsed.path)
+    if not match:
+        return ""
+    return match.group(1).strip()
+
+
+def mgtv_camera_page_url(page_url: str, activity_id: str, camera_id: str) -> str:
+    parsed = urlparse(str(page_url or ""))
+    scheme = parsed.scheme or "https"
+    netloc = parsed.netloc or "www.mgtv.com"
+    path = f"/z/{activity_id}/{camera_id}.html"
+    return urlunparse((scheme, netloc, path, "", parsed.query, ""))
+
+
+def discover_mgtv_camera_id(html: str, activity_id: str) -> str:
+    text = str(html or "").replace("\\u002F", "/").replace("\\/", "/")
+    patterns = [
+        rf"/z2?/{re.escape(activity_id)}/([A-Za-z0-9_-]+)\.html",
+        r'"cameraId"\s*:\s*"?([A-Za-z0-9_-]+)"?',
+        r'"camera_id"\s*:\s*"?([A-Za-z0-9_-]+)"?',
+        r"\bcameraId\s*[:=]\s*['\"]?([A-Za-z0-9_-]+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1).strip()
+    return ""
 
 
 def _json_data(value: Any) -> Any:
@@ -211,6 +242,80 @@ class MgtvAuthManager:
             async with session.get(MANGO_USER_API) as response:
                 return await response.json(content_type=None)
 
+    async def resolve_live_url(self, page_url: str, *, timeout_seconds: int = 12) -> dict[str, Any]:
+        page_url = str(page_url or "").strip()
+        activity_id, camera_id = parse_mgtv_activity_camera(page_url)
+        if activity_id and camera_id:
+            return {
+                "ok": True,
+                "pageUrl": page_url,
+                "activityId": activity_id,
+                "cameraId": camera_id,
+                "resolved": False,
+                "resolvedFrom": "",
+            }
+
+        activity_id = parse_mgtv_activity_id(page_url)
+        if not activity_id:
+            return {
+                "ok": False,
+                "error": "无法从直播 URL 解析 activity_id，请使用芒果活动页 /z/{activityId}.html 或直播页 /z/{activityId}/{cameraId}.html。",
+                "pageUrl": page_url,
+                "activityId": "",
+                "cameraId": "",
+            }
+
+        timeout = ClientTimeout(total=timeout_seconds, connect=5, sock_read=max(6, timeout_seconds - 2))
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": page_url,
+            "Cookie": self.cookie_header(),
+        }
+        try:
+            async with ClientSession(headers=headers, timeout=timeout) as session:
+                async with session.get(page_url, allow_redirects=True) as response:
+                    text = await response.text(errors="ignore")
+                    final_url = str(response.url)
+        except Exception as exc:  # noqa: BLE001 - surface a friendly operator hint
+            return {
+                "ok": False,
+                "error": f"直播活动页刷新检测失败：{exc}",
+                "pageUrl": page_url,
+                "activityId": activity_id,
+                "cameraId": "",
+            }
+
+        final_activity, final_camera = parse_mgtv_activity_camera(final_url)
+        if final_activity and final_camera:
+            return {
+                "ok": True,
+                "pageUrl": final_url,
+                "activityId": final_activity,
+                "cameraId": final_camera,
+                "resolved": True,
+                "resolvedFrom": page_url,
+            }
+
+        camera_id = discover_mgtv_camera_id(text, activity_id)
+        if camera_id:
+            resolved_url = mgtv_camera_page_url(page_url, activity_id, camera_id)
+            return {
+                "ok": True,
+                "pageUrl": resolved_url,
+                "activityId": activity_id,
+                "cameraId": camera_id,
+                "resolved": True,
+                "resolvedFrom": page_url,
+            }
+
+        return {
+            "ok": False,
+            "error": "官方活动页尚未刷新出直播机位，请直播开始后重试；也可以手动填写带 camera_id 的直播页 URL。",
+            "pageUrl": page_url,
+            "activityId": activity_id,
+            "cameraId": "",
+        }
+
     async def start_qr_login(self, on_success: Any, *, timeout_seconds: int = 180) -> dict[str, Any]:
         async with self._lock:
             if self.login.task and not self.login.task.done() and self.login.status == "pending":
@@ -295,16 +400,20 @@ class MgtvAuthManager:
             self.login.screenshot = ""
 
     async def detect_stream(self, page_url: str, preferred_quality: str = "auto", *, timeout_seconds: int = 25) -> dict[str, Any]:
-        activity_id, camera_id = parse_mgtv_activity_camera(page_url)
         preferred_quality = preferred_quality or "auto"
-        if not activity_id or not camera_id:
+        resolution = await self.resolve_live_url(page_url, timeout_seconds=min(timeout_seconds, 12))
+        if not resolution.get("ok"):
             return {
                 "ok": False,
-                "error": "无法从直播 URL 解析 activity_id/camera_id，请使用 /z/{activityId}/{cameraId}.html 格式。",
+                "error": resolution.get("error") or "无法从直播 URL 解析 activity_id/camera_id。",
                 "loginRequired": not self.logged_in(),
                 "vipRequired": "unknown",
                 "quality": preferred_quality,
+                "resolution": resolution,
             }
+        page_url = str(resolution.get("pageUrl") or page_url)
+        activity_id = str(resolution.get("activityId") or "")
+        camera_id = str(resolution.get("cameraId") or "")
         cookie_header = self.cookie_header()
         values = cookie_values(cookie_header)
         uid = values.get("uuid") or values.get("UUID") or ""
@@ -345,6 +454,10 @@ class MgtvAuthManager:
                 "loginRequired": not self.logged_in(),
                 "vipRequired": "unknown",
                 "quality": preferred_quality,
+                "pageUrl": page_url,
+                "activityId": activity_id,
+                "cameraId": camera_id,
+                "resolvedFrom": resolution.get("resolvedFrom") or "",
             }
 
         payload = data.get("data") if isinstance(data.get("data"), dict) else {}
@@ -367,6 +480,10 @@ class MgtvAuthManager:
                 "availableQualities": [item for item in available if item],
                 "candidates": len(sources),
                 "code": code,
+                "pageUrl": page_url,
+                "activityId": activity_id,
+                "cameraId": camera_id,
+                "resolvedFrom": resolution.get("resolvedFrom") or "",
             }
         return {
             "ok": True,
@@ -378,6 +495,10 @@ class MgtvAuthManager:
             "vipRequired": str(selected.get("needPay") or "") == "1",
             "candidates": len(sources),
             "code": code,
+            "pageUrl": page_url,
+            "activityId": activity_id,
+            "cameraId": camera_id,
+            "resolvedFrom": resolution.get("resolvedFrom") or "",
             "message": "已通过芒果直播源接口检测到可交给 ffmpeg 直录的播放流。",
         }
 

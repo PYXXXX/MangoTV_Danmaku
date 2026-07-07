@@ -24,7 +24,7 @@ import unicodedata
 import copy
 from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -78,6 +78,10 @@ def parse_iso(value: str | None) -> datetime:
     if not value:
         return datetime.now(timezone.utc)
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def iso_z(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def format_beijing_range(start: str, end: str) -> str:
@@ -380,6 +384,64 @@ class StateStore:
             await self.save()
             return meta
 
+    async def create_derived_round(
+        self,
+        *,
+        activity: str,
+        name: str,
+        url: str,
+        candidates: list[Candidate],
+        policy: str,
+        records: list[dict[str, Any]],
+        source_round_id: str,
+        slice_start_time: str,
+        slice_end_time: str,
+    ) -> RoundMeta:
+        async with self.lock:
+            round_id = safe_id()
+            base_name = normalize(name) or f"片段分析 {len(self.round_order) + 1}"
+            created_at = now_iso()
+            seq_values = [int(item.get("seq") or 0) for item in records if int(item.get("seq") or 0) > 0]
+            meta = RoundMeta(
+                id=round_id,
+                activity=normalize(activity) or "未分类活动",
+                baseName=base_name,
+                name=base_name,
+                status="stopped",
+                startedAt=slice_start_time,
+                updatedAt=created_at,
+                stoppedAt=slice_end_time,
+                pageUrl=url,
+                pageTitle="",
+                candidates=candidates,
+                multiCandidatePolicy=policy,
+                voteCounts={candidate.id: 0 for candidate in candidates},
+                sliceStartSeq=min(seq_values) if seq_values else self.global_seq + 1,
+                sliceEndSeq=max(seq_values) if seq_values else self.global_seq,
+                sliceStartTime=slice_start_time,
+                sliceEndTime=slice_end_time,
+            )
+            output_records = []
+            for item in records:
+                record = dict(item)
+                record["roundId"] = round_id
+                record["sourceRoundId"] = source_round_id
+                record["sourceSeq"] = item.get("seq")
+                record["derivedAt"] = created_at
+                for candidate_id in record.get("votes") or []:
+                    meta.voteCounts[candidate_id] = meta.voteCounts.get(candidate_id, 0) + 1
+                meta.reviewCount += 1 if record.get("needsReview") else 0
+                output_records.append(record)
+            meta.messageCount = len(output_records)
+            self.rounds[round_id] = meta
+            self.round_order.insert(0, round_id)
+            path = self.rounds_dir / f"{round_id}.jsonl"
+            with path.open("w", encoding="utf-8") as handle:
+                for record in output_records:
+                    handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+            await self.save()
+            return meta
+
     async def stop_active(self) -> RoundMeta | None:
         async with self.lock:
             if not self.active_round_id:
@@ -537,9 +599,11 @@ class StateStore:
         meta = self.require_round(round_id)
         start = meta.sliceStartSeq
         end = meta.sliceEndSeq if meta.sliceEndSeq is not None else self.global_seq
-        if not self.raw_messages_path.exists():
+        round_path = self.rounds_dir / f"{round_id}.jsonl"
+        path = round_path if round_path.exists() else self.raw_messages_path
+        if not path.exists():
             return
-        with self.raw_messages_path.open("r", encoding="utf-8") as handle:
+        with path.open("r", encoding="utf-8") as handle:
             for line in handle:
                 if not line.strip():
                     continue
@@ -549,6 +613,35 @@ class StateStore:
                     continue
                 seq = int(item.get("seq") or 0)
                 if start <= seq <= end and item.get("roundId") == round_id:
+                    yield item
+
+    def iter_round_records_by_time(self, round_id: str, start_time: str, end_time: str):
+        start_dt = parse_iso(start_time)
+        end_dt = parse_iso(end_time)
+        for item in self.iter_slice_records(round_id):
+            try:
+                ts = parse_iso(str(item.get("ts") or ""))
+            except ValueError:
+                continue
+            if start_dt <= ts <= end_dt:
+                yield item
+
+    def iter_raw_round_records_by_time(self, round_id: str, start_time: str, end_time: str):
+        start_dt = parse_iso(start_time)
+        end_dt = parse_iso(end_time)
+        path = self.raw_rounds_dir / f"{round_id}.jsonl"
+        if not path.exists():
+            return
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    item = json.loads(line)
+                    observed = parse_iso(str(item.get("observedAt") or ""))
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if start_dt <= observed <= end_dt:
                     yield item
 
     def export_round_jsonl(self, round_id: str) -> str:
@@ -986,9 +1079,20 @@ class RecordingManager:
         for record in self.records.values():
             item = dict(record)
             path = Path(str(item.get("path") or ""))
+            round_id = quote(str(item.get("roundId") or ""), safe="")
             item["hasVideo"] = path.exists()
-            item["videoUrl"] = f"/api/rounds/{quote(item.get('roundId', ''), safe='')}/recording/video" if path.exists() else ""
-            item["clipCount"] = len(item.get("clips") or [])
+            item["videoUrl"] = f"/api/rounds/{round_id}/recording/video" if path.exists() else ""
+            clips = []
+            for clip in item.get("clips") or []:
+                clip_item = dict(clip)
+                clip_id = quote(str(clip_item.get("id") or ""), safe="")
+                clip_item.setdefault("url", f"/api/rounds/{round_id}/recording/clips/{clip_id}.mp4")
+                clip_item["danmakuUrl"] = f"/api/rounds/{round_id}/recording/clips/{clip_id}.jsonl"
+                clip_item["rawDanmakuUrl"] = f"/api/rounds/{round_id}/recording/clips/{clip_id}/raw.jsonl"
+                clip_item["analysisUrl"] = f"/api/rounds/{round_id}/recording/clips/{clip_id}/analysis-round"
+                clips.append(clip_item)
+            item["clips"] = clips
+            item["clipCount"] = len(clips)
             records.append(item)
         return sorted(records, key=lambda item: item.get("startedAt") or "", reverse=True)
 
@@ -1166,13 +1270,20 @@ class RecordingManager:
         record = self.records.get(round_id)
         if not record:
             raise KeyError(f"找不到录制：{round_id}")
-        clip = next((item for item in record.get("clips") or [] if item.get("id") == clip_id), None)
-        if not clip:
-            raise KeyError(f"找不到片段：{clip_id}")
+        clip = self.clip_for(round_id, clip_id)
         path = Path(str(clip.get("path") or ""))
         if not path.exists():
             raise FileNotFoundError("片段文件不存在")
         return path
+
+    def clip_for(self, round_id: str, clip_id: str) -> dict[str, Any]:
+        record = self.records.get(round_id)
+        if not record:
+            raise KeyError(f"找不到录制：{round_id}")
+        clip = next((item for item in record.get("clips") or [] if item.get("id") == clip_id), None)
+        if not clip:
+            raise KeyError(f"找不到片段：{clip_id}")
+        return dict(clip)
 
     def delete_round(self, round_id: str) -> None:
         self.records.pop(round_id, None)
@@ -1360,6 +1471,29 @@ class VoteService:
     async def start_mgtv_qr_login(self) -> dict[str, Any]:
         return await self.mgtv_auth.start_qr_login(self._save_mgtv_login)
 
+    async def resolve_mgtv_live_url(self, url: str, *, persist: bool = False) -> dict[str, Any]:
+        result = await self.mgtv_auth.resolve_live_url(url)
+        if not result.get("ok"):
+            return result
+        page_url = str(result.get("pageUrl") or url)
+        camera_id = str(result.get("cameraId") or "")
+        activity_id = str(result.get("activityId") or "")
+        if persist and camera_id:
+            async with self.config_lock:
+                target = copy.deepcopy(self.config)
+                mgtv = dict(target.get("mgtv") or {})
+                mgtv["url"] = page_url
+                mgtv["camera_id"] = camera_id
+                mgtv["activity_id"] = activity_id
+                flag = str(mgtv.get("flag") or "liveshow")
+                mgtv["room_id"] = f"{flag}-{camera_id}"
+                target["mgtv"] = mgtv
+                if self.config_path is not None:
+                    save_config_atomic(self.config_path, target)
+                self.config = target
+                self.collector.apply_config(mgtv)
+        return result
+
     async def detect_mgtv_recording_source(self, url: str | None = None, quality: str | None = None) -> dict[str, Any]:
         recording = self.config.get("recording") or {}
         page_url = url or self.config.get("mgtv", {}).get("url") or ""
@@ -1375,14 +1509,79 @@ class VoteService:
                 rec["last_detected_quality"] = result.get("actualQuality") or result.get("quality") or ""
                 rec["last_detected_at"] = now_iso()
                 target["recording"] = rec
+                mgtv = dict(target.get("mgtv") or {})
+                if result.get("pageUrl"):
+                    mgtv["url"] = result["pageUrl"]
+                if result.get("cameraId"):
+                    mgtv["camera_id"] = result["cameraId"]
+                    flag = str(mgtv.get("flag") or "liveshow")
+                    mgtv["room_id"] = f"{flag}-{result['cameraId']}"
+                if result.get("activityId"):
+                    mgtv["activity_id"] = result["activityId"]
+                target["mgtv"] = mgtv
                 if self.config_path is not None:
                     save_config_atomic(self.config_path, target)
                 self.config = target
                 self.recorder.config = rec
+                self.collector.apply_config(mgtv)
         redacted = dict(result)
         if redacted.get("streamUrl"):
             redacted["streamUrl"] = "已解析，已隐藏"
         return redacted
+
+    def recording_clip_time_range(self, round_id: str, clip_id: str) -> tuple[dict[str, Any], dict[str, Any], str, str]:
+        record = self.recorder.record_for(round_id)
+        if not record:
+            raise KeyError(f"找不到录制：{round_id}")
+        clip = self.recorder.clip_for(round_id, clip_id)
+        start = parse_iso(str(record.get("startedAt") or self.store.require_round(round_id).sliceStartTime))
+        start_time = iso_z(start + timedelta(seconds=max(0.0, float(clip.get("startSeconds") or 0))))
+        end_time = iso_z(start + timedelta(seconds=max(0.0, float(clip.get("endSeconds") or 0))))
+        return record, clip, start_time, end_time
+
+    def export_recording_clip_danmaku(self, round_id: str, clip_id: str, *, raw: bool = False) -> tuple[str, str]:
+        meta = self.store.require_round(round_id)
+        _record, clip, start_time, end_time = self.recording_clip_time_range(round_id, clip_id)
+        iterator = (
+            self.store.iter_raw_round_records_by_time(round_id, start_time, end_time)
+            if raw
+            else self.store.iter_round_records_by_time(round_id, start_time, end_time)
+        )
+        lines = [json.dumps({
+            "type": "meta",
+            **asdict(meta),
+            "sourceRoundId": round_id,
+            "clipId": clip_id,
+            "clipLabel": clip.get("label") or "",
+            "clipStartSeconds": clip.get("startSeconds"),
+            "clipEndSeconds": clip.get("endSeconds"),
+            "displayName": meta.baseName,
+            "timeRange": format_beijing_display_range(start_time, end_time),
+            "rawTrack": "observed_api_items" if raw else "",
+            "derivedFromRecordingClip": True,
+        }, ensure_ascii=False, separators=(",", ":"))]
+        lines.extend(json.dumps(record, ensure_ascii=False, separators=(",", ":")) for record in iterator)
+        suffix = "-raw" if raw else ""
+        filename = f"mgtv-round-{round_id}-clip-{clip_id}{suffix}.jsonl"
+        return "\n".join(lines) + "\n", filename
+
+    async def create_analysis_round_from_clip(self, round_id: str, clip_id: str, name: str = "") -> RoundMeta:
+        source = self.store.require_round(round_id)
+        _record, clip, start_time, end_time = self.recording_clip_time_range(round_id, clip_id)
+        records = [dict(item) for item in self.store.iter_round_records_by_time(round_id, start_time, end_time)]
+        clip_label = normalize(name) or normalize(clip.get("label") or "") or f"{clip.get('startSeconds', 0):.1f}s-{clip.get('endSeconds', 0):.1f}s"
+        derived_name = f"{source.baseName} / {clip_label}"
+        return await self.store.create_derived_round(
+            activity=source.activity,
+            name=derived_name,
+            url=source.pageUrl,
+            candidates=source.candidates,
+            policy=source.multiCandidatePolicy,
+            records=records,
+            source_round_id=round_id,
+            slice_start_time=start_time,
+            slice_end_time=end_time,
+        )
 
     async def start_feishu_binding(self, loop: asyncio.AbstractEventLoop) -> dict[str, Any]:
         if self.config_path is None:
@@ -1813,17 +2012,24 @@ class VoteService:
         return self.feishu_card(open_id, notice)
 
     async def start_round(self, name: str, url: str | None = None, activity: str | None = None) -> RoundMeta:
-        if self.store.active_round_id:
-            await self.end_round(publish=True)
         url = url or self.config.get("mgtv", {}).get("url")
-        activity = activity or self.config.get("vote", {}).get("activity") or "未分类活动"
-        meta = await self.store.create_round(activity, name, url, self.default_candidates, self.default_policy)
+        if not url:
+            raise ValueError("未配置直播 URL")
+        resolution = await self.resolve_mgtv_live_url(str(url), persist=True)
+        if not resolution.get("ok"):
+            raise ValueError(str(resolution.get("error") or "直播 URL 无法解析出可采集的机位"))
+        url = str(resolution.get("pageUrl") or url)
         recording = self.config.get("recording") or {}
         recording_source = str(recording.get("stream_url") or "")
-        if recording.get("enabled") and not recording_source:
+        if recording.get("enabled"):
             detected = await self.detect_mgtv_recording_source(url, str(recording.get("preferred_quality") or "auto"))
-            if detected.get("ok"):
-                recording_source = str((self.config.get("recording") or {}).get("stream_url") or "")
+            if not detected.get("ok"):
+                raise ValueError(str(detected.get("error") or "录制源检测失败"))
+            recording_source = str((self.config.get("recording") or {}).get("stream_url") or "")
+        if self.store.active_round_id:
+            await self.end_round(publish=True)
+        activity = activity or self.config.get("vote", {}).get("activity") or "未分类活动"
+        meta = await self.store.create_round(activity, name, url, self.default_candidates, self.default_policy)
         await self.recorder.start(meta, recording_source)
         await self.collector.start(meta.id, url)
         return meta
@@ -2237,6 +2443,12 @@ def create_app(service: VoteService) -> web.Application:
         status = 200 if result.get("ok") else 409
         return web.json_response(result, status=status, dumps=lambda payload: json.dumps(payload, ensure_ascii=False), headers={"Cache-Control": "no-store"})
 
+    async def resolve_mgtv_url(request: web.Request) -> web.Response:
+        data = await request.json()
+        result = await service.resolve_mgtv_live_url(str(data.get("url") or ""), persist=bool(data.get("persist")))
+        status = 200 if result.get("ok") else 409
+        return web.json_response(result, status=status, dumps=lambda payload: json.dumps(payload, ensure_ascii=False), headers={"Cache-Control": "no-store"})
+
     async def round_export(request: web.Request) -> web.Response:
         round_id = request.match_info["round_id"]
         try:
@@ -2354,6 +2566,57 @@ def create_app(service: VoteService) -> web.Application:
             return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
         except FileNotFoundError as exc:
             return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+
+    async def recording_clip_export(request: web.Request) -> web.Response:
+        round_id = request.match_info["round_id"]
+        clip_id = request.match_info["clip_id"]
+        try:
+            body, filename = service.export_recording_clip_danmaku(round_id, clip_id, raw=False)
+        except KeyError as exc:
+            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except (TypeError, ValueError) as exc:
+            return web.json_response({"error": str(exc)}, status=400, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.Response(
+            text=body,
+            content_type="application/x-ndjson",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    async def recording_clip_raw_export(request: web.Request) -> web.Response:
+        round_id = request.match_info["round_id"]
+        clip_id = request.match_info["clip_id"]
+        try:
+            body, filename = service.export_recording_clip_danmaku(round_id, clip_id, raw=True)
+        except KeyError as exc:
+            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except (TypeError, ValueError) as exc:
+            return web.json_response({"error": str(exc)}, status=400, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.Response(
+            text=body,
+            content_type="application/x-ndjson",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    async def create_clip_analysis_round(request: web.Request) -> web.Response:
+        round_id = request.match_info["round_id"]
+        clip_id = request.match_info["clip_id"]
+        data = await request.json()
+        try:
+            meta = await service.create_analysis_round_from_clip(round_id, clip_id, str(data.get("name") or ""))
+        except KeyError as exc:
+            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        except (TypeError, ValueError) as exc:
+            return web.json_response({"error": str(exc)}, status=400, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response(
+            {
+                "ok": True,
+                "roundId": meta.id,
+                "roundName": meta.name,
+                "messageCount": meta.messageCount,
+                "exportUrl": f"/api/rounds/{quote(meta.id, safe='')}.jsonl",
+            },
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+        )
 
     async def precise_upload(request: web.Request) -> web.Response:
         round_id = request.match_info["round_id"]
@@ -2482,6 +2745,7 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_post("/api/settings", update_settings)
     app.router.add_get("/api/mgtv/auth", mgtv_auth_status)
     app.router.add_post("/api/mgtv/auth/start", start_mgtv_auth)
+    app.router.add_post("/api/mgtv/url/resolve", resolve_mgtv_url)
     app.router.add_post("/api/mgtv/source/check", check_mgtv_source)
     app.router.add_get("/api/feishu/binding", get_feishu_binding)
     app.router.add_post("/api/feishu/binding/start", start_feishu_binding)
@@ -2497,6 +2761,9 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_post("/api/rounds/{round_id}/recording/markers", add_recording_marker)
     app.router.add_post("/api/rounds/{round_id}/recording/clips", create_recording_clip)
     app.router.add_get("/api/rounds/{round_id}/recording/clips/{clip_id}.mp4", recording_clip)
+    app.router.add_get("/api/rounds/{round_id}/recording/clips/{clip_id}.jsonl", recording_clip_export)
+    app.router.add_get("/api/rounds/{round_id}/recording/clips/{clip_id}/raw.jsonl", recording_clip_raw_export)
+    app.router.add_post("/api/rounds/{round_id}/recording/clips/{clip_id}/analysis-round", create_clip_analysis_round)
     app.router.add_get("/exports/rounds/{round_id}/result.png", round_result_png)
     app.router.add_post("/api/rounds/{round_id}/precise-result", precise_upload)
     app.router.add_delete("/api/rounds/{round_id}", delete_round)

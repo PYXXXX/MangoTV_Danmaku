@@ -4,10 +4,13 @@ from server.mgtv_auth import (
     MgtvAuthManager,
     cookie_header_from_cookies,
     cookies_from_header,
+    discover_mgtv_camera_id,
     cookie_values,
     logged_in_from_cookies,
+    mgtv_camera_page_url,
     mgtv_live_source_sign,
     parse_mgtv_activity_camera,
+    parse_mgtv_activity_id,
 )
 
 
@@ -47,6 +50,18 @@ class MgtvAuthHelpersTest(unittest.TestCase):
         self.assertEqual(
             parse_mgtv_activity_camera("https://www.mgtv.com/z/1001668/5366.html?fpa=1"),
             ("1001668", "5366"),
+        )
+        self.assertEqual(
+            parse_mgtv_activity_id("https://www.mgtv.com/z/1001668.html?fpa=12437&fpos&lastp=ch_home&_source_=B"),
+            "1001668",
+        )
+        self.assertEqual(
+            discover_mgtv_camera_id(r'{"routePath":"\u002Fz\u002F1001668\u002F5366.html"}', "1001668"),
+            "5366",
+        )
+        self.assertEqual(
+            mgtv_camera_page_url("https://www.mgtv.com/z/1001668.html?fpa=1", "1001668", "5366"),
+            "https://www.mgtv.com/z/1001668/5366.html?fpa=1",
         )
 
     def test_public_status_redacts_user_info_and_never_returns_cookies(self):
@@ -95,6 +110,36 @@ class MgtvAuthAsyncTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["streamUrl"], "https://example.com/1080.m3u8")
         self.assertEqual(result["actualQuality"], "1080P ·50帧")
+        self.assertEqual(result["pageUrl"], "https://www.mgtv.com/z/1001668/5366.html")
+
+    async def test_detect_stream_accepts_activity_url_after_resolution(self):
+        manager = MgtvAuthManager({"device_id": "device-id"})
+
+        async def fake_resolve_live_url(page_url, *, timeout_seconds=12):
+            self.assertIn("/z/1001668.html", page_url)
+            return {
+                "ok": True,
+                "pageUrl": "https://www.mgtv.com/z/1001668/5366.html?fpa=1",
+                "activityId": "1001668",
+                "cameraId": "5366",
+                "resolved": True,
+                "resolvedFrom": page_url,
+            }
+
+        async def fake_request_json(session, url, **kwargs):
+            self.assertEqual(kwargs["params"]["cameraId"], "5366")
+            return {
+                "code": 200,
+                "msg": "ok",
+                "data": {"sources": [{"name": "720P", "url": "https://example.com/720.m3u8"}]},
+            }
+
+        manager.resolve_live_url = fake_resolve_live_url
+        manager._request_json = fake_request_json
+        result = await manager.detect_stream("https://www.mgtv.com/z/1001668.html?fpa=1", "720P")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["pageUrl"], "https://www.mgtv.com/z/1001668/5366.html?fpa=1")
+        self.assertEqual(result["resolvedFrom"], "https://www.mgtv.com/z/1001668.html?fpa=1")
 
 
 if __name__ == "__main__":

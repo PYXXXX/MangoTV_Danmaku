@@ -154,12 +154,14 @@ sudoedit /var/lib/mgtv-danmaku/config.json
 
 `recording.stream_url` 必须是 ffmpeg 可直接读取的媒体流地址，例如 HLS/m3u8；普通芒果网页 URL 不一定能录制。推荐运营在 WebUI「系统配置 → 直播录屏与后处理」里点击“发起扫码登录”，用有对应观看权益的芒果 TV 账号扫码后，再点击“检测播放源”。系统会直接调用芒果 TV 用户端扫码登录接口和直播播放源接口，按 `recording.preferred_quality` 尝试解析 1080P/720P 等清晰度并保存播放源，敏感 cookie 与 m3u8 URL 不会在页面回显。
 
+歌手 2026 这类官方活动页可能是 `https://www.mgtv.com/z/1001668.html?...`，直播开始后才由前端刷新到 `/z/{activityId}/{cameraId}.html`。系统在“检测播放源”和“开始场次”前会先尝试刷新官方活动页并解析机位；成功后会保存解析出的 `mgtv.url`、`camera_id` 和 `room_id=liveshow-{camera_id}`。如果直播尚未开始、页面仍未暴露机位，运营端会提示稍后重试或手动填写带 camera_id 的直播页 URL。
+
 注意：该功能只使用账号自身可观看的清晰度，不绕过登录、VIP、DRM 或平台限制。如果页面提示需要 VIP、清晰度不可用、DRM 保护或芒果 TV 前端接口变化，系统会提示检测失败；此时需要更换有权限账号、降低清晰度，或手动填入合法可录制的 m3u8。
 
 说明：
 
 - 服务会从 `/z/{activityId}/{cameraId}.html` 解析 cameraId，并请求 `room_id=liveshow-{cameraId}`。
-- 如页面 URL 无法解析，可在 `mgtv` 中显式增加 `"room_id": "liveshow-5366"`。
+- 如页面 URL 无法自动刷新解析，可在 `mgtv` 中显式增加 `"room_id": "liveshow-5366"` 或填写带 cameraId 的直播页 URL。
 - `count_initial_history=false` 表示场次启动时先预热历史列表但不计票，避免把开场前缓存算入本轮；原始观测轨仍会保存首批历史返回，便于后处理复盘。
 - 去重索引主要占磁盘；`dedup_hot_cache_size` 控制内存中的热缓存规模。
 
@@ -625,15 +627,32 @@ sudo systemctl reload nginx
 
 ## 11. 日常运营流程
 
+### 11.1 实时运营
+
+适合运营能实时观看直播、现场决定每轮开始结束的场景。
+
 1. 登录运营端或在飞书打开控制卡片。
 2. 核对活动名、候选人和直播 URL。
-3. 开始新场次。
+3. 在“实时运营”里开始新场次。
 4. 观察样本量、实时票数和语义待审数。
 5. 结束场次；服务锁定切片，并把北京时间采集范围作为独立时间信息展示。
 6. 需要快速展示时发布粗略结果。
 7. 需要精确结果时导出 JSONL，按第 14 节清洗后上传。
 8. 核对公开页，确认结果版本和场次名称。
-9. 按保留策略备份或清理原始数据。
+
+### 11.2 录制后处理
+
+适合运营无法一直盯直播的场景。该模式仍复用场次、录制和弹幕采集后端，只是在运营端单独成区。
+
+1. 在系统配置中完成芒果 TV 扫码登录，选择清晰度并检测播放源。
+2. 在“录制后处理”里点击“开始全程录制与弹幕”。系统会自动刷新官方活动页并解析机位。
+3. 直播结束后结束该全程场次；此时本地已有完整视频、处理后弹幕 JSONL 和原始观测弹幕 JSONL。
+4. 在播放器里回看，给关键时间点打标。
+5. 输入开始/结束秒数截取片段。
+6. 对片段执行“导出片段弹幕”或“导出原始弹幕”；如需沿用现有精确结果上传、发布链路，点击“生成分析场次”。
+7. 对生成的分析场次导出 JSONL、清洗并上传精确结果。
+
+按保留策略定期备份或清理原始数据、录屏和片段。
 
 ## 12. 备份与恢复
 
@@ -846,13 +865,23 @@ sudo systemctl restart mgtv-danmaku
 | GET | `/api/results.json` | 否 | 当前聚合状态 |
 | GET | `/api/settings` | 否 | 读取已脱敏的在线配置 |
 | POST | `/api/settings` | 否 | 校验、保存并热应用配置 |
+| POST | `/api/mgtv/url/resolve` | 否 | 刷新官方活动页并解析直播机位 |
+| POST | `/api/mgtv/source/check` | 否 | 检测芒果 TV 可录制播放源 |
 | GET | `/api/feishu/binding` | 否 | 读取飞书一键绑定状态 |
 | POST | `/api/feishu/binding/start` | 否 | 发起飞书授权绑定 |
 | POST | `/api/restart` | 否 | 无活动场次时安全重启服务 |
 | GET | `/api/update/status` | 否 | 检查当前 commit、远端 commit 与升级进度 |
 | POST | `/api/update/apply` | 否 | 空闲时启动后台快进升级、更新依赖并自动重启 |
 | GET | `/api/rounds/{id}.jsonl` | 否 | 导出场次切片 |
+| GET | `/api/rounds/{id}/raw.jsonl` | 否 | 导出该场次原始观测弹幕 |
 | GET | `/api/rounds/{id}/result.png` | 否 | 导出指定场次结果 PNG |
+| GET | `/api/rounds/{id}/recording/video` | 否 | 播放/下载全程录屏 |
+| POST | `/api/rounds/{id}/recording/markers` | 否 | 添加录屏时间点标记 |
+| POST | `/api/rounds/{id}/recording/clips` | 否 | 截取录屏片段 |
+| GET | `/api/rounds/{id}/recording/clips/{clip_id}.mp4` | 否 | 下载录屏片段视频 |
+| GET | `/api/rounds/{id}/recording/clips/{clip_id}.jsonl` | 否 | 导出片段对应的处理后弹幕 |
+| GET | `/api/rounds/{id}/recording/clips/{clip_id}/raw.jsonl` | 否 | 导出片段对应的原始观测弹幕 |
+| POST | `/api/rounds/{id}/recording/clips/{clip_id}/analysis-round` | 否 | 从片段弹幕生成已结束分析场次 |
 | GET | `/exports/rounds/{id}/result.png` | 是 | 飞书/外部打开的公开 PNG 导出，只包含聚合结果 |
 | POST | `/api/rounds/{id}/precise-result` | 否 | 上传精确结果 |
 | POST | `/api/command` | 否 | 执行运营指令 |

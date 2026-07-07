@@ -31,7 +31,15 @@
           <div id="liveState" class="live-state"><i></i><span>读取中</span></div>
         </div>
       </header>
-      <section class="command-grid" aria-label="场次控制">
+      <section class="workflow-section" aria-labelledby="realtimeTitle">
+        <div class="workflow-heading">
+          <div>
+            <p class="kicker">REALTIME OPS</p>
+            <h2 id="realtimeTitle">实时运营</h2>
+            <p class="panel-copy">适合你能实时观看直播的场景：开一轮、实时切片弹幕、结束后发布粗略结果。</p>
+          </div>
+        </div>
+        <div class="command-grid" aria-label="场次控制">
         <form id="startForm" class="panel">
           <h2>开始新一轮</h2>
           <label for="activityName">活动名称</label>
@@ -82,12 +90,35 @@
             <button id="uploadPrecise" class="primary" type="submit">上传并发布精确结果</button>
           </form>
         </section>
-        <section class="panel recording-panel">
+        </div>
+      </section>
+      <section class="workflow-section postprocess-section" aria-labelledby="postprocessTitle">
+        <div class="workflow-heading">
           <div>
-            <h2>直播录屏与后处理</h2>
-            <p id="recordingStatus" class="panel-copy">选择场次后显示录屏状态。录屏需要在系统配置中启用并提供可录制的直播流 URL。</p>
+            <p class="kicker">RECORD & POST</p>
+            <h2 id="postprocessTitle">录制后处理</h2>
+            <p class="panel-copy">适合你不能一直盯直播的场景：先全程录制视频和弹幕，回看时打标、截取片段，再把片段弹幕生成分析场次。</p>
+          </div>
+        </div>
+        <section class="panel recording-start-panel">
+          <form id="postRecordForm">
+            <h2>开始全程录制与弹幕</h2>
+            <p class="panel-copy">会先自动刷新官方活动页，解析直播机位；如果已启用录制，会检测当前清晰度是否可录制。</p>
+            <label for="postActivityName">活动名称</label>
+            <input id="postActivityName" type="text" placeholder="默认使用系统配置中的活动名称" />
+            <label for="postRoundName">全程场次名称</label>
+            <input id="postRoundName" type="text" placeholder="例如：歌手 2026 全程录制" />
+            <label for="postLiveUrl">官方活动页或直播 URL</label>
+            <input id="postLiveUrl" type="url" placeholder="例如：https://www.mgtv.com/z/1001668.html?..." />
+            <button id="postStartRecord" class="primary" type="submit">开始全程录制与弹幕</button>
+          </form>
+          <div>
+            <h2>回看与切片</h2>
+            <p id="recordingStatus" class="panel-copy">选择场次后显示录屏状态。录屏需要在系统配置中启用，并通过“检测播放源”拿到可录制清晰度。</p>
             <video id="recordingPlayer" class="recording-player" controls preload="metadata"></video>
           </div>
+        </section>
+        <section class="panel recording-panel">
           <div class="recording-tools">
             <label for="markerLabel">当前位置标记</label>
             <div class="inline-row">
