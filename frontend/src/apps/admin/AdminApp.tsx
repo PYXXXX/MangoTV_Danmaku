@@ -6,8 +6,8 @@ import {
 } from "@phosphor-icons/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { apiDelete, apiGet, apiPatch, apiPost, apiUpload, getBootstrap, getSystemLogs, getSystemStatus } from "../../api/client";
-import type { ActivityItem, FeishuBindingStatus, MgtvAuthStatus, RecordingTimeline, RoundSession, SystemLogEvent, SystemLogsResponse, SystemStatus, UpdateStatus } from "../../api/types";
+import { apiDelete, apiGet, apiPatch, apiPost, apiUpload, getBootstrap, getSystemMetrics, getSystemLogs, getSystemStatus } from "../../api/client";
+import type { ActivityItem, FeishuBindingStatus, MgtvAuthStatus, RecordingTimeline, RoundSession, SystemLogEvent, SystemLogSummary, SystemLogsResponse, SystemStatus, UpdateStatus } from "../../api/types";
 import { Card, PageHeading, PrimaryButton, Shell, StatusBadge } from "../../components/Shell";
 import { MetricCard } from "../../components/MetricCard";
 import { RankingTable } from "../../components/RankingTable";
@@ -1052,6 +1052,7 @@ function Impact({ tone, title, items }: { tone: "green" | "blue" | "orange"; tit
 function MachineStatusPage({ initial }: { initial?: SystemStatus }) {
   const [refreshSeconds, setRefreshSeconds] = useState(15);
   const status = useQuery({ queryKey: ["system-status"], queryFn: getSystemStatus, initialData: initial, refetchInterval: refreshSeconds ? refreshSeconds * 1000 : false });
+  const metrics = useQuery({ queryKey: ["system-metrics", "15m"], queryFn: () => getSystemMetrics("15m"), refetchInterval: refreshSeconds ? refreshSeconds * 1000 : false });
   const payload = status.data;
   const [history, setHistory] = useState<Array<{ at: string; cpu: number; memory: number; network: number; danmaku: number }>>([]);
   useEffect(() => {
@@ -1073,6 +1074,20 @@ function MachineStatusPage({ initial }: { initial?: SystemStatus }) {
       return next.slice(-60);
     });
   }, [payload?.generatedAt, payload?.systemTime]);
+  const metricPoints = metrics.data?.points || [];
+  const trend = metricPoints.length
+    ? {
+      cpu: metricPoints.map((item) => Number(item.cpuPercent || 0)),
+      memory: metricPoints.map((item) => Number(item.memoryPercent || 0)),
+      network: metricPoints.map((item) => Number(item.rxBytesPerSecond || 0) + Number(item.txBytesPerSecond || 0)),
+      danmaku: metricPoints.map((item) => Number(item.danmakuPerSecond || 0))
+    }
+    : {
+      cpu: history.map((item) => item.cpu),
+      memory: history.map((item) => item.memory),
+      network: history.map((item) => item.network),
+      danmaku: history.map((item) => item.danmaku)
+    };
   return (
     <section>
       <PageHeading
@@ -1087,7 +1102,7 @@ function MachineStatusPage({ initial }: { initial?: SystemStatus }) {
               <option value={15}>自动刷新：15 秒</option>
               <option value={30}>自动刷新：30 秒</option>
             </select>
-            <button type="button" className="rounded-xl bg-ops-orange px-5 py-3 text-sm font-black text-[#1b0d03]" disabled={status.isFetching} onClick={() => status.refetch()}>立即刷新</button>
+            <button type="button" className="rounded-xl bg-ops-orange px-5 py-3 text-sm font-black text-[#1b0d03]" disabled={status.isFetching || metrics.isFetching} onClick={() => { status.refetch(); metrics.refetch(); }}>立即刷新</button>
           </div>
         }
       />
@@ -1117,10 +1132,10 @@ function MachineStatusPage({ initial }: { initial?: SystemStatus }) {
         </Card>
         <Card title="性能趋势（最近采样）" className="col-span-4 max-2xl:col-span-2 max-lg:col-span-1">
           <div className="grid grid-cols-4 gap-4 max-xl:grid-cols-2 max-md:grid-cols-1">
-            <TrendCard label="CPU 使用率" suffix="%" values={history.map((item) => item.cpu)} />
-            <TrendCard label="内存使用率" suffix="%" values={history.map((item) => item.memory)} />
-            <TrendCard label="网络流量" suffix="B" values={history.map((item) => item.network)} format={formatBytes} />
-            <TrendCard label="采集活跃度" suffix="" values={history.map((item) => item.danmaku)} />
+            <TrendCard label="CPU 使用率" suffix="%" values={trend.cpu} />
+            <TrendCard label="内存使用率" suffix="%" values={trend.memory} />
+            <TrendCard label="网络速度" suffix="B/s" values={trend.network} format={(value) => `${formatBytes(value)}/s`} />
+            <TrendCard label="弹幕速率" suffix="条/秒" values={trend.danmaku} />
           </div>
         </Card>
       </div>
@@ -1167,32 +1182,49 @@ function BigMetric({ value, detail }: { value: string; detail: string }) {
   );
 }
 
+function logTimeRange(range: string) {
+  if (range === "all") {
+    return { from: "", to: "" };
+  }
+  const hours = range === "24h" ? 24 : range === "6h" ? 6 : 1;
+  return {
+    from: new Date(Date.now() - hours * 3600 * 1000).toISOString(),
+    to: new Date().toISOString()
+  };
+}
+
 function SystemLogsPage({ initialLogs }: { initialLogs: SystemLogEvent[] }) {
-  const [filters, setFilters] = useState({ q: "", level: "", source: "" });
+  const [filters, setFilters] = useState({ q: "", level: "", source: "", range: "1h" });
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [followLogs, setFollowLogs] = useState(true);
+  const timeRange = logTimeRange(filters.range);
   const query = new URLSearchParams();
   query.set("limit", "160");
   if (filters.q.trim()) query.set("q", filters.q.trim());
   if (filters.level) query.set("level", filters.level);
   if (filters.source) query.set("source", filters.source);
+  if (timeRange.from) query.set("from", timeRange.from);
+  if (timeRange.to) query.set("to", timeRange.to);
   const logs = useQuery({
     queryKey: ["system-logs", filters],
     queryFn: () => apiGet<SystemLogsResponse>(`/api/system/logs?${query.toString()}`),
     initialData: { events: initialLogs },
     refetchInterval: followLogs ? 10_000 : false
   });
+  const summary = useMutation({
+    mutationFn: () => apiPost<SystemLogSummary>("/api/system/logs/summary", {
+      q: filters.q,
+      level: filters.level,
+      source: filters.source,
+      from: timeRange.from,
+      to: timeRange.to
+    })
+  });
   const items = logs.data.events || logs.data.items || [];
   const sources = Array.from(new Set(items.map((item) => item.source).filter(Boolean))) as string[];
   const selected = items[selectedIndex] || items[0];
   const exportLogs = () => {
-    const blob = new Blob([JSON.stringify(items, null, 2)], { type: "application/json;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `mgtv-system-logs-${Date.now()}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
+    window.open(`/api/system/logs/export?${query.toString()}`, "_blank", "noopener,noreferrer");
   };
   return (
     <section>
@@ -1205,11 +1237,14 @@ function SystemLogsPage({ initialLogs }: { initialLogs: SystemLogEvent[] }) {
             <button type="button" className={`rounded-xl border px-5 py-3 text-sm font-black ${followLogs ? "border-blue-400/35 bg-blue-400/15 text-blue-100" : "border-white/10 bg-white/[0.04] text-slate-200"}`} onClick={() => setFollowLogs((value) => !value)}>
               {followLogs ? "日志实时跟随" : "已暂停跟随"}
             </button>
+            <button type="button" className="rounded-xl border border-orange-400/35 bg-orange-400/10 px-5 py-3 text-sm font-black text-ops-gold" disabled={summary.isPending} onClick={() => summary.mutate()}>
+              生成排障摘要
+            </button>
             <button type="button" className="rounded-xl bg-ops-orange px-5 py-3 text-sm font-black text-[#1b0d03]" disabled={logs.isFetching} onClick={() => logs.refetch()}>立即刷新</button>
           </div>
         }
       />
-      <div className="mb-4 grid grid-cols-[minmax(260px,1fr)_140px_160px_auto] gap-3 rounded-3xl border border-white/10 bg-white/[0.04] p-4 max-lg:grid-cols-1">
+      <div className="mb-4 grid grid-cols-[minmax(260px,1fr)_140px_160px_180px_auto] gap-3 rounded-3xl border border-white/10 bg-white/[0.04] p-4 max-lg:grid-cols-1">
         <input className="ops-input" value={filters.q} onChange={(event) => setFilters({ ...filters, q: event.target.value })} placeholder="搜索错误、场次 ID、关键词…" />
         <select className="ops-input" value={filters.level} onChange={(event) => setFilters({ ...filters, level: event.target.value })}>
           <option value="">全部级别</option>
@@ -1221,8 +1256,24 @@ function SystemLogsPage({ initialLogs }: { initialLogs: SystemLogEvent[] }) {
           <option value="">全部来源</option>
           {sources.map((source) => <option key={source} value={source}>{source}</option>)}
         </select>
+        <select className="ops-input" value={filters.range} onChange={(event) => setFilters({ ...filters, range: event.target.value })}>
+          <option value="1h">最近 1 小时</option>
+          <option value="6h">最近 6 小时</option>
+          <option value="24h">最近 24 小时</option>
+          <option value="all">全部时间</option>
+        </select>
         <button className="rounded-xl bg-blue-500 px-4 py-3 text-sm font-black text-white" type="button" onClick={exportLogs}>导出日志</button>
       </div>
+      {summary.data && (
+        <div className="mb-4 rounded-3xl border border-orange-400/30 bg-orange-400/10 p-5 text-sm leading-7 text-ops-gold">
+          <strong className="block text-base text-ops-gold">排障摘要</strong>
+          <p className="mt-2">{summary.data.summary}</p>
+          <ul className="mt-3 grid gap-1 text-slate-200">
+            {(summary.data.suggestions || []).map((item) => <li key={item}>• {item}</li>)}
+          </ul>
+        </div>
+      )}
+      {summary.error && <p className="mb-4 rounded-2xl border border-red-400/30 bg-red-400/10 px-5 py-4 text-sm text-red-100">{String((summary.error as Error).message || summary.error)}</p>}
       <div className="grid grid-cols-[minmax(0,1fr)_420px] gap-4 max-xl:grid-cols-1">
         <Card>
           <div className="grid gap-2">

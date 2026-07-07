@@ -1382,6 +1382,7 @@ class VoteService:
         self.updater = GitUpdater(self.repo_root)
         self.started_at = now_iso()
         self.system_events: list[dict[str, Any]] = []
+        self.metric_samples: list[dict[str, Any]] = []
         self.monitor_task: asyncio.Task[Any] | None = None
         self.monitor_auto_started = False
         self.monitor_last_url = ""
@@ -1691,7 +1692,7 @@ class VoteService:
         recent_errors = [event for event in self.system_events[-50:] if event.get("level") == "ERROR"]
         if recent_errors:
             health = "error"
-        return {
+        status = {
             "ok": True,
             "generatedAt": now_iso(),
             "systemTime": datetime.now(BEIJING_TZ).isoformat(timespec="seconds"),
@@ -1742,6 +1743,73 @@ class VoteService:
                 "recentErrorCount": len(recent_errors),
             },
         }
+        self._append_metric_sample(status)
+        return status
+
+    def _metric_point_from_status(self, status: dict[str, Any]) -> dict[str, Any]:
+        memory = status.get("memory") if isinstance(status.get("memory"), dict) else {}
+        network = status.get("network") if isinstance(status.get("network"), dict) else {}
+        services = status.get("services") if isinstance(status.get("services"), dict) else {}
+        public = self.public_state()
+        message_total = sum(int(item.get("messageCount") or 0) for item in public.get("sessions") or [])
+        total_memory = int(memory.get("totalBytes") or 0)
+        used_memory = int(memory.get("usedBytes") or 0)
+        return {
+            "time": status.get("generatedAt") or now_iso(),
+            "epoch": time.time(),
+            "cpuPercent": float((status.get("cpu") or {}).get("loadPercent") or 0),
+            "memoryPercent": round((used_memory / total_memory) * 100, 2) if total_memory else 0,
+            "rxBytes": int(network.get("rxBytes") or 0),
+            "txBytes": int(network.get("txBytes") or 0),
+            "messageCount": message_total,
+            "collectorActive": 1 if (services.get("collector") or {}).get("status") == "running" else 0,
+        }
+
+    def _append_metric_sample(self, status: dict[str, Any]) -> None:
+        point = self._metric_point_from_status(status)
+        if self.metric_samples and point["epoch"] - float(self.metric_samples[-1].get("epoch") or 0) < 2:
+            self.metric_samples[-1] = point
+        else:
+            self.metric_samples.append(point)
+        self.metric_samples = self.metric_samples[-720:]
+
+    def system_metrics(self, window: str = "15m") -> dict[str, Any]:
+        match = re.fullmatch(r"\s*(\d+)\s*([mhd]?)\s*", str(window or "15m"))
+        value = int(match.group(1)) if match else 15
+        unit = (match.group(2) if match else "m") or "m"
+        multiplier = {"m": 60, "h": 3600, "d": 86400}.get(unit, 60)
+        seconds = max(60, min(value * multiplier, 24 * 3600))
+        # Ensure callers always receive a fresh point even after a cold page load.
+        self.system_status()
+        cutoff = time.time() - seconds
+        points = [item for item in self.metric_samples if float(item.get("epoch") or 0) >= cutoff]
+        result_points: list[dict[str, Any]] = []
+        previous: dict[str, Any] | None = None
+        for item in points:
+            delta_seconds = max(1.0, float(item.get("epoch") or 0) - float((previous or item).get("epoch") or 0))
+            rx_rate = 0.0
+            tx_rate = 0.0
+            danmaku_rate = 0.0
+            if previous:
+                rx_rate = max(0.0, (float(item.get("rxBytes") or 0) - float(previous.get("rxBytes") or 0)) / delta_seconds)
+                tx_rate = max(0.0, (float(item.get("txBytes") or 0) - float(previous.get("txBytes") or 0)) / delta_seconds)
+                danmaku_rate = max(0.0, (float(item.get("messageCount") or 0) - float(previous.get("messageCount") or 0)) / delta_seconds)
+            result_points.append({
+                "time": item.get("time") or now_iso(),
+                "cpuPercent": round(float(item.get("cpuPercent") or 0), 2),
+                "memoryPercent": round(float(item.get("memoryPercent") or 0), 2),
+                "rxBytesPerSecond": round(rx_rate, 2),
+                "txBytesPerSecond": round(tx_rate, 2),
+                "danmakuPerSecond": round(danmaku_rate, 2),
+                "collectorActive": int(item.get("collectorActive") or 0),
+            })
+            previous = item
+        return {
+            "ok": True,
+            "generatedAt": now_iso(),
+            "window": window or "15m",
+            "points": result_points,
+        }
 
     def system_logs(self, limit: int = 120) -> dict[str, Any]:
         wanted = max(1, min(300, limit))
@@ -1766,6 +1834,74 @@ class VoteService:
             "generatedAt": now_iso(),
             "events": events[:limit],
             "sources": sorted({str(event.get("source") or "service") for event in events}),
+        }
+
+    @staticmethod
+    def filter_log_events(
+        events: list[dict[str, Any]],
+        *,
+        level: str = "",
+        source: str = "",
+        query: str = "",
+        from_time: str = "",
+        to_time: str = "",
+    ) -> list[dict[str, Any]]:
+        result = list(events)
+        level = str(level or "").strip().upper()
+        source = str(source or "").strip()
+        query = normalize(query)
+        from_dt = parse_iso(from_time) if from_time else None
+        to_dt = parse_iso(to_time) if to_time else None
+        if level:
+            result = [item for item in result if str(item.get("level") or "").upper() == level]
+        if source:
+            result = [item for item in result if str(item.get("source") or "") == source]
+        if from_dt or to_dt:
+            filtered: list[dict[str, Any]] = []
+            for item in result:
+                try:
+                    event_time = parse_iso(str(item.get("time") or ""))
+                except ValueError:
+                    continue
+                if from_dt and event_time < from_dt:
+                    continue
+                if to_dt and event_time > to_dt:
+                    continue
+                filtered.append(item)
+            result = filtered
+        if query:
+            result = [item for item in result if query in normalize(json.dumps(item, ensure_ascii=False))]
+        return result
+
+    @staticmethod
+    def summarize_log_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+        level_counts: dict[str, int] = {}
+        source_counts: dict[str, int] = {}
+        for item in events:
+            level = str(item.get("level") or "INFO").upper()
+            source = str(item.get("source") or "service")
+            level_counts[level] = level_counts.get(level, 0) + 1
+            source_counts[source] = source_counts.get(source, 0) + 1
+        latest_error = next((item for item in events if str(item.get("level") or "").upper() == "ERROR"), None)
+        suggestions = [
+            "先按来源过滤同一模块，查看错误前后 5 条事件。",
+            "如涉及录制或直播源检测，请同时检查系统配置中的 ffmpeg、录制目录和直播源 URL。",
+            "如涉及 GitHub 或飞书，请确认对应 token、App Secret 和白名单仍有效。",
+        ]
+        if not latest_error:
+            suggestions = ["当前筛选范围内没有 ERROR 级别事件，可继续查看 WARN 或扩大时间范围。"]
+        return {
+            "ok": True,
+            "generatedAt": now_iso(),
+            "total": len(events),
+            "levelCounts": level_counts,
+            "sourceCounts": source_counts,
+            "latestError": latest_error,
+            "summary": (
+                f"筛选范围内共有 {len(events)} 条日志；"
+                f"ERROR {level_counts.get('ERROR', 0)} 条，WARN {level_counts.get('WARN', 0)} 条，INFO {level_counts.get('INFO', 0)} 条。"
+            ),
+            "suggestions": suggestions,
         }
 
     def _persisted_system_events(self, limit: int) -> list[dict[str, Any]]:
@@ -2640,6 +2776,33 @@ class VoteService:
                 "settings": self.settings_view(),
             }
 
+    def validate_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        update = build_settings_update(
+            self.config,
+            payload,
+            active_round=bool(self.store.active_round_id),
+        )
+        restart_fields = self._restart_fields_for(update.config)
+        next_round_fields: list[str] = []
+        if (self.config.get("vote") or {}) != (update.config.get("vote") or {}):
+            next_round_fields.append("vote")
+        old_mgtv = self.config.get("mgtv") or {}
+        new_mgtv = update.config.get("mgtv") or {}
+        if any(old_mgtv.get(key) != new_mgtv.get(key) for key in {"url", "room_id", "camera_id", "flag", "count_initial_history"}):
+            next_round_fields.append("mgtv.source")
+        if (self.config.get("recording") or {}) != (update.config.get("recording") or {}):
+            next_round_fields.append("recording")
+        hot_reload_fields = sorted(set(update.config.keys()) - {"listen", "storage"})
+        return {
+            "ok": True,
+            "warnings": update.warnings,
+            "hotReload": hot_reload_fields,
+            "nextRound": next_round_fields,
+            "restartRequired": restart_fields,
+            "restartFields": restart_fields,
+            "reauthRequired": update.reauth_required,
+        }
+
     def request_safe_restart(self, loop: asyncio.AbstractEventLoop) -> list[str]:
         if self.store.active_round_id or self.collector.running():
             raise SettingsValidationError("场次正在采集，必须先结束本轮才能重启服务")
@@ -3358,28 +3521,84 @@ def create_app(service: VoteService) -> web.Application:
             headers={"Cache-Control": "no-store"},
         )
 
+    async def system_metrics(request: web.Request) -> web.Response:
+        return web.json_response(
+            service.system_metrics(str(request.query.get("window") or "15m")),
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
     async def system_logs(request: web.Request) -> web.Response:
         try:
             limit = int(request.query.get("limit", "120"))
+            cursor = max(0, int(request.query.get("cursor", "0") or 0))
         except ValueError:
             limit = 120
-        payload = service.system_logs(limit)
-        events = payload.get("events") or []
-        level = str(request.query.get("level") or "").strip().upper()
-        source = str(request.query.get("source") or "").strip()
-        query = normalize(str(request.query.get("q") or ""))
-        if level:
-            events = [item for item in events if str(item.get("level") or "").upper() == level]
-        if source:
-            events = [item for item in events if str(item.get("source") or "") == source]
-        if query:
-            events = [
-                item for item in events
-                if query in normalize(json.dumps(item, ensure_ascii=False))
-            ]
+            cursor = 0
+        limit = max(1, min(300, limit))
+        payload = service.system_logs(300)
+        try:
+            events = VoteService.filter_log_events(
+                payload.get("events") or [],
+                level=str(request.query.get("level") or ""),
+                source=str(request.query.get("source") or ""),
+                query=str(request.query.get("q") or ""),
+                from_time=str(request.query.get("from") or ""),
+                to_time=str(request.query.get("to") or ""),
+            )
+        except ValueError as exc:
+            return web.json_response({"error": f"日志时间范围无效：{exc}"}, status=400, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        total = len(events)
+        page_events = events[cursor: cursor + limit]
         payload["events"] = events
+        payload["items"] = page_events
+        payload["events"] = page_events
+        payload["total"] = total
+        payload["nextCursor"] = str(cursor + limit) if cursor + limit < total else ""
+        payload["levels"] = sorted({str(event.get("level") or "INFO").upper() for event in events})
+        payload["sources"] = sorted({str(event.get("source") or "service") for event in events})
         return web.json_response(
             payload,
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def system_logs_export(request: web.Request) -> web.Response:
+        payload = await system_logs(request)
+        if payload.status != 200:
+            return payload
+        # Rebuild to avoid reading private response internals.
+        base = service.system_logs(300)
+        events = VoteService.filter_log_events(
+            base.get("events") or [],
+            level=str(request.query.get("level") or ""),
+            source=str(request.query.get("source") or ""),
+            query=str(request.query.get("q") or ""),
+            from_time=str(request.query.get("from") or ""),
+            to_time=str(request.query.get("to") or ""),
+        )
+        body = json.dumps({"events": events, "exportedAt": now_iso()}, ensure_ascii=False, indent=2)
+        return web.Response(
+            text=body,
+            content_type="application/json",
+            headers={"Content-Disposition": 'attachment; filename="mgtv-system-logs.json"'},
+        )
+
+    async def system_logs_summary(request: web.Request) -> web.Response:
+        data = await request.json() if request.can_read_body else {}
+        try:
+            events = VoteService.filter_log_events(
+                service.system_logs(300).get("events") or [],
+                level=str(data.get("level") or ""),
+                source=str(data.get("source") or ""),
+                query=str(data.get("q") or ""),
+                from_time=str(data.get("from") or ""),
+                to_time=str(data.get("to") or ""),
+            )
+        except ValueError as exc:
+            return web.json_response({"error": f"日志时间范围无效：{exc}"}, status=400, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response(
+            VoteService.summarize_log_events(events),
             dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
             headers={"Cache-Control": "no-store"},
         )
@@ -3453,6 +3672,18 @@ def create_app(service: VoteService) -> web.Application:
             return web.json_response({"error": str(exc)}, status=400, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
         except (OSError, RuntimeError) as exc:
             return web.json_response({"error": str(exc)}, status=500, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return web.json_response(
+            result,
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def validate_settings(request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+            result = service.validate_settings(payload)
+        except SettingsValidationError as exc:
+            return web.json_response({"error": str(exc)}, status=400, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
         return web.json_response(
             result,
             dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
@@ -3679,6 +3910,26 @@ def create_app(service: VoteService) -> web.Application:
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=502, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
         return web.json_response(result, dumps=lambda payload: json.dumps(payload, ensure_ascii=False), headers={"Cache-Control": "no-store"})
+
+    async def feishu_status(_: web.Request) -> web.Response:
+        view = service.feishu_binding_view()
+        return web.json_response(
+            {
+                "ok": True,
+                "enabled": view.get("enabled"),
+                "connectionMode": view.get("connectionMode"),
+                "connected": bool(view.get("workerAlive")),
+                "allowedOpenIdCount": len(view.get("allowedOpenIds") or []),
+                "allowedChatIdCount": len(view.get("allowedChatIds") or []),
+                "appId": view.get("appId"),
+                "appSecretConfigured": view.get("appSecretConfigured"),
+                "status": view.get("status"),
+                "message": view.get("message"),
+                "error": view.get("error"),
+            },
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
 
     async def recordings(_: web.Request) -> web.Response:
         return web.json_response(
@@ -3976,7 +4227,10 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_get("/healthz", health)
     app.router.add_get("/api/studio/bootstrap", studio_bootstrap)
     app.router.add_get("/api/system/status", system_status)
+    app.router.add_get("/api/system/metrics", system_metrics)
     app.router.add_get("/api/system/logs", system_logs)
+    app.router.add_get("/api/system/logs/export", system_logs_export)
+    app.router.add_post("/api/system/logs/summary", system_logs_summary)
     app.router.add_get("/docs/precise-result-agent", precise_result_doc)
     app.router.add_get("/api/results.json", results)
     app.router.add_get("/api/activities", list_activities)
@@ -3988,11 +4242,15 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_post("/api/activities/{activity_id}/source/detect", detect_activity_source)
     app.router.add_get("/api/settings", get_settings)
     app.router.add_post("/api/settings", update_settings)
+    app.router.add_post("/api/settings/apply", update_settings)
+    app.router.add_post("/api/settings/validate", validate_settings)
+    app.router.add_post("/api/settings/diff", validate_settings)
     app.router.add_get("/api/mgtv/auth", mgtv_auth_status)
     app.router.add_post("/api/mgtv/auth/start", start_mgtv_auth)
     app.router.add_post("/api/mgtv/url/resolve", resolve_mgtv_url)
     app.router.add_post("/api/mgtv/source/check", check_mgtv_source)
     app.router.add_get("/api/feishu/binding", get_feishu_binding)
+    app.router.add_get("/api/feishu/status", feishu_status)
     app.router.add_post("/api/feishu/binding/start", start_feishu_binding)
     app.router.add_post("/api/restart", restart_service)
     app.router.add_get("/api/update/status", update_status)
@@ -4030,6 +4288,7 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_delete("/api/activities/{activity}", delete_activity)
     app.router.add_post("/api/command", command)
     app.router.add_post("/api/feishu/push-card", push_feishu_card)
+    app.router.add_post("/api/feishu/test-card", push_feishu_card)
     app.router.add_post("/feishu/events", feishu_events)
     if frontend_assets.exists():
         app.router.add_static("/studio/assets", frontend_assets)

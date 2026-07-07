@@ -412,6 +412,69 @@ class SettingsApiHttpTest(SettingsHttpBase):
         self.assertEqual(self.service.default_candidates[0].name, "丙")
         self.assertEqual(json.loads(self.config_path.read_text())["vote"]["activity"], "在线活动")
 
+    async def test_observability_and_alias_contracts(self):
+        self.service.add_system_event("warn", "recording", "录制空间低", "/data/recordings 剩余不足")
+        self.service.add_system_event("error", "recorder", "ffmpeg 失败", "ffmpeg exited with code 1")
+
+        response = await self.client.get("/api/system/status")
+        self.assertEqual(response.status, 200)
+        status = await response.json()
+        self.assertTrue(status["ok"])
+
+        response = await self.client.get("/api/system/metrics?window=15m")
+        self.assertEqual(response.status, 200)
+        metrics = await response.json()
+        self.assertTrue(metrics["ok"])
+        self.assertGreaterEqual(len(metrics["points"]), 1)
+        self.assertIn("cpuPercent", metrics["points"][-1])
+
+        response = await self.client.get("/api/system/logs?level=ERROR&q=ffmpeg&limit=1")
+        self.assertEqual(response.status, 200)
+        logs = await response.json()
+        self.assertEqual(logs["total"], 1)
+        self.assertEqual(logs["events"][0]["source"], "recorder")
+        self.assertIn("ERROR", logs["levels"])
+
+        response = await self.client.get("/api/system/logs?from=not-a-date")
+        self.assertEqual(response.status, 400)
+
+        response = await self.client.get("/api/system/logs/export?level=WARN")
+        self.assertEqual(response.status, 200)
+        self.assertIn("录制空间低", await response.text())
+
+        response = await self.client.post("/api/system/logs/summary", json={"level": "ERROR"})
+        self.assertEqual(response.status, 200)
+        summary = await response.json()
+        self.assertEqual(summary["levelCounts"]["ERROR"], 1)
+        self.assertEqual(summary["latestError"]["source"], "recorder")
+
+        response = await self.client.get("/api/feishu/status")
+        self.assertEqual(response.status, 200)
+        feishu_status = await response.json()
+        self.assertTrue(feishu_status["ok"])
+        self.assertIn("connected", feishu_status)
+
+        response = await self.client.post("/api/feishu/test-card")
+        self.assertEqual(response.status, 409)
+
+        payload = {
+            "vote": {
+                "activity": "校验活动",
+                "multi_candidate_policy": "all",
+                "candidates": [{"name": "丁", "aliases": ["丁"]}],
+            }
+        }
+        response = await self.client.post("/api/settings/validate", json=payload)
+        self.assertEqual(response.status, 200)
+        validation = await response.json()
+        self.assertTrue(validation["ok"])
+        self.assertIn("hotReload", validation)
+
+        response = await self.client.post("/api/settings/diff", json=payload)
+        self.assertEqual(response.status, 200)
+        diff = await response.json()
+        self.assertTrue(diff["ok"])
+
     async def test_studio_routes_serve_react_entrypoints(self):
         root = await self.client.get("/")
         self.assertEqual(root.status, 200)

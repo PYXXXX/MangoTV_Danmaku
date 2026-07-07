@@ -264,7 +264,37 @@ export interface SystemLogsResponse {
   events?: SystemLogEvent[];
   items?: SystemLogEvent[];
   sources?: string[];
+  levels?: string[];
   nextCursor?: string;
+  total?: number;
+}
+
+export interface SystemMetricsPoint {
+  time?: string;
+  cpuPercent?: number;
+  memoryPercent?: number;
+  rxBytesPerSecond?: number;
+  txBytesPerSecond?: number;
+  danmakuPerSecond?: number;
+  collectorActive?: number;
+}
+
+export interface SystemMetricsResponse {
+  ok?: boolean;
+  generatedAt?: string;
+  window?: string;
+  points?: SystemMetricsPoint[];
+}
+
+export interface SystemLogSummary {
+  ok?: boolean;
+  generatedAt?: string;
+  total?: number;
+  levelCounts?: Record<string, number>;
+  sourceCounts?: Record<string, number>;
+  latestError?: SystemLogEvent | null;
+  summary?: string;
+  suggestions?: string[];
 }
 
 export interface StudioBootstrap {
