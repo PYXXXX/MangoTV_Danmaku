@@ -88,6 +88,7 @@ export function AdminApp() {
               activeRound={round}
               defaultActivity={bootstrap.data.defaults?.activityName || publicState?.defaults?.activity || ""}
               publicResultsUrl={bootstrap.data.defaults?.publicResultsUrl || publicState?.defaults?.publicResultsUrl || ""}
+              status={systemStatus}
             />
           )}
           {page === "settings" && <SettingsBlueprintPage status={systemStatus} settings={bootstrap.data.settings} />}
@@ -539,7 +540,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl }: { rounds: RoundSession[]; activeRound: RoundSession | null; defaultActivity: string; publicResultsUrl: string }) {
+function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl, status }: { rounds: RoundSession[]; activeRound: RoundSession | null; defaultActivity: string; publicResultsUrl: string; status?: SystemStatus }) {
   const queryClient = useQueryClient();
   const resultType = useUiStore((state) => state.resultType);
   const setResultType = useUiStore((state) => state.setResultType);
@@ -563,7 +564,6 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
     name: "",
     url: ""
   });
-  const [opsMode, setOpsMode] = useState<"realtime" | "post">("realtime");
   const [renameValue, setRenameValue] = useState("");
   const [selectedRecordingId, setSelectedRecordingId] = useState(recordingRounds.find((item) => item.recording?.status === "recording")?.id || recordingRounds[0]?.id || "");
   const [markerForm, setMarkerForm] = useState({ label: "", atSeconds: 0 });
@@ -732,7 +732,51 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
   const firstCandidate = rows[0];
   const activityLabel = activeRound?.activity || defaultActivity || roundForm.activity || "歌手 2026";
   const activeRoundLabel = activeRound ? roundName(activeRound) : "等待场次";
-  const activeQuality = recording?.status === "recording" ? "录制中" : activeRound?.pageUrl ? "已解析" : "待检测";
+  const monitorState = status?.monitor?.state;
+  const recordingSource = status?.services?.recordingSource;
+  const sourceDetection = detectSource.data as SourceDetectionResult | undefined;
+  const sourceReady = Boolean(sourceDetection?.ok || monitorState?.status === "source_ready");
+  const sourceConfigured = Boolean(recordingSource?.configured);
+  const sourceQuality = sourceDetection?.actualQuality || sourceDetection?.quality || monitorState?.quality || recordingSource?.quality || "";
+  const sourceLastChecked = sourceDetection?.ok
+    ? "刚刚检测"
+    : monitorState?.lastCheckAt
+      ? formatShortTime(monitorState.lastCheckAt)
+      : recordingSource?.detectedAt
+        ? formatShortTime(recordingSource.detectedAt)
+        : "-";
+  const sourceStatusView = sourceReady
+    ? {
+      tone: "green" as const,
+      title: "直播源已解析",
+      detail: sourceQuality ? `清晰度 ${sourceQuality} · 可用于录制/采集` : "已获取可用播放源，可用于录制/采集",
+      meta: sourceLastChecked,
+      emph: sourceQuality || undefined
+    }
+    : sourceConfigured
+      ? {
+        tone: "blue" as const,
+        title: "直播源已配置",
+        detail: "存在历史或手动填写的播放流；开播后建议重新检测",
+        meta: sourceQuality || "已配置",
+        emph: undefined
+      }
+      : activeRound?.pageUrl
+        ? {
+          tone: "idle" as const,
+          title: "直播链接已记录",
+          detail: "等待活动监控解析直播源",
+          meta: "-",
+          emph: undefined
+        }
+        : {
+          tone: "idle" as const,
+          title: "直播源待检测",
+          detail: "开播后自动解析，或手动检测一次",
+          meta: "-",
+          emph: undefined
+        };
+  const activeQuality = recording?.status === "recording" ? "录制中" : sourceQuality || "待检测";
   const activePageUrl = activeRound?.pageUrl || roundForm.url || "等待识别";
   const independentRecordingRunning = recordingRounds.some((round) => round.recording?.status === "recording");
   return (
@@ -753,10 +797,11 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
             />
             <OpsStatusItem
               icon={<CheckCircle size={22} weight="fill" />}
-              tone={activeRound?.pageUrl ? "green" : "idle"}
-              title="直播源已解析"
-              detail={activeRound?.pageUrl ? "机位已解析，可开始采集" : "等待活动监控解析"}
-              meta={activeRound?.pageUrl ? "已就绪" : "-"}
+              tone={sourceStatusView.tone}
+              title={sourceStatusView.title}
+              detail={sourceStatusView.detail}
+              meta={sourceStatusView.meta}
+              emph={sourceStatusView.emph}
             />
             <OpsStatusItem
               icon={<VideoCamera size={22} weight="fill" />}
@@ -776,11 +821,11 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
             />
             <OpsStatusItem
               icon={<MonitorPlay size={22} weight="fill" />}
-              tone={activeRound?.pageUrl ? "purple" : "idle"}
+              tone={sourceReady || recording?.status === "recording" ? "purple" : "idle"}
               title="当前清晰度"
               detail={activeQuality}
-              meta={activeRound?.pageUrl ? activeQuality : "-"}
-              emph={activeRound?.pageUrl ? activeQuality : undefined}
+              meta={sourceReady || recording?.status === "recording" ? activeQuality : "-"}
+              emph={sourceReady || recording?.status === "recording" ? activeQuality : undefined}
               last
             />
           </div>
@@ -797,9 +842,9 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
 
         <OpsPanel title="场次与切片" className="min-h-[520px]">
           <div className="mb-5 flex flex-wrap items-end justify-between gap-4 border-b border-white/10 pb-4">
-            <div className="flex gap-8">
-              <button type="button" onClick={() => setOpsMode("realtime")} className={`border-b-2 pb-2 text-sm font-black ${opsMode === "realtime" ? "border-ops-orange text-white" : "border-transparent text-ops-muted"}`}>实时运营</button>
-              <button type="button" onClick={() => setOpsMode("post")} className={`border-b-2 pb-2 text-sm font-black ${opsMode === "post" ? "border-ops-orange text-white" : "border-transparent text-ops-muted"}`}>录制后处理</button>
+            <div className="min-w-0">
+              <strong className="block border-b-2 border-ops-orange pb-2 text-sm font-black text-white">实时运营</strong>
+              <span className="mt-2 block max-w-xl text-xs leading-5 text-ops-muted">录制后处理已移到下方独立模块，这里只保留实时开轮次、结束和发布。</span>
             </div>
             <div className="grid grid-cols-2 rounded-2xl border border-white/10 bg-black/25 p-1">
               <button className={`rounded-xl px-4 py-2 text-xs font-black ${result.type === "rough" ? "bg-orange-400/15 text-ops-gold" : "text-ops-muted"}`} onClick={() => setResultType("rough")} type="button">粗略结果</button>
