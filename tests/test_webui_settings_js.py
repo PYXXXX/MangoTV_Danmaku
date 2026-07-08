@@ -71,6 +71,15 @@ class WebuiSettingsJsTest(unittest.TestCase):
         self.assertIn("直播弹幕人气统计", source)
         self.assertIn("非官方正式统计，不代表湖南卫视 & 芒果 TV 立场", source)
 
+    def test_activity_feishu_preview_config_button_navigates_to_settings(self):
+        source = (ROOT / "frontend" / "src" / "apps" / "admin" / "AdminApp.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("const openFeishuSettings", source)
+        self.assertIn('setPage("settings")', source)
+        self.assertIn('document.getElementById("settings-feishu-bot")', source)
+        self.assertIn('onClick={openFeishuSettings}', source)
+        self.assertIn('id="settings-feishu-bot"', source)
+
     def test_settings_js_keeps_recording_config_fields(self):
         html = (ROOT / "server" / "webui" / "index.html").read_text(encoding="utf-8")
         source = (ROOT / "server" / "webui" / "settings.js").read_text(encoding="utf-8")

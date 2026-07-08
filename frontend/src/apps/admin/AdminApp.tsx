@@ -114,6 +114,7 @@ type ActivityMonitorForm = {
 
 function ActivityMonitorPage({ activity, status, rounds = [], recordings = [] }: { activity?: ActivityItem | null; status?: SystemStatus; rounds?: RoundSession[]; recordings?: Recording[] }) {
   const queryClient = useQueryClient();
+  const setPage = useUiStore((state) => state.setPage);
   const monitor = status?.monitor;
   const config = monitor?.config || {};
   const state = monitor?.state || {};
@@ -236,6 +237,14 @@ function ActivityMonitorPage({ activity, status, rounds = [], recordings = [] }:
       tone: form.feishuNotify ? "green" : "neutral"
     }
   ];
+  const openFeishuSettings = () => {
+    setPage("settings");
+    window.setTimeout(() => {
+      const target = document.getElementById("settings-feishu-bot");
+      target?.scrollIntoView({ behavior: "smooth", block: "start" });
+      target?.focus({ preventScroll: true });
+    }, 80);
+  };
   return (
     <section className="activity-monitor-page">
       <div className="mb-6 flex items-start justify-between gap-6 max-lg:flex-col">
@@ -418,7 +427,18 @@ function ActivityMonitorPage({ activity, status, rounds = [], recordings = [] }:
             </div>
           </Card>
 
-          <Card title="飞书通知预览" action={<span className="text-xs font-bold text-blue-200">配置</span>}>
+          <Card
+            title="飞书通知预览"
+            action={(
+              <button
+                type="button"
+                className="rounded-full border border-blue-300/20 bg-blue-400/10 px-3 py-1 text-xs font-bold text-blue-100 transition hover:border-blue-300/45 hover:bg-blue-400/15 focus:outline-none focus:ring-2 focus:ring-blue-300/40"
+                onClick={openFeishuSettings}
+              >
+                配置
+              </button>
+            )}
+          >
             <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-slate-800/95 to-slate-950/95 p-5 shadow-2xl">
               <div className="mb-4 flex items-center gap-3">
                 <span className="grid size-10 place-items-center rounded-2xl bg-blue-400/15 text-blue-200">
@@ -1513,6 +1533,7 @@ function SettingsBlueprintPage({ status, settings }: { status?: SystemStatus; se
             </SettingsBlock>
 
             <SettingsBlock
+              id="settings-feishu-bot"
               icon={<Robot size={18} weight="bold" />}
               title="飞书 Bot"
               action={(
@@ -1950,9 +1971,13 @@ function SettingsColumn({ icon, title, children }: { icon: ReactNode; title: str
   );
 }
 
-function SettingsBlock({ icon, title, action, children }: { icon: ReactNode; title: string; action?: ReactNode; children: ReactNode }) {
+function SettingsBlock({ id, icon, title, action, children }: { id?: string; icon: ReactNode; title: string; action?: ReactNode; children: ReactNode }) {
   return (
-    <section className="min-w-0 rounded-3xl border border-white/10 bg-black/20 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,.04)]">
+    <section
+      id={id}
+      tabIndex={id ? -1 : undefined}
+      className="min-w-0 scroll-mt-24 rounded-3xl border border-white/10 bg-black/20 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,.04)] focus:outline-none focus:ring-2 focus:ring-blue-300/35"
+    >
       <div className="mb-4 flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <span className="grid size-8 shrink-0 place-items-center rounded-xl bg-orange-400/10 text-ops-orange">{icon}</span>
