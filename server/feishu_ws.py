@@ -142,6 +142,14 @@ class FeishuLongConnection:
             action_name = str(value.get("action") or "")
             if not action_name and getattr(action, "name", "") == "start_round_submit":
                 action_name = "start_custom"
+            elif not action_name and getattr(action, "name", "") == "start_realtime_submit":
+                action_name = "start_realtime"
+            elif not action_name and getattr(action, "name", "") == "start_record_submit":
+                action_name = "start_record"
+            elif not action_name and getattr(action, "name", "") == "add_marker_submit":
+                action_name = "add_marker"
+            elif not action_name and getattr(action, "name", "") == "create_clip_submit":
+                action_name = "create_clip"
             option = str(getattr(action, "option", "") or "")
             form_value = (
                 getattr(action, "form_value", None)

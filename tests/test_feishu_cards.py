@@ -24,15 +24,34 @@ def walk_card(value):
 
 
 def card_actions(card):
-    return [
-        item["value"]["action"]
-        for item in walk_card(card)
-        if item.get("tag") == "button" and isinstance(item.get("value"), dict) and item["value"].get("action")
-    ]
+    actions = []
+    for item in walk_card(card):
+        if isinstance(item.get("value"), dict) and item["value"].get("action"):
+            actions.append(item["value"]["action"])
+        for behavior in item.get("behaviors") or []:
+            if not isinstance(behavior, dict):
+                continue
+            value = behavior.get("value") if isinstance(behavior, dict) else None
+            if behavior.get("type") == "callback" and isinstance(value, dict) and value.get("action"):
+                actions.append(value["action"])
+    return actions
 
 
 def card_tags(card):
     return [item.get("tag") for item in walk_card(card) if item.get("tag")]
+
+
+def form_names(card):
+    return [item.get("name") for item in walk_card(card) if item.get("tag") == "form"]
+
+
+def assert_v2_card(testcase, card):
+    testcase.assertEqual(card["schema"], "2.0")
+    testcase.assertIn("body", card)
+    testcase.assertNotIn("elements", card)
+    testcase.assertNotIn("action", card_tags(card))
+    testcase.assertNotIn("markdown", card_tags(card))
+    testcase.assertTrue(card["config"]["update_multi"])
 
 
 class FeishuCardTest(unittest.TestCase):
@@ -70,14 +89,10 @@ class FeishuCardTest(unittest.TestCase):
 
     def test_control_card_contains_safe_operations(self):
         card = build_control_card(self.state, "r1", "状态已刷新", "https://example.com/results")
+        assert_v2_card(self, card)
         self.assertEqual(card["header"]["template"], "orange")
         self.assertEqual(card["header"]["title"]["content"], "直播运营工作台")
-        actions = [
-            action["value"]["action"]
-            for element in card["elements"]
-            for action in element.get("actions", [])
-            if action.get("tag") == "button" and action.get("value")
-        ]
+        actions = card_actions(card)
         self.assertIn("end_round", actions)
         self.assertIn("show_publish", actions)
         self.assertIn("show_monitor", actions)
@@ -96,20 +111,16 @@ class FeishuCardTest(unittest.TestCase):
 
     def test_control_card_contains_confirmed_delete_actions_for_stopped_round(self):
         card = build_publish_card(self.state, "r0", "状态已刷新", "https://example.com/results")
+        assert_v2_card(self, card)
         rendered = str(card)
-        actions = [
-            action["value"]["action"]
-            for element in card["elements"]
-            for action in element.get("actions", [])
-            if action.get("tag") == "button" and action.get("value")
-        ]
+        actions = card_actions(card)
         self.assertIn("delete_round", actions)
         self.assertIn("delete_activity", actions)
-        self.assertIn("确认删除", rendered)
+        self.assertIn("confirm", rendered)
         self.assertIn("删除所选场次", rendered)
         self.assertIn("删除当前活动", rendered)
 
-    def test_ops_card_uses_callback_safe_buttons_with_runtime_defaults(self):
+    def test_ops_card_uses_json2_forms_with_runtime_defaults(self):
         state = {
             "activeSessionId": None,
             "defaults": {
@@ -119,15 +130,18 @@ class FeishuCardTest(unittest.TestCase):
             "sessions": [],
         }
         card = build_ops_card(state)
+        assert_v2_card(self, card)
         rendered = str(card)
-        self.assertNotIn("form", card_tags(card))
+        self.assertIn("form", card_tags(card))
+        self.assertIn("start_realtime_form", form_names(card))
+        self.assertIn("start_record_form", form_names(card))
         actions = card_actions(card)
         self.assertIn("start_realtime", actions)
         self.assertIn("start_record", actions)
         self.assertIn("歌手 2026", rendered)
         self.assertIn("第 1 轮", rendered)
         self.assertIn("https://www.mgtv.com/z/1001668/5366.html", rendered)
-        self.assertIn("WebUI 运营工作区", rendered)
+        self.assertIn("form_action_type", rendered)
 
     def test_monitor_publish_and_system_cards_match_workspace_navigation(self):
         monitor_card = build_monitor_card(self.state, {
@@ -153,6 +167,9 @@ class FeishuCardTest(unittest.TestCase):
             "services": {"monitor": {"status": "waiting"}, "collector": {"status": "idle"}, "recorder": {"status": "idle"}},
             "health": {"status": "ok", "restartRequired": False, "restartFields": []},
         })
+        assert_v2_card(self, monitor_card)
+        assert_v2_card(self, publish_card)
+        assert_v2_card(self, system_card)
         rendered = str(monitor_card) + str(publish_card) + str(system_card)
         self.assertIn("活动监控", rendered)
         self.assertIn("发布与结果", rendered)
@@ -162,19 +179,19 @@ class FeishuCardTest(unittest.TestCase):
 
     def test_round_list_uses_select_callback(self):
         card = build_round_list_card(self.state, "r0")
+        assert_v2_card(self, card)
         selector = next(
-            action
-            for element in card["elements"]
-            for action in element.get("actions", [])
-            if action.get("tag") == "select_static"
+            item
+            for item in walk_card(card)
+            if item.get("tag") == "select_static"
         )
         self.assertEqual(selector["tag"], "select_static")
-        self.assertEqual(selector["value"]["action"], "select_round")
-        self.assertEqual(selector["initial_option"], "r0")
+        self.assertEqual(selector["behaviors"][0]["value"]["action"], "select_round")
+        self.assertIn("测试轮", selector["initial_option"])
         self.assertEqual(len(selector["options"]), 2)
         self.assertEqual(card["header"]["title"]["content"], "场次管理")
 
-    def test_recording_card_avoids_unsupported_post_processing_forms(self):
+    def test_recording_card_uses_json2_post_processing_forms(self):
         state = {
             "activeSessionId": None,
             "sessions": [
@@ -198,10 +215,13 @@ class FeishuCardTest(unittest.TestCase):
             ],
         }
         card = build_recording_card(state, "r0")
+        assert_v2_card(self, card)
         rendered = str(card)
         self.assertIn("录制后处理", rendered)
-        self.assertNotIn("form", card_tags(card))
-        self.assertIn("打标与手动切片请在 WebUI 完成", rendered)
+        self.assertIn("recording_marker_form", form_names(card))
+        self.assertIn("recording_clip_form", form_names(card))
+        self.assertIn("添加标记", rendered)
+        self.assertIn("截取片段", rendered)
         self.assertIn("analyze_latest_clip", rendered)
         self.assertIn("打开回看视频", rendered)
 
