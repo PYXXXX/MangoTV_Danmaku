@@ -13,6 +13,28 @@ from server.feishu_cards import (
 from server.feishu_ws import FeishuLongConnection
 
 
+def walk_card(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from walk_card(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from walk_card(child)
+
+
+def card_actions(card):
+    return [
+        item["value"]["action"]
+        for item in walk_card(card)
+        if item.get("tag") == "button" and isinstance(item.get("value"), dict) and item["value"].get("action")
+    ]
+
+
+def card_tags(card):
+    return [item.get("tag") for item in walk_card(card) if item.get("tag")]
+
+
 class FeishuCardTest(unittest.TestCase):
     def setUp(self):
         self.state = {
@@ -87,7 +109,7 @@ class FeishuCardTest(unittest.TestCase):
         self.assertIn("删除所选场次", rendered)
         self.assertIn("删除当前活动", rendered)
 
-    def test_control_card_renders_start_form_with_runtime_defaults(self):
+    def test_ops_card_uses_callback_safe_buttons_with_runtime_defaults(self):
         state = {
             "activeSessionId": None,
             "defaults": {
@@ -98,13 +120,14 @@ class FeishuCardTest(unittest.TestCase):
         }
         card = build_ops_card(state)
         rendered = str(card)
-        self.assertIn("start_realtime_form", rendered)
-        self.assertIn("start_record_form", rendered)
-        self.assertIn("start_realtime", rendered)
-        self.assertIn("start_record", rendered)
+        self.assertNotIn("form", card_tags(card))
+        actions = card_actions(card)
+        self.assertIn("start_realtime", actions)
+        self.assertIn("start_record", actions)
         self.assertIn("歌手 2026", rendered)
         self.assertIn("第 1 轮", rendered)
         self.assertIn("https://www.mgtv.com/z/1001668/5366.html", rendered)
+        self.assertIn("WebUI 运营工作区", rendered)
 
     def test_monitor_publish_and_system_cards_match_workspace_navigation(self):
         monitor_card = build_monitor_card(self.state, {
@@ -151,7 +174,7 @@ class FeishuCardTest(unittest.TestCase):
         self.assertEqual(len(selector["options"]), 2)
         self.assertEqual(card["header"]["title"]["content"], "场次管理")
 
-    def test_recording_card_contains_post_processing_forms(self):
+    def test_recording_card_avoids_unsupported_post_processing_forms(self):
         state = {
             "activeSessionId": None,
             "sessions": [
@@ -177,8 +200,8 @@ class FeishuCardTest(unittest.TestCase):
         card = build_recording_card(state, "r0")
         rendered = str(card)
         self.assertIn("录制后处理", rendered)
-        self.assertIn("recording_marker_form", rendered)
-        self.assertIn("recording_clip_form", rendered)
+        self.assertNotIn("form", card_tags(card))
+        self.assertIn("打标与手动切片请在 WebUI 完成", rendered)
         self.assertIn("analyze_latest_clip", rendered)
         self.assertIn("打开回看视频", rendered)
 

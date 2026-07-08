@@ -36,79 +36,6 @@ def danger_confirm(title: str, text: str) -> dict[str, Any]:
     }
 
 
-def text_input(name: str, placeholder: str, default_value: str = "") -> dict[str, Any]:
-    field: dict[str, Any] = {
-        "tag": "input",
-        "name": name,
-        "placeholder": plain_text(placeholder),
-    }
-    if default_value:
-        field["default_value"] = default_value
-    return field
-
-
-def start_round_form(
-    default_activity: str,
-    next_round_name: str,
-    default_url: str = "",
-    *,
-    form_name: str = "start_round_form",
-    submit_name: str = "start_round_submit",
-    action: str = "start_custom",
-    title: str = "自定义开始场次",
-    intro: str = "活动名已按系统配置预填；场次名和直播 URL 可按需修改。",
-    submit_text: str = "按表单开始采集",
-) -> dict[str, Any]:
-    return {
-        "tag": "form",
-        "name": form_name,
-        "elements": [
-            {"tag": "markdown", "content": f"**{title}**\n{intro}"},
-            {"tag": "markdown", "content": "活动名称"},
-            text_input("activity", "例如：歌手 2026", default_activity),
-            {"tag": "markdown", "content": "场次名称"},
-            text_input("round_name", "留空自动使用下一轮名称", next_round_name),
-            {"tag": "markdown", "content": "直播 URL（可选）"},
-            text_input("live_url", "留空使用系统配置的默认直播 URL", default_url),
-            {
-                "tag": "column_set",
-                "horizontal_align": "left",
-                "columns": [
-                    {
-                        "tag": "column",
-                        "width": "auto",
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "button",
-                                "text": plain_text(submit_text),
-                                "type": "primary",
-                                "name": submit_name,
-                                "form_action_type": "submit",
-                                "value": {"action": action},
-                            }
-                        ],
-                    },
-                    {
-                        "tag": "column",
-                        "width": "auto",
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "button",
-                                "text": plain_text("刷新状态"),
-                                "type": "default",
-                                "name": "start_round_refresh",
-                                "value": {"action": "refresh"},
-                            }
-                        ],
-                    },
-                ],
-            },
-        ],
-    }
-
-
 def nav_row(active: str = "") -> dict[str, Any]:
     labels = [
         ("活动监控", "show_monitor"),
@@ -151,52 +78,6 @@ def bytes_human(value: Any) -> str:
 def public_url_from_state(state: dict[str, Any], fallback: str = "") -> str:
     defaults = state.get("defaults") if isinstance(state.get("defaults"), dict) else {}
     return str(fallback or defaults.get("publicResultsUrl") or defaults.get("publicBaseUrl") or "")
-
-
-def recording_marker_form() -> dict[str, Any]:
-    return {
-        "tag": "form",
-        "name": "recording_marker_form",
-        "elements": [
-            {"tag": "markdown", "content": "**添加录屏标记**\n在回看播放器里确认秒数后，可在这里填写。"},
-            {"tag": "markdown", "content": "时间点（秒）"},
-            text_input("at_seconds", "例如：128.5"),
-            {"tag": "markdown", "content": "标记名称"},
-            text_input("label", "例如：主持人口播 / 高能片段"),
-            {
-                "tag": "button",
-                "text": plain_text("添加标记"),
-                "type": "primary",
-                "name": "add_marker_submit",
-                "form_action_type": "submit",
-                "value": {"action": "add_marker"},
-            },
-        ],
-    }
-
-
-def recording_clip_form() -> dict[str, Any]:
-    return {
-        "tag": "form",
-        "name": "recording_clip_form",
-        "elements": [
-            {"tag": "markdown", "content": "**截取片段并生成回看素材**\n填写开始/结束秒数后，系统会用 ffmpeg 截取视频片段。"},
-            {"tag": "markdown", "content": "开始秒数"},
-            text_input("start_seconds", "例如：120"),
-            {"tag": "markdown", "content": "结束秒数"},
-            text_input("end_seconds", "例如：180"),
-            {"tag": "markdown", "content": "片段名称"},
-            text_input("label", "例如：第一段竞演回放"),
-            {
-                "tag": "button",
-                "text": plain_text("截取片段"),
-                "type": "primary",
-                "name": "create_clip_submit",
-                "form_action_type": "submit",
-                "value": {"action": "create_clip"},
-            },
-        ],
-    }
 
 
 def select_session(state: dict[str, Any], selected_round_id: str | None) -> dict[str, Any] | None:
@@ -371,28 +252,16 @@ def build_ops_card(
             button("开始默认录制采集", "start_record", "default"),
             button("刷新工作区", "show_ops"),
         ))
-        elements.append(start_round_form(
-            default_activity,
-            next_round_name,
-            default_url,
-            form_name="start_realtime_form",
-            submit_name="start_realtime_submit",
-            action="start_realtime",
-            title="开始实时运营场次",
-            intro="只采集和分析弹幕，不主动录制视频。活动名默认来自系统配置。",
-            submit_text="开始实时场次",
-        ))
-        elements.append(start_round_form(
-            default_activity,
-            f"全程录制 {len(state.get('sessions') or []) + 1}",
-            default_url,
-            form_name="start_record_form",
-            submit_name="start_record_submit",
-            action="start_record",
-            title="开始全程录制与弹幕",
-            intro="会同时开启视频录制和弹幕采集；录制源以系统配置/自动检测结果为准。",
-            submit_text="开始录制采集",
-        ))
+        elements.append({
+            "tag": "markdown",
+            "content": (
+                "**飞书侧可直接开始默认任务。**\n"
+                f"- 默认活动：{default_activity}\n"
+                f"- 下一轮名称：{next_round_name}\n"
+                f"- 默认直播 URL：{default_url or '未配置'}\n\n"
+                "如需自定义活动名、场次名或直播 URL，请在 WebUI 运营工作区填写，避免飞书客户端因新版表单兼容性报错。"
+            ),
+        })
     if session:
         elements.append({"tag": "hr"})
         elements.append({"tag": "markdown", "content": f"**当前选中**\n{session_title(session)}"})
@@ -581,8 +450,13 @@ def build_recording_card(
                 lines.append(f"- {clip.get('label') or '未命名片段'}：{clip.get('startSeconds', 0)}s-{clip.get('endSeconds', 0)}s")
             elements.append({"tag": "markdown", "content": "\n".join(lines)})
             elements.append(action_row(button("生成最近片段分析场次", "analyze_latest_clip", "primary")))
-        elements.append(recording_marker_form())
-        elements.append(recording_clip_form())
+        elements.append({
+            "tag": "markdown",
+            "content": (
+                "**打标与手动切片请在 WebUI 完成。**\n"
+                "飞书卡片负责查看录制状态、发送 PNG、生成最近片段分析场次和接收关键通知。"
+            ),
+        })
     elements.append(action_row(button("返回运营工作区", "show_ops", "primary"), button("刷新状态", "show_recording"), button("发布与结果", "show_publish")))
     return {
         "config": {"wide_screen_mode": True, "enable_forward": False},
