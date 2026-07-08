@@ -148,6 +148,7 @@ def start_round_form(
     *,
     form_name: str,
     submit_name: str,
+    field_prefix: str,
     action: str,
     title: str,
     intro: str,
@@ -161,9 +162,9 @@ def start_round_form(
         "padding": "10px 0px",
         "elements": [
             md(f"**{title}**\n{intro}"),
-            text_input("activity", "例如：歌手 2026", default_activity, label="活动名称"),
-            text_input("round_name", "留空自动使用下一轮名称", next_round_name, label="场次名称"),
-            text_input("live_url", "留空使用系统配置的默认直播 URL", default_url, label="直播 URL（可选）"),
+            text_input(f"{field_prefix}_activity", "例如：歌手 2026", default_activity, label="活动名称"),
+            text_input(f"{field_prefix}_round", "留空自动使用下一轮名称", next_round_name, label="场次名称"),
+            text_input(f"{field_prefix}_url", "留空使用系统配置的默认直播 URL", default_url, label="直播 URL（可选）"),
             action_row(
                 button(submit_text, action, "primary", name=submit_name, form_action_type="submit", width="fill"),
             ),
@@ -230,16 +231,16 @@ def public_url_from_state(state: dict[str, Any], fallback: str = "") -> str:
 def recording_marker_form() -> dict[str, Any]:
     return {
         "tag": "form",
-        "name": "recording_marker_form",
+        "name": "mk_form",
         "direction": "vertical",
         "vertical_spacing": "8px",
         "padding": "10px 0px",
         "elements": [
             md("**添加录屏标记**\n在 WebUI 回看播放器里确认秒数后，也可以在飞书卡片里提交标记。"),
-            text_input("at_seconds", "例如：128.5", label="时间点（秒）", required=True),
-            text_input("label", "例如：主持人口播 / 高能片段", label="标记名称"),
+            text_input("mk_at", "例如：128.5", label="时间点（秒）", required=True),
+            text_input("mk_label", "例如：主持人口播 / 高能片段", label="标记名称"),
             action_row(
-                button("添加标记", "add_marker", "primary", name="add_marker_submit", form_action_type="submit", width="fill"),
+                button("添加标记", "add_marker", "primary", name="mk_submit", form_action_type="submit", width="fill"),
             ),
         ],
     }
@@ -248,17 +249,17 @@ def recording_marker_form() -> dict[str, Any]:
 def recording_clip_form() -> dict[str, Any]:
     return {
         "tag": "form",
-        "name": "recording_clip_form",
+        "name": "clip_form",
         "direction": "vertical",
         "vertical_spacing": "8px",
         "padding": "10px 0px",
         "elements": [
             md("**截取片段并生成回看素材**\n填写开始/结束秒数后，系统会截取视频片段并同步提取对应弹幕。"),
-            text_input("start_seconds", "例如：120", label="开始秒数", required=True),
-            text_input("end_seconds", "例如：180", label="结束秒数", required=True),
-            text_input("label", "例如：第一段竞演回放", label="片段名称"),
+            text_input("clip_start", "例如：120", label="开始秒数", required=True),
+            text_input("clip_end", "例如：180", label="结束秒数", required=True),
+            text_input("clip_label", "例如：第一段竞演回放", label="片段名称"),
             action_row(
-                button("截取片段", "create_clip", "primary", name="create_clip_submit", form_action_type="submit", width="fill"),
+                button("截取片段", "create_clip", "primary", name="clip_submit", form_action_type="submit", width="fill"),
             ),
         ],
     }
@@ -428,8 +429,9 @@ def build_ops_card(
             default_activity,
             next_round_name,
             default_url,
-            form_name="start_realtime_form",
-            submit_name="start_realtime_submit",
+            form_name="rt_form",
+            submit_name="rt_submit",
+            field_prefix="rt",
             action="start_realtime",
             title="开始实时运营场次",
             intro="只采集和分析弹幕，不主动录制视频。活动名默认来自系统配置。",
@@ -439,8 +441,9 @@ def build_ops_card(
             default_activity,
             f"全程录制 {len(state.get('sessions') or []) + 1}",
             default_url,
-            form_name="start_record_form",
-            submit_name="start_record_submit",
+            form_name="rec_form",
+            submit_name="rec_submit",
+            field_prefix="rec",
             action="start_record",
             title="开始全程录制与弹幕",
             intro="会同时开启视频录制和弹幕采集；录制源以系统配置/自动检测结果为准。",

@@ -3772,9 +3772,19 @@ class VoteService:
     def feishu_start_form_defaults(self, form_value: dict[str, Any] | None) -> tuple[str, str, str]:
         values = form_value if isinstance(form_value, dict) else {}
         default_activity = str((self.config.get("vote") or {}).get("activity") or "未分类活动")
-        activity = normalize(values.get("activity") or default_activity) or default_activity
-        name = normalize(values.get("round_name") or "") or f"第 {len(self.store.round_order) + 1} 轮"
-        url = normalize(values.get("live_url") or "")
+        activity = normalize(
+            values.get("activity")
+            or values.get("rt_activity")
+            or values.get("rec_activity")
+            or default_activity
+        ) or default_activity
+        name = normalize(
+            values.get("round_name")
+            or values.get("rt_round")
+            or values.get("rec_round")
+            or ""
+        ) or f"第 {len(self.store.round_order) + 1} 轮"
+        url = normalize(values.get("live_url") or values.get("rt_url") or values.get("rec_url") or "")
         return activity, name, url
 
     async def handle_feishu_card_action(
@@ -3866,8 +3876,8 @@ class VoteService:
                 if target is None:
                     return self.feishu_recording_card(open_id, "暂无可标记的场次。")
                 values = form_value if isinstance(form_value, dict) else {}
-                at_seconds = float(values.get("at_seconds") or 0)
-                label = normalize(values.get("label") or "") or f"飞书标记 {at_seconds:.1f}s"
+                at_seconds = float(values.get("mk_at") or values.get("at_seconds") or 0)
+                label = normalize(values.get("mk_label") or values.get("label") or "") or f"飞书标记 {at_seconds:.1f}s"
                 marker = self.recorder.add_marker(target.id, label, at_seconds)
                 self.user_selection[open_id] = target.id
                 return build_recording_card(self.public_state(include_private=True), target.id, f"已添加标记：{marker['label']} @ {marker['atSeconds']:.1f}s")
@@ -3878,9 +3888,9 @@ class VoteService:
                 if target is None:
                     return self.feishu_recording_card(open_id, "暂无可截取的场次。")
                 values = form_value if isinstance(form_value, dict) else {}
-                start_seconds = float(values.get("start_seconds") or 0)
-                end_seconds = float(values.get("end_seconds") or 0)
-                label = normalize(values.get("label") or "")
+                start_seconds = float(values.get("clip_start") or values.get("start_seconds") or 0)
+                end_seconds = float(values.get("clip_end") or values.get("end_seconds") or 0)
+                label = normalize(values.get("clip_label") or values.get("label") or "")
                 clip = await self.recorder.create_clip(target.id, start_seconds, end_seconds, label)
                 self.user_selection[open_id] = target.id
                 return build_recording_card(self.public_state(include_private=True), target.id, f"已截取片段：{clip['label']}")
@@ -5142,15 +5152,16 @@ def create_app(service: VoteService) -> web.Application:
             action = event.get("action", {})
             value = action.get("value") or {}
             action_name = str(value.get("action") or "")
-            if not action_name and action.get("name") == "start_round_submit":
+            action_button_name = str(action.get("name") or "")
+            if not action_name and action_button_name == "start_round_submit":
                 action_name = "start_custom"
-            elif not action_name and action.get("name") == "start_realtime_submit":
+            elif not action_name and action_button_name in {"start_realtime_submit", "rt_submit"}:
                 action_name = "start_realtime"
-            elif not action_name and action.get("name") == "start_record_submit":
+            elif not action_name and action_button_name in {"start_record_submit", "rec_submit"}:
                 action_name = "start_record"
-            elif not action_name and action.get("name") == "add_marker_submit":
+            elif not action_name and action_button_name in {"add_marker_submit", "mk_submit"}:
                 action_name = "add_marker"
-            elif not action_name and action.get("name") == "create_clip_submit":
+            elif not action_name and action_button_name in {"create_clip_submit", "clip_submit"}:
                 action_name = "create_clip"
             form_value = action.get("form_value") or action.get("formValue")
             operator = event.get("operator") or {}

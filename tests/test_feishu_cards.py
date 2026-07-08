@@ -45,6 +45,10 @@ def form_names(card):
     return [item.get("name") for item in walk_card(card) if item.get("tag") == "form"]
 
 
+def component_names(card):
+    return [str(item.get("name")) for item in walk_card(card) if item.get("name")]
+
+
 def assert_v2_card(testcase, card):
     testcase.assertEqual(card["schema"], "2.0")
     testcase.assertIn("body", card)
@@ -52,6 +56,11 @@ def assert_v2_card(testcase, card):
     testcase.assertNotIn("action", card_tags(card))
     testcase.assertNotIn("markdown", card_tags(card))
     testcase.assertTrue(card["config"]["update_multi"])
+    names = component_names(card)
+    testcase.assertEqual(len(names), len(set(names)), f"Feishu card component names must be globally unique: {names}")
+    for name in names:
+        testcase.assertRegex(name, r"^[A-Za-z][A-Za-z0-9_]*$")
+        testcase.assertLessEqual(len(name), 20, f"Feishu card component name is too long: {name}")
 
 
 class FeishuCardTest(unittest.TestCase):
@@ -133,8 +142,10 @@ class FeishuCardTest(unittest.TestCase):
         assert_v2_card(self, card)
         rendered = str(card)
         self.assertIn("form", card_tags(card))
-        self.assertIn("start_realtime_form", form_names(card))
-        self.assertIn("start_record_form", form_names(card))
+        self.assertIn("rt_form", form_names(card))
+        self.assertIn("rec_form", form_names(card))
+        self.assertIn("rt_activity", component_names(card))
+        self.assertIn("rec_activity", component_names(card))
         actions = card_actions(card)
         self.assertIn("start_realtime", actions)
         self.assertIn("start_record", actions)
@@ -218,8 +229,10 @@ class FeishuCardTest(unittest.TestCase):
         assert_v2_card(self, card)
         rendered = str(card)
         self.assertIn("录制后处理", rendered)
-        self.assertIn("recording_marker_form", form_names(card))
-        self.assertIn("recording_clip_form", form_names(card))
+        self.assertIn("mk_form", form_names(card))
+        self.assertIn("clip_form", form_names(card))
+        self.assertIn("mk_label", component_names(card))
+        self.assertIn("clip_label", component_names(card))
         self.assertIn("添加标记", rendered)
         self.assertIn("截取片段", rendered)
         self.assertIn("analyze_latest_clip", rendered)

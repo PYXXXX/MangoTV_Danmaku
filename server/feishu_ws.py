@@ -140,15 +140,16 @@ class FeishuLongConnection:
                 return P2CardActionTriggerResponse({})
             value = getattr(action, "value", None) or {}
             action_name = str(value.get("action") or "")
-            if not action_name and getattr(action, "name", "") == "start_round_submit":
+            action_button_name = str(getattr(action, "name", "") or "")
+            if not action_name and action_button_name == "start_round_submit":
                 action_name = "start_custom"
-            elif not action_name and getattr(action, "name", "") == "start_realtime_submit":
+            elif not action_name and action_button_name in {"start_realtime_submit", "rt_submit"}:
                 action_name = "start_realtime"
-            elif not action_name and getattr(action, "name", "") == "start_record_submit":
+            elif not action_name and action_button_name in {"start_record_submit", "rec_submit"}:
                 action_name = "start_record"
-            elif not action_name and getattr(action, "name", "") == "add_marker_submit":
+            elif not action_name and action_button_name in {"add_marker_submit", "mk_submit"}:
                 action_name = "add_marker"
-            elif not action_name and getattr(action, "name", "") == "create_clip_submit":
+            elif not action_name and action_button_name in {"create_clip_submit", "clip_submit"}:
                 action_name = "create_clip"
             option = str(getattr(action, "option", "") or "")
             form_value = (
