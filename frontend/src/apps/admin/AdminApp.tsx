@@ -2234,10 +2234,10 @@ function MachineStatusPage({ initial }: { initial?: SystemStatus }) {
 
       <div className="grid grid-cols-4 gap-4 max-[1500px]:grid-cols-2 max-lg:grid-cols-1">
         <MachinePanel title="CPU" icon={<Pulse size={18} weight="bold" />}>
-          <div className="grid grid-cols-[150px_minmax(0,1fr)] gap-4 max-sm:grid-cols-1">
+          <div className="grid grid-cols-[132px_minmax(0,1fr)] items-center gap-4 max-sm:grid-cols-1">
             <MachineDonut value={cpuPercent} tone="green">
-              <strong className="font-mono text-4xl font-black tracking-[-0.06em]">{Math.round(cpuPercent)}%</strong>
-              <span className="text-xs text-ops-muted">使用率</span>
+              <strong className="font-mono text-[1.7rem] font-black leading-none tracking-[-0.05em]">{Math.round(cpuPercent)}%</strong>
+              <span className="text-[10px] leading-none text-ops-muted">使用率</span>
             </MachineDonut>
             <div className="grid content-center gap-3 text-sm">
               <MachineKv label="型号" value={payload?.cpu?.model || "未上报"} />
@@ -2250,10 +2250,10 @@ function MachineStatusPage({ initial }: { initial?: SystemStatus }) {
         </MachinePanel>
 
         <MachinePanel title="内存" icon={<Database size={18} weight="bold" />}>
-          <div className="grid grid-cols-[150px_minmax(0,1fr)] gap-4 max-sm:grid-cols-1">
+          <div className="grid grid-cols-[132px_minmax(0,1fr)] items-center gap-4 max-sm:grid-cols-1">
             <MachineDonut value={memoryPercent} tone="green">
-              <strong className="font-mono text-3xl font-black tracking-[-0.06em]">{formatMachineBytes(memoryUsed)}</strong>
-              <span className="text-xs text-ops-muted">/ {formatMachineBytes(memoryTotal)} 使用中</span>
+              <strong className="font-mono text-[1.35rem] font-black leading-none tracking-[-0.04em]">{formatMachineBytes(memoryUsed)}</strong>
+              <span className="max-w-[4.8rem] text-center text-[10px] leading-tight text-ops-muted">/ {formatMachineBytes(memoryTotal)} 使用中</span>
             </MachineDonut>
             <div className="grid content-center gap-3 text-sm">
               <MachineKv label="内存使用率" value={`${memoryPercent.toFixed(1)}%`} />
@@ -2388,12 +2388,12 @@ function MachineDonut({ value, tone, children }: { value: number; tone: "green" 
   const safe = clampPercent(value);
   const color = tone === "green" ? "#58d985" : tone === "blue" ? "#4aa3ff" : tone === "red" ? "#ff6f61" : "#ff861f";
   return (
-    <div className="grid place-items-center">
+    <div className="flex min-w-0 justify-center">
       <div
-        className="grid size-36 place-items-center rounded-full"
+        className="grid size-32 shrink-0 place-items-center rounded-full"
         style={{ background: `conic-gradient(${color} ${safe * 3.6}deg, rgba(255,255,255,.10) 0deg)` }}
       >
-        <div className="grid size-[6.7rem] place-items-center rounded-full bg-[#0a1117] text-center shadow-[inset_0_0_28px_rgba(0,0,0,.45)]">
+        <div className="flex size-[5.9rem] flex-col items-center justify-center gap-1 overflow-hidden rounded-full bg-[#0a1117] px-2 text-center shadow-[inset_0_0_28px_rgba(0,0,0,.45)]">
           {children}
         </div>
       </div>

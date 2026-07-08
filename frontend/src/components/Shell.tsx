@@ -1,5 +1,7 @@
 import {
   Bell,
+  CaretLeft,
+  CaretRight,
   ChartBar,
   GearSix,
   List,
@@ -11,7 +13,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { AdminPage } from "../state/ui";
 
 const navItems: Array<{ id: AdminPage; label: string; helper: string; icon: ReactNode }> = [
@@ -33,13 +35,27 @@ interface ShellProps {
 
 export function Shell({ activePage, title, subtitle, badges, children, onNavigate }: ShellProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return window.localStorage.getItem("mgtv-sidebar-collapsed") === "1";
+    } catch {
+      return false;
+    }
+  });
   const markSrc = "/studio/assets/live-ops-mark.png";
   const navigate = (page: AdminPage) => {
     onNavigate(page);
     setDrawerOpen(false);
   };
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("mgtv-sidebar-collapsed", sidebarCollapsed ? "1" : "0");
+    } catch {
+      // localStorage may be unavailable in privacy-restricted contexts.
+    }
+  }, [sidebarCollapsed]);
   return (
-    <div className="relative grid min-h-dvh grid-cols-[300px_minmax(0,1fr)] overflow-x-hidden text-[#fff7ea] max-xl:grid-cols-1">
+    <div className={`relative grid min-h-dvh overflow-x-hidden text-[#fff7ea] transition-[grid-template-columns] duration-300 max-xl:grid-cols-1 ${sidebarCollapsed ? "grid-cols-[88px_minmax(0,1fr)]" : "grid-cols-[260px_minmax(0,1fr)]"}`}>
       <div className="glass sticky top-0 z-30 hidden min-h-16 items-center justify-between gap-3 rounded-none border-x-0 border-t-0 px-4 py-3 max-sm:flex">
         <div className="flex min-w-0 items-center gap-3">
           <img
@@ -66,38 +82,51 @@ export function Shell({ activePage, title, subtitle, badges, children, onNavigat
         </button>
       </div>
 
-      <aside className="glass sticky top-0 z-20 flex h-dvh flex-col gap-8 rounded-none border-y-0 border-l-0 px-6 py-5 max-xl:static max-xl:h-auto max-xl:flex-row max-xl:items-center max-xl:overflow-x-auto max-sm:hidden">
-        <div className="flex items-center gap-4">
+      <aside className={`glass sticky top-0 z-20 flex h-dvh flex-col rounded-none border-y-0 border-l-0 transition-[padding,gap] duration-300 max-xl:static max-xl:h-auto max-xl:flex-row max-xl:items-center max-xl:overflow-x-auto max-xl:px-6 max-xl:py-5 max-sm:hidden ${sidebarCollapsed ? "gap-6 px-3 py-4" : "gap-7 px-5 py-5"}`}>
+        <div className={`relative flex items-center ${sidebarCollapsed ? "justify-center gap-0 max-xl:justify-start max-xl:gap-4" : "gap-3"}`}>
           <img
             src={markSrc}
             alt="直播运营工作台"
-            className="orange-glow size-14 rounded-2xl object-cover"
+            className={`orange-glow rounded-2xl object-cover transition-[width,height] duration-300 ${sidebarCollapsed ? "size-12 max-xl:size-14" : "size-14"}`}
             width={56}
             height={56}
             decoding="async"
           />
-          <div className="min-w-40">
+          <div className={`min-w-0 ${sidebarCollapsed ? "xl:hidden" : ""}`}>
             <strong className="block text-xl font-black tracking-[-0.05em]">直播运营工作台</strong>
             <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-ops-muted">MangoTV Live Ops Studio</span>
           </div>
+          <button
+            type="button"
+            className={`ml-auto grid size-9 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/[0.04] text-slate-200 transition hover:border-orange-300/35 hover:text-ops-gold max-xl:hidden ${sidebarCollapsed ? "absolute left-[58px] top-7" : ""}`}
+            aria-label={sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"}
+            aria-expanded={!sidebarCollapsed}
+            title={sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"}
+            onClick={() => setSidebarCollapsed((value) => !value)}
+          >
+            {sidebarCollapsed ? <CaretRight size={18} weight="bold" /> : <CaretLeft size={18} weight="bold" />}
+          </button>
         </div>
 
-        <nav className="grid gap-3 max-xl:flex">
+        <nav className={`grid gap-2.5 max-xl:flex ${sidebarCollapsed ? "xl:gap-2" : ""}`}>
           {navItems.map((item) => (
             <button
               key={item.id}
               type="button"
               data-testid={`studio-nav-${item.id}`}
               onClick={() => navigate(item.id)}
+              title={sidebarCollapsed ? item.label : undefined}
+              aria-label={item.label}
               className={[
-                "group flex min-h-16 min-w-56 items-center gap-4 rounded-2xl border px-4 text-left transition",
+                "group flex min-h-14 items-center rounded-2xl border text-left transition max-xl:min-h-16 max-xl:min-w-56 max-xl:gap-4 max-xl:px-4",
+                sidebarCollapsed ? "xl:min-w-0 xl:justify-center xl:gap-0 xl:px-0" : "min-w-0 gap-3 px-3",
                 activePage === item.id
                   ? "border-orange-400/45 bg-orange-500/15 text-ops-gold shadow-[inset_4px_0_0_#ff861f]"
                   : "border-transparent bg-transparent text-slate-300 hover:border-white/10 hover:bg-white/[0.04]"
               ].join(" ")}
             >
-              <span className="grid size-9 place-items-center rounded-xl bg-white/[0.05] text-ops-orange">{item.icon}</span>
-              <span className="min-w-0">
+              <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-white/[0.05] text-ops-orange">{item.icon}</span>
+              <span className={`min-w-0 ${sidebarCollapsed ? "xl:hidden" : ""}`}>
                 <b className="block text-sm font-extrabold">{item.label}</b>
                 <small className="mt-1 block text-xs text-ops-muted">{item.helper}</small>
               </span>
@@ -105,15 +134,23 @@ export function Shell({ activePage, title, subtitle, badges, children, onNavigat
           ))}
         </nav>
 
-        <div className="mt-auto grid gap-3 max-xl:ml-auto max-xl:mt-0 max-sm:hidden">
-          <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4 text-sm font-bold text-emerald-200">
-            <span className="mr-2 inline-block size-2 rounded-full bg-emerald-400 shadow-[0_0_0_6px_rgba(88,217,133,.12)]" />
-            服务运行正常
+        <div className={`mt-auto grid gap-3 max-xl:ml-auto max-xl:mt-0 max-sm:hidden ${sidebarCollapsed ? "xl:place-items-center" : ""}`}>
+          <div
+            className={`rounded-2xl border border-emerald-400/20 bg-emerald-400/10 text-sm font-bold text-emerald-200 ${sidebarCollapsed ? "xl:grid xl:size-12 xl:place-items-center xl:p-0" : "p-4"}`}
+            title="服务运行正常"
+          >
+            <span className={`inline-block size-2 rounded-full bg-emerald-400 shadow-[0_0_0_6px_rgba(88,217,133,.12)] ${sidebarCollapsed ? "xl:mr-0" : "mr-2"}`} />
+            <span className={sidebarCollapsed ? "xl:hidden" : ""}>服务运行正常</span>
           </div>
           <form action="/auth/logout" method="post">
-            <button className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm font-bold text-slate-300" type="submit">
+            <button
+              className={`flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] text-sm font-bold text-slate-300 ${sidebarCollapsed ? "xl:size-12 xl:p-0" : "px-4 py-3"}`}
+              type="submit"
+              title="退出登录"
+              aria-label="退出登录"
+            >
               <SignOut size={18} />
-              退出登录
+              <span className={sidebarCollapsed ? "xl:hidden" : ""}>退出登录</span>
             </button>
           </form>
         </div>

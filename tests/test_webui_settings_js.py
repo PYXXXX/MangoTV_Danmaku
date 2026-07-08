@@ -80,6 +80,20 @@ class WebuiSettingsJsTest(unittest.TestCase):
         self.assertIn('onClick={openFeishuSettings}', source)
         self.assertIn('id="settings-feishu-bot"', source)
 
+    def test_desktop_sidebar_can_collapse_and_machine_donuts_are_compact(self):
+        shell = (ROOT / "frontend" / "src" / "components" / "Shell.tsx").read_text(encoding="utf-8")
+        admin = (ROOT / "frontend" / "src" / "apps" / "admin" / "AdminApp.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("mgtv-sidebar-collapsed", shell)
+        self.assertIn("grid-cols-[260px_minmax(0,1fr)]", shell)
+        self.assertIn("grid-cols-[88px_minmax(0,1fr)]", shell)
+        self.assertIn("折叠侧边栏", shell)
+        self.assertIn("展开侧边栏", shell)
+        self.assertIn("size-32 shrink-0", admin)
+        self.assertIn("size-[5.9rem] flex-col items-center justify-center", admin)
+        self.assertIn("text-[1.7rem]", admin)
+        self.assertIn("text-[1.35rem]", admin)
+
     def test_settings_js_keeps_recording_config_fields(self):
         html = (ROOT / "server" / "webui" / "index.html").read_text(encoding="utf-8")
         source = (ROOT / "server" / "webui" / "settings.js").read_text(encoding="utf-8")
