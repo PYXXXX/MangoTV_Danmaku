@@ -107,7 +107,7 @@ python tools/setup_operator_password.py
 
 可用 HTTP 接口：
 
-- `GET /healthz`：健康检查。
+- `GET /healthz`：最小健康检查；未登录只返回 `{ "ok": true }`，详细状态走已鉴权的 `/api/system/status`。
 - `GET /api/results.json`：当前公开聚合结果，格式与 `site/data/results.json` 一致。
 - `GET /api/update/status`：检查当前 commit、远端 commit 与升级进度。
 - `POST /api/update/apply`：空闲时启动后台快进升级、更新依赖并自动重启。
@@ -120,9 +120,9 @@ python tools/setup_operator_password.py
 - `GET /api/rounds/{round_id}.jsonl`：导出某个场次的 JSONL 切片，包含 meta 与该场次消息。
 - `POST /api/rounds/{round_id}/precise-result`：通过 multipart 的 `file` 字段上传并发布 `.json` 或 `.xml` 精确结果。
 - `POST /api/command`：本地调试指令，例如 `{"text":"开始 第一轮"}`。
-- `POST /feishu/events`：飞书事件订阅回调地址。
+- `POST /feishu/events`：飞书 HTTP 回调兼容地址；必须启用飞书并配置 Verification Token，推荐优先使用 WebSocket 长连接。
 
-启用 `operator_auth` 后，运营页面、清洗规范和 `/api/*` 均要求登录；`/healthz`、登录入口与飞书回调保持可访问。
+启用 `operator_auth` 后，运营页面、清洗规范和 `/api/*` 均要求登录；登录入口、公开结果页、公开 PNG、最小 `/healthz` 与通过 token 校验的飞书回调保持可访问。
 
 登录后点击“系统配置”可在线维护活动、候选人、别名、多人策略、直播源、采集/去重、GitHub、飞书与密码策略，并可检查远端新 commit 后一键升级程序；升级时会显示当前阶段、进度条、最近输出和拉取速度。大多数配置立即热应用；当前场次的候选人口径保持冻结，监听地址、端口、数据目录、SQLite 路径和程序升级由界面提示安全重启后生效。
 

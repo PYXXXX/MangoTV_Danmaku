@@ -97,6 +97,24 @@ class FakeService:
         }
 
 
+class FakeFeishuWebhookService(FakeService):
+    def __init__(self):
+        super().__init__()
+        self.config["feishu"] = {
+            "enabled": True,
+            "connection_mode": "webhook",
+            "verification_token": "verify-token",
+            "allowed_open_ids": ["ou_operator"],
+            "allowed_chat_ids": [],
+        }
+
+
+class PublicDisabledAuthService(FakeService):
+    def __init__(self):
+        super().__init__(auth_enabled=False)
+        self.config["listen"] = {"public_base_url": "https://danmaku.bilirec.com"}
+
+
 @unittest.skipIf(AioHTTPTestCase is None, "aiohttp 未安装，跳过认证 HTTP 测试")
 class OperatorAuthHttpTest(AuthHttpTestBase):
     async def get_application(self):
@@ -120,6 +138,7 @@ class OperatorAuthHttpTest(AuthHttpTestBase):
 
         health = await self.client.get("/healthz")
         self.assertEqual(health.status, 200)
+        self.assertEqual(await health.json(), {"ok": True})
 
         system_status = await self.client.get("/api/system/status")
         self.assertEqual(system_status.status, 401)
@@ -168,6 +187,10 @@ class OperatorAuthHttpTest(AuthHttpTestBase):
         self.assertEqual(system_logs.status, 200)
         self.assertEqual((await system_logs.json())["events"][0]["source"], "service")
 
+        authenticated_health = await self.client.get("/healthz", headers={"Cookie": raw_cookie})
+        self.assertEqual(authenticated_health.status, 200)
+        self.assertIn("feishuEnabled", await authenticated_health.json())
+
         logout = await self.client.post(
             "/auth/logout",
             headers={"Cookie": raw_cookie},
@@ -175,6 +198,33 @@ class OperatorAuthHttpTest(AuthHttpTestBase):
         )
         self.assertEqual(logout.status, 303)
         self.assertIn("Max-Age=0", logout.headers["Set-Cookie"])
+
+    async def test_feishu_events_rejects_when_webhook_token_missing(self):
+        response = await self.client.post(
+            "/feishu/events",
+            json={"type": "url_verification", "challenge": "ok", "token": "wrong"},
+        )
+        self.assertEqual(response.status, 403)
+
+
+@unittest.skipIf(AioHTTPTestCase is None, "aiohttp 未安装，跳过认证 HTTP 测试")
+class FeishuWebhookHttpTest(AuthHttpTestBase):
+    async def get_application(self):
+        return create_app(FakeFeishuWebhookService())
+
+    async def test_feishu_events_requires_matching_verification_token(self):
+        wrong = await self.client.post(
+            "/feishu/events",
+            json={"type": "url_verification", "challenge": "ok", "token": "wrong"},
+        )
+        self.assertEqual(wrong.status, 403)
+
+        ok = await self.client.post(
+            "/feishu/events",
+            json={"type": "url_verification", "challenge": "ok", "token": "verify-token"},
+        )
+        self.assertEqual(ok.status, 200)
+        self.assertEqual(await ok.json(), {"challenge": "ok"})
 
 
 @unittest.skipIf(AioHTTPTestCase is None, "aiohttp 未安装，跳过认证 HTTP 测试")
@@ -191,6 +241,20 @@ class DisabledOperatorAuthHttpTest(AuthHttpTestBase):
         self.assertIn('/studio/assets/admin-test.js', page)
         api = await self.client.get("/api/results.json")
         self.assertEqual(api.status, 200)
+
+
+@unittest.skipIf(AioHTTPTestCase is None, "aiohttp 未安装，跳过认证 HTTP 测试")
+class PublicDisabledOperatorAuthHttpTest(AuthHttpTestBase):
+    async def get_application(self):
+        return create_app(PublicDisabledAuthService())
+
+    async def test_public_deployment_blocks_internal_routes_when_auth_disabled(self):
+        api = await self.client.get("/api/results.json")
+        self.assertEqual(api.status, 403)
+        self.assertIn("必须启用运营端登录保护", (await api.json())["error"])
+
+        public_data = await self.client.get("/studio/data/results.json")
+        self.assertEqual(public_data.status, 200)
 
 
 if __name__ == "__main__":

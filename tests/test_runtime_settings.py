@@ -164,6 +164,27 @@ class RuntimeSettingsTest(unittest.TestCase):
             self.assertEqual(update.config["recording"]["preferred_quality"], "720P")
             self.assertEqual(update.config["mgtv_auth"]["cookie_header"], config["mgtv_auth"]["cookie_header"])
 
+    def test_enabled_feishu_requires_explicit_allowlist(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = base_config(Path(temp))
+            with self.assertRaisesRegex(SettingsValidationError, "allowed_open_ids"):
+                build_settings_update(
+                    config,
+                    {
+                        "feishu": {
+                            "enabled": True,
+                            "connection_mode": "websocket",
+                            "app_id": "cli_real",
+                            "app_secret": "secret",
+                            "verification_token": "",
+                            "allowed_open_ids": [],
+                            "allowed_chat_ids": [],
+                            "public_results_url": "https://example.com/results",
+                        },
+                    },
+                    active_round=False,
+                )
+
     def test_monitor_settings_are_validated_and_hot_reloadable(self):
         with tempfile.TemporaryDirectory() as temp:
             config = base_config(Path(temp))

@@ -315,7 +315,7 @@ def build_settings_update(
             if mode == "webhook" and not has_real_value(target.get("verification_token")):
                 raise SettingsValidationError("飞书 HTTP 回调模式必须填写 Verification Token")
             if not target["allowed_open_ids"] and not target["allowed_chat_ids"]:
-                warnings.append("飞书白名单为空：所有可触达 Bot 的用户都能操作")
+                raise SettingsValidationError("启用飞书前必须填写至少一个 allowed_open_ids 或 allowed_chat_ids；可先在飞书发送“我的ID”获取")
             elif "*" in target["allowed_open_ids"] or "*" in target["allowed_chat_ids"]:
                 warnings.append("飞书白名单包含 *，正式节目应改为真实 open_id/chat_id")
         updated["feishu"] = target

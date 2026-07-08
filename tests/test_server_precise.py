@@ -201,6 +201,43 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                 ])
             finally:
                 service.collector.fingerprints.close()
+
+    async def test_feishu_empty_allowlist_denies_ops_but_allows_id_lookup(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "mgtv": {"dedup_db_path": str(Path(temp) / "fingerprints.sqlite3")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {"enabled": True, "allowed_open_ids": [], "allowed_chat_ids": []},
+            }
+            service = VoteService(config)
+            sent: list[tuple[str, str, str, dict[str, object]]] = []
+            cards: list[dict[str, object]] = []
+
+            async def fake_send_message(receive_id, receive_id_type, msg_type, content):
+                sent.append((receive_id, receive_id_type, msg_type, content))
+
+            async def fake_send_card(receive_id, receive_id_type, card):
+                cards.append(card)
+
+            service.feishu.send_message = fake_send_message
+            service.feishu.send_card = fake_send_card
+            try:
+                self.assertFalse(service.feishu.is_allowed("ou_any", "oc_any"))
+                await service.handle_feishu_text("我的ID", "ou_any", "oc_any", "oc_any", "chat_id")
+                self.assertEqual(sent[0][2], "text")
+                self.assertIn("ou_any", sent[0][3]["text"])
+
+                await service.handle_feishu_text("状态", "ou_any", "oc_any", "oc_any", "chat_id")
+                self.assertIn("无操作权限", json.dumps(cards[-1], ensure_ascii=False))
+                self.assertNotIn("歌手 2026", json.dumps(cards[-1], ensure_ascii=False))
+            finally:
+                service.collector.fingerprints.close()
                 service.recording_collector.fingerprints.close()
 
     async def test_round_result_png_export_and_public_url(self):
@@ -784,7 +821,13 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("未配置录制源", record["error"])
                 with self.assertRaisesRegex(RuntimeError, "完整视频|录制"):
                     service.recorder.add_marker(meta.id, "高能片段", 12.5)
-                self.assertEqual(service.recorder.public_records()[0]["clipCount"], 0)
+                public_record = service.recorder.public_records()[0]
+                self.assertEqual(public_record["clipCount"], 0)
+                self.assertNotIn("path", public_record)
+                self.assertNotIn("sourceUrl", public_record)
+                self.assertNotIn("pid", public_record)
+                self.assertNotIn("recording", service.public_state()["sessions"][0])
+                self.assertIn("recording", service.public_state(include_private=True)["sessions"][0])
             finally:
                 service.collector.fingerprints.close()
 

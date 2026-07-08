@@ -195,6 +195,18 @@ def card_note() -> dict[str, Any]:
     return md("坚持全卡片交互：按钮需要飞书企业自建应用已配置 `card.action.trigger` 卡片回调；若提示未配置，请联系管理员。", text_size="notation")
 
 
+def build_permission_denied_card() -> dict[str, Any]:
+    return v2_card(
+        "无操作权限",
+        "red",
+        [
+            md("当前飞书来源不在运营白名单内，已拒绝执行操作。"),
+            md("如需授权，请在当前会话发送 `我的ID` 获取 open_id/chat_id，再到 WebUI 系统配置中加入白名单。", text_size="notation"),
+        ],
+        "无操作权限",
+    )
+
+
 def bytes_human(value: Any) -> str:
     try:
         size = float(value or 0)

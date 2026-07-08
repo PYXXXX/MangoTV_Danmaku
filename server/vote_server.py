@@ -44,6 +44,7 @@ try:
         build_control_card,
         build_monitor_card,
         build_ops_card,
+        build_permission_denied_card,
         build_publish_card,
         build_recording_card,
         build_round_list_card,
@@ -74,6 +75,7 @@ except ModuleNotFoundError:  # Support `python server/vote_server.py`.
         build_control_card,
         build_monitor_card,
         build_ops_card,
+        build_permission_denied_card,
         build_publish_card,
         build_recording_card,
         build_round_list_card,
@@ -1083,7 +1085,7 @@ class FeishuBot:
         if isinstance(chats, str):
             chats = [item.strip() for item in chats.split(",") if item.strip()]
         if not users and not chats:
-            return True
+            return False
         if users and "*" not in users and open_id not in users:
             return False
         if chat_id:
@@ -1248,10 +1250,19 @@ class RecordingManager:
             item = dict(record)
             path = Path(str(item.get("path") or ""))
             round_id = quote(str(item.get("roundId") or ""), safe="")
+            can_post_process = self.can_post_process(record)
+            post_process_reason = self.post_process_reason(record)
+            item.pop("path", None)
+            item.pop("sourceUrl", None)
+            item.pop("pid", None)
+            if record.get("sourceUrl"):
+                item["sourceConfigured"] = True
+            if item.get("error"):
+                item["error"] = redact_sensitive_text(str(item.get("error") or ""))
             item["hasVideo"] = path.exists()
             item["videoUrl"] = f"/api/rounds/{round_id}/recording/video" if path.exists() else ""
-            item["canPostProcess"] = self.can_post_process(item)
-            item["postProcessReason"] = self.post_process_reason(item)
+            item["canPostProcess"] = can_post_process
+            item["postProcessReason"] = post_process_reason
             clips = []
             for clip in item.get("clips") or []:
                 clips.append(self.public_clip(record, clip))
@@ -1262,6 +1273,7 @@ class RecordingManager:
 
     def public_clip(self, record: dict[str, Any], clip: dict[str, Any]) -> dict[str, Any]:
         clip_item = dict(clip)
+        clip_item.pop("path", None)
         round_id = quote(str(record.get("roundId") or ""), safe="")
         clip_id = quote(str(clip_item.get("id") or ""), safe="")
         clip_item.setdefault("url", f"/api/rounds/{round_id}/recording/clips/{clip_id}.mp4")
@@ -1458,10 +1470,9 @@ class RecordingManager:
             "url": f"/api/rounds/{quote(round_id, safe='')}/recording/clips/{quote(clip_id, safe='')}.mp4",
             "createdAt": now_iso(),
         }
-        clip = self.public_clip(record, clip)
         record.setdefault("clips", []).append(clip)
         self.save()
-        return clip
+        return self.public_clip(record, clip)
 
     async def probe_duration(self, path: Path) -> float:
         if not path.exists():
@@ -1976,9 +1987,10 @@ class VoteService:
             "publicBaseUrl": self.public_base_url(),
             "publicResultsUrl": str((self.config.get("feishu") or {}).get("public_results_url") or self.public_base_url() or ""),
         }
-        recordings = {item.get("roundId"): item for item in self.recorder.public_records()}
+        recordings = {item.get("roundId"): item for item in self.recorder.public_records()} if include_private else {}
         for session in state.get("sessions") or []:
-            session["recording"] = recordings.get(session.get("id"))
+            if include_private:
+                session["recording"] = recordings.get(session.get("id"))
             rough_image_url = self.round_result_png_url(str(session.get("id") or ""), "rough")
             precise_image_url = self.round_result_png_url(str(session.get("id") or ""), "precise")
             session["resultImageUrls"] = {
@@ -3737,20 +3749,22 @@ class VoteService:
         receive_id: str,
         receive_id_type: str,
     ) -> None:
-        if not self.feishu.is_allowed(open_id, chat_id):
-            await self.feishu.send_card(receive_id, receive_id_type, build_control_card(self.public_state(include_private=True), notice="无操作权限。"))
-            return
         normalized = normalize(text)
-        if normalized in {"菜单", "卡片", "控制台", "/menu"}:
-            reply = "控制台已刷新。"
-        elif normalized in {"我的id", "我的ID", "配置id", "配置ID", "id", "ids", "/id"}:
+        if normalized in {"我的id", "我的ID", "配置id", "配置ID", "id", "ids", "/id"}:
             reply = (
                 "当前飞书来源 ID：\n"
                 f"open_id: {open_id or '未获取到'}\n"
                 f"chat_id: {chat_id or '私聊无群 ID'}\n"
-                "把这些值填入 server/config.json 的 allowed_open_ids / allowed_chat_ids，"
-                "或重新运行 python tools/setup_feishu_bot.py 选择“正式使用”。"
+                "请把这些值填入 WebUI 系统配置的 allowed_open_ids / allowed_chat_ids，"
+                "或重新绑定飞书应用后保存白名单。"
             )
+            await self.feishu.send_message(receive_id, receive_id_type, "text", {"text": reply})
+            return
+        if not self.feishu.is_allowed(open_id, chat_id):
+            await self.feishu.send_card(receive_id, receive_id_type, build_permission_denied_card())
+            return
+        if normalized in {"菜单", "卡片", "控制台", "/menu"}:
+            reply = "控制台已刷新。"
         else:
             reply = await self.handle_command(normalized, open_id)
         await self.feishu.send_card(receive_id, receive_id_type, self.feishu_card(open_id, reply))
@@ -3772,7 +3786,7 @@ class VoteService:
         form_value: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not self.feishu.is_allowed(open_id, chat_id):
-            return build_control_card(self.public_state(include_private=True), notice="无操作权限。")
+            return build_permission_denied_card()
         notice = "状态已刷新。"
         try:
             if action == "show_rounds":
@@ -4258,8 +4272,6 @@ def create_app(service: VoteService) -> web.Application:
     @web.middleware
     async def operator_auth_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
         auth = service.operator_auth
-        if not auth.enabled:
-            return await handler(request)
         public_paths = {
             "/login",
             "/auth/login",
@@ -4272,7 +4284,26 @@ def create_app(service: VoteService) -> web.Application:
         }
         public_export = request.path.startswith("/exports/rounds/") and request.path.endswith("/result.png")
         public_studio_asset = request.path.startswith("/studio/assets/")
-        if request.path in public_paths or public_export or public_studio_asset or auth.request_is_authenticated(request):
+        public_request = request.path in public_paths or public_export or public_studio_asset
+        if not auth.enabled:
+            public_base = str((service.config.get("listen") or {}).get("public_base_url") or "").strip().lower()
+            looks_public = (
+                public_base
+                and "your-domain.example.com" not in public_base
+                and "example.com" not in public_base
+                and "localhost" not in public_base
+                and "127.0.0.1" not in public_base
+                and "[::1]" not in public_base
+            )
+            if looks_public and not public_request:
+                return web.json_response(
+                    {"error": "公网部署必须启用运营端登录保护 operator_auth.enabled"},
+                    status=403,
+                    headers={"Cache-Control": "no-store"},
+                    dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+                )
+            return await handler(request)
+        if public_request or auth.request_is_authenticated(request):
             return await handler(request)
         if request.path.startswith("/api/"):
             return web.json_response({"error": "登录已过期，请重新登录"}, status=401, headers={"Cache-Control": "no-store"})
@@ -4368,7 +4399,10 @@ def create_app(service: VoteService) -> web.Application:
         service.operator_auth.clear_session_cookie(response)
         raise response
 
-    async def health(_: web.Request) -> web.Response:
+    async def health(request: web.Request) -> web.Response:
+        auth = service.operator_auth
+        if not auth.enabled or not auth.request_is_authenticated(request):
+            return web.json_response({"ok": True}, headers={"Cache-Control": "no-store"})
         runtime = service.settings_runtime()
         return web.json_response({
             "ok": True,
@@ -4380,7 +4414,7 @@ def create_app(service: VoteService) -> web.Application:
             "monitor": runtime.get("monitor"),
             "restartRequired": runtime["restartRequired"],
             "restartFields": runtime["restartFields"],
-        })
+        }, headers={"Cache-Control": "no-store"})
 
     async def system_status(_: web.Request) -> web.Response:
         return web.json_response(
@@ -5089,9 +5123,16 @@ def create_app(service: VoteService) -> web.Application:
 
     async def feishu_events(request: web.Request) -> web.Response:
         body = await request.json()
-        token = service.config.get("feishu", {}).get("verification_token")
+        feishu_config = service.config.get("feishu", {}) or {}
+        token = feishu_config.get("verification_token")
+        if not feishu_config.get("enabled") or not has_real_value(token):
+            return web.json_response(
+                {"error": "feishu webhook disabled or verification token not configured"},
+                status=403,
+                dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            )
         supplied_token = body.get("token") or body.get("header", {}).get("token") or body.get("event", {}).get("token")
-        if token and supplied_token != token:
+        if supplied_token != token:
             return web.json_response({"error": "invalid token"}, status=403)
         if body.get("type") == "url_verification":
             return web.json_response({"challenge": body.get("challenge")})
