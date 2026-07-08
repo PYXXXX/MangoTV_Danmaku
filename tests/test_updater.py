@@ -1,4 +1,5 @@
 import asyncio
+import os
 import subprocess
 import tempfile
 import unittest
@@ -77,6 +78,90 @@ class GitUpdaterTest(unittest.TestCase):
             self.assertIn("fetch", stages)
             self.assertIn("merge", stages)
             self.assertTrue(any(event.get("percent", 0) >= 78 for event in progress_events))
+
+    def test_frontend_source_change_runs_build_without_ci(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp_root = Path(temp)
+            _, source, deploy = make_remote_and_clone(temp_root)
+            frontend = source / "frontend"
+            frontend.mkdir()
+            (frontend / "package.json").write_text('{"scripts":{"build":"vite build"}}\n', encoding="utf-8")
+            (frontend / "package-lock.json").write_text('{"lockfileVersion":3}\n', encoding="utf-8")
+            (frontend / "src").mkdir()
+            commit_file(source, "frontend/src/app.ts", "v1\n", "frontend initial")
+            run(["git", "push"], source)
+            run(["git", "pull", "--ff-only"], deploy)
+
+            commit_file(source, "frontend/src/app.ts", "v2\n", "frontend source update")
+            run(["git", "push"], source)
+
+            bin_dir = temp_root / "bin"
+            bin_dir.mkdir()
+            log_path = temp_root / "npm.log"
+            npm = bin_dir / "npm"
+            npm.write_text(
+                "#!/usr/bin/env python3\n"
+                "import os, pathlib, sys\n"
+                f"pathlib.Path({str(log_path)!r}).write_text(' '.join(sys.argv[1:]) + '\\n', encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            npm.chmod(0o755)
+            old_path = os.environ.get("PATH", "")
+            os.environ["PATH"] = f"{bin_dir}{os.pathsep}{old_path}"
+            try:
+                updater = GitUpdater(deploy, install_dependencies=False, build_frontend=True)
+                result = asyncio.run(updater.apply_update())
+            finally:
+                os.environ["PATH"] = old_path
+
+            self.assertTrue(result["updated"])
+            self.assertIn("新版前端已构建", "\n".join(result["steps"]))
+            self.assertEqual(log_path.read_text(encoding="utf-8").strip(), "--prefix frontend run build")
+
+    def test_frontend_dependency_change_runs_ci_then_build(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp_root = Path(temp)
+            _, source, deploy = make_remote_and_clone(temp_root)
+            frontend = source / "frontend"
+            frontend.mkdir()
+            (frontend / "package.json").write_text('{"scripts":{"build":"vite build"},"dependencies":{"a":"1.0.0"}}\n', encoding="utf-8")
+            (frontend / "package-lock.json").write_text('{"lockfileVersion":3}\n', encoding="utf-8")
+            (frontend / "src").mkdir()
+            commit_file(source, "frontend/src/app.ts", "v1\n", "frontend initial")
+            run(["git", "add", "frontend/package.json", "frontend/package-lock.json"], source)
+            run(["git", "commit", "-m", "frontend deps"], source)
+            run(["git", "push"], source)
+            run(["git", "pull", "--ff-only"], deploy)
+
+            (source / "frontend" / "package.json").write_text('{"scripts":{"build":"vite build"},"dependencies":{"a":"1.0.1"}}\n', encoding="utf-8")
+            run(["git", "add", "frontend/package.json"], source)
+            run(["git", "commit", "-m", "frontend dep update"], source)
+            run(["git", "push"], source)
+
+            bin_dir = temp_root / "bin"
+            bin_dir.mkdir()
+            log_path = temp_root / "npm.log"
+            npm = bin_dir / "npm"
+            npm.write_text(
+                "#!/usr/bin/env python3\n"
+                "import pathlib, sys\n"
+                f"with pathlib.Path({str(log_path)!r}).open('a', encoding='utf-8') as handle: handle.write(' '.join(sys.argv[1:]) + '\\n')\n",
+                encoding="utf-8",
+            )
+            npm.chmod(0o755)
+            old_path = os.environ.get("PATH", "")
+            os.environ["PATH"] = f"{bin_dir}{os.pathsep}{old_path}"
+            try:
+                updater = GitUpdater(deploy, install_dependencies=False, build_frontend=True)
+                result = asyncio.run(updater.apply_update())
+            finally:
+                os.environ["PATH"] = old_path
+
+            self.assertTrue(result["updated"])
+            self.assertEqual(
+                log_path.read_text(encoding="utf-8").splitlines(),
+                ["--prefix frontend ci", "--prefix frontend run build"],
+            )
 
     def test_dirty_worktree_rejects_auto_update(self):
         with tempfile.TemporaryDirectory() as temp:

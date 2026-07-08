@@ -37,6 +37,9 @@
     "auto_split_enabled": true,
     "auto_split_seconds": 3600
   },
+  "updater": {
+    "build_frontend": true
+  },
   "monitor": {
     "enabled": false,
     "activity": "歌手 2026",

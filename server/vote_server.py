@@ -23,6 +23,7 @@ import signal
 import sqlite3
 import subprocess
 import time
+import traceback
 import unicodedata
 import copy
 from collections import OrderedDict
@@ -57,6 +58,13 @@ try:
         public_settings,
         save_config_atomic,
     )
+    from server.runtime_preflight import (
+        RuntimePreflightError,
+        derive_runtime_data_dir,
+        migrate_runtime_config,
+        redact_sensitive_text,
+        run_runtime_preflight,
+    )
     from server.updater import GitUpdater, UpdateError
 except ModuleNotFoundError:  # Support `python server/vote_server.py`.
     import feishu_binding
@@ -74,6 +82,7 @@ except ModuleNotFoundError:  # Support `python server/vote_server.py`.
     from mgtv_auth import MgtvAuthManager
     from operator_auth import OperatorAuth, safe_next_url
     from runtime_settings import SettingsValidationError, build_settings_update, has_real_value, public_settings, save_config_atomic
+    from runtime_preflight import RuntimePreflightError, derive_runtime_data_dir, migrate_runtime_config, redact_sensitive_text, run_runtime_preflight
     from updater import GitUpdater, UpdateError
 
 
@@ -1555,34 +1564,44 @@ class RecordingManager:
 
 class VoteService:
     def __init__(self, config: dict[str, Any], config_path: Path | None = None, repo_root: Path | None = None):
-        self.config = config
-        self.startup_config = json.loads(json.dumps(config))
         self.config_path = config_path
         self.repo_root = repo_root or Path(__file__).resolve().parents[1]
+        migration = migrate_runtime_config(config, config_path=config_path, repo_root=self.repo_root)
+        self.startup_migration_warnings = list(migration.warnings)
+        self.startup_migration_error = ""
+        self.config = migration.config
+        if migration.changed and config_path is not None:
+            try:
+                save_config_atomic(config_path, self.config)
+            except OSError as exc:
+                self.startup_migration_error = str(exc)
+        self.startup_config = json.loads(json.dumps(self.config))
         self.config_lock = asyncio.Lock()
         self.update_lock = asyncio.Lock()
         self.last_update_result: dict[str, Any] | None = None
         self.last_update_status: dict[str, Any] | None = None
         self.update_task: asyncio.Task[Any] | None = None
         self.update_progress: dict[str, Any] = self._initial_update_progress()
+        self.pending_update_health_check = False
         self.feishu_binding_task: asyncio.Task[Any] | None = None
         self.feishu_binding_state: dict[str, Any] = self._initial_feishu_binding_state()
         self.pending_restart_fields: list[str] = []
-        self.store = StateStore(Path(config.get("storage", {}).get("directory", "server/data")))
+        self.store = StateStore(Path(self.config.get("storage", {}).get("directory", "server/data")))
         self.store.load()
         self.engine = VoteEngine(self.store)
-        self.publisher = GithubPublisher(config.get("github", {}), self.store)
-        self.collector = MgtvCollector(config.get("mgtv", {}), self.engine)
-        self.recording_collector = MgtvCollector(self._recording_collector_config(config.get("mgtv", {})), self.engine)
-        self.recorder = RecordingManager(config.get("recording", {}), self.store.directory)
-        self.mgtv_auth = MgtvAuthManager(config.get("mgtv_auth", {}))
-        self.feishu = FeishuBot(config.get("feishu", {}))
-        self.operator_auth = OperatorAuth(config.get("operator_auth") or {})
-        self.default_candidates = candidates_from_config(config.get("vote", {}).get("candidates", []))
-        self.default_policy = config.get("vote", {}).get("multi_candidate_policy", "all")
+        self.publisher = GithubPublisher(self.config.get("github", {}), self.store)
+        self.collector = MgtvCollector(self.config.get("mgtv", {}), self.engine)
+        self.recording_collector = MgtvCollector(self._recording_collector_config(self.config.get("mgtv", {})), self.engine)
+        self.recorder = RecordingManager(self.config.get("recording", {}), self.store.directory)
+        self.mgtv_auth = MgtvAuthManager(self.config.get("mgtv_auth", {}))
+        self.feishu = FeishuBot(self.config.get("feishu", {}))
+        self.operator_auth = OperatorAuth(self.config.get("operator_auth") or {})
+        self.default_candidates = candidates_from_config(self.config.get("vote", {}).get("candidates", []))
+        self.default_policy = self.config.get("vote", {}).get("multi_candidate_policy", "all")
         self.user_selection: dict[str, str] = {}
         self.feishu_connection: Any = None
-        self.updater = GitUpdater(self.repo_root)
+        updater_config = self.config.get("updater") if isinstance(self.config.get("updater"), dict) else {}
+        self.updater = GitUpdater(self.repo_root, build_frontend=bool(updater_config.get("build_frontend", True)))
         self.started_at = now_iso()
         self.system_events: list[dict[str, Any]] = []
         self.metric_samples: list[dict[str, Any]] = []
@@ -1591,7 +1610,12 @@ class VoteService:
         self.monitor_last_url = ""
         self.monitor_state: dict[str, Any] = self._initial_monitor_state()
         self.monitor_last_notified_key = ""
+        self._load_persisted_update_state()
         self.add_system_event("info", "service", "服务已启动", "直播运营工作台后端进程已初始化。")
+        if self.startup_migration_warnings:
+            self.add_system_event("warn", "settings", "已自动迁移运行配置", "；".join(self.startup_migration_warnings))
+        if self.startup_migration_error:
+            self.add_system_event("error", "settings", "运行配置迁移已应用但保存失败", self.startup_migration_error)
 
     def _recording_collector_config(self, config: dict[str, Any]) -> dict[str, Any]:
         result = dict(config or {})
@@ -1633,14 +1657,7 @@ class VoteService:
 
     @staticmethod
     def _redact_log_text(value: str) -> str:
-        text = str(value or "")
-        patterns = [
-            (r"(?i)(app_secret|token|cookie|session|device_code|user_code|password)(['\":=\s]+)[^,\s\"']+", r"\1\2***"),
-            (r"(?i)(Authorization:\s*Bearer\s+)[^\s]+", r"\1***"),
-        ]
-        for pattern, replacement in patterns:
-            text = re.sub(pattern, replacement, text)
-        return text
+        return redact_sensitive_text(str(value or ""))
 
     @staticmethod
     def _log_source_label(source: str) -> str:
@@ -1856,6 +1873,51 @@ class VoteService:
             "restartScheduled": False,
         }
 
+    def _update_state_path(self) -> Path:
+        return self.store.directory / "update-state.json"
+
+    def _persist_update_state(self, *, pending_health_check: bool | None = None) -> None:
+        payload = {
+            "progress": self.update_progress,
+            "lastUpdate": self.last_update_result,
+            "pendingHealthCheck": self.pending_update_health_check if pending_health_check is None else pending_health_check,
+            "savedAt": now_iso(),
+        }
+        try:
+            path = self._update_state_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temp = path.with_name(path.name + ".tmp")
+            temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            temp.replace(path)
+        except OSError:
+            pass
+
+    def _load_persisted_update_state(self) -> None:
+        path = self._update_state_path()
+        if not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        progress = payload.get("progress") if isinstance(payload.get("progress"), dict) else {}
+        if progress:
+            self.update_progress = {**self._initial_update_progress(), **progress}
+        last_update = payload.get("lastUpdate")
+        if isinstance(last_update, dict):
+            self.last_update_result = last_update
+        self.pending_update_health_check = bool(payload.get("pendingHealthCheck"))
+        if self.pending_update_health_check:
+            self._set_update_progress({
+                "status": "running",
+                "stage": "healthcheck",
+                "percent": 98,
+                "detail": "服务已重启，正在执行 /healthz 自检……",
+                "restartScheduled": False,
+            })
+
     def _set_update_progress(self, event: dict[str, Any]) -> None:
         current = dict(self.update_progress or self._initial_update_progress())
         current["status"] = event.get("status", current.get("status") or "running")
@@ -1876,6 +1938,8 @@ class VoteService:
             logs = logs[-8:]
         current["logs"] = logs
         self.update_progress = current
+        if hasattr(self, "store"):
+            self._persist_update_state()
 
     def _restart_fields_for(self, config: dict[str, Any]) -> list[str]:
         paths = [
@@ -2468,6 +2532,8 @@ class VoteService:
             self.monitor_task = loop.create_task(self._monitor_loop(), name="mgtv-activity-monitor")
             self._set_monitor_state(taskRunning=True)
             self.add_system_event("info", "monitor", "活动监控后台任务已启动")
+        if self.pending_update_health_check:
+            loop.create_task(self._complete_update_health_check(), name="mgtv-update-health-check")
 
     async def stop_background_tasks(self) -> None:
         task = self.monitor_task
@@ -2480,6 +2546,61 @@ class VoteService:
         self.monitor_task = None
         self._set_monitor_state(taskRunning=False)
         await self.recording_collector.stop()
+
+    def _local_health_url(self) -> str:
+        listen = self.config.get("listen") if isinstance(self.config.get("listen"), dict) else {}
+        host = str(listen.get("host") or "127.0.0.1").strip()
+        if host in {"0.0.0.0", "::", ""}:
+            host = "127.0.0.1"
+        port = int(listen.get("port") or 8080)
+        return f"http://{host}:{port}/healthz"
+
+    async def _complete_update_health_check(self) -> None:
+        await asyncio.sleep(1.2)
+        url = self._local_health_url()
+        timeout = ClientTimeout(total=3)
+        last_error = ""
+        for attempt in range(1, 16):
+            try:
+                async with ClientSession(timeout=timeout) as session:
+                    async with session.get(url, headers={"Cache-Control": "no-store"}) as response:
+                        if response.status == 200:
+                            payload = await response.json()
+                            if payload.get("ok"):
+                                self.pending_update_health_check = False
+                                self._set_update_progress({
+                                    "status": "complete",
+                                    "stage": "healthcheck",
+                                    "percent": 100,
+                                    "detail": "服务重启后 /healthz 自检通过。",
+                                    "speed": "",
+                                    "restartScheduled": False,
+                                })
+                                if self.last_update_result is not None:
+                                    self.last_update_result["healthCheck"] = "ok"
+                                    self.last_update_result["healthCheckedAt"] = now_iso()
+                                self._persist_update_state(pending_health_check=False)
+                                self.add_system_event("info", "updater", "升级后健康检查通过", url)
+                                return
+                        last_error = f"HTTP {response.status}: {(await response.text())[:240]}"
+            except Exception as exc:
+                last_error = str(exc)
+            await asyncio.sleep(min(2.0, 0.35 * attempt))
+        self.pending_update_health_check = False
+        self._set_update_progress({
+            "status": "failed",
+            "stage": "healthcheck",
+            "percent": 99,
+            "detail": f"服务重启后 /healthz 自检失败：{last_error}",
+            "speed": "",
+            "restartScheduled": False,
+        })
+        if self.last_update_result is not None:
+            self.last_update_result["healthCheck"] = "failed"
+            self.last_update_result["healthError"] = last_error
+            self.last_update_result["healthCheckedAt"] = now_iso()
+        self._persist_update_state(pending_health_check=False)
+        self.add_system_event("error", "updater", "升级后健康检查失败", f"{url}: {last_error}")
 
     async def _monitor_loop(self) -> None:
         while True:
@@ -3496,6 +3617,9 @@ class VoteService:
         async with self.update_lock:
             try:
                 result = await self.updater.apply_update(progress=self._set_update_progress)
+                preflight = self._post_update_preflight()
+                if preflight.get("warnings"):
+                    result.setdefault("steps", []).extend(preflight["warnings"])
                 self.last_update_result = {
                     "updated": result.get("updated"),
                     "from": result.get("from"),
@@ -3504,14 +3628,16 @@ class VoteService:
                     "requestedAt": now_iso(),
                 }
                 if result.get("updated"):
+                    self.pending_update_health_check = True
                     self._set_update_progress({
                         "status": "complete",
                         "stage": "restart",
                         "percent": 100,
-                        "detail": "升级完成，服务正在自动重启……",
+                        "detail": "升级完成，运行目录 preflight 已通过，服务正在自动重启……",
                         "speed": "",
                         "restartScheduled": True,
                     })
+                    self._persist_update_state(pending_health_check=True)
                     loop.call_later(0.8, os.kill, os.getpid(), signal.SIGTERM)
                 else:
                     self._set_update_progress({
@@ -3521,10 +3647,13 @@ class VoteService:
                         "detail": "当前已经是最新版本，无需重启。",
                         "speed": "",
                     })
+                    self._persist_update_state(pending_health_check=False)
             except Exception as exc:
+                tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))[-4000:]
                 self.last_update_result = {
                     "updated": False,
                     "error": str(exc),
+                    "traceback": self._redact_log_text(tb),
                     "requestedAt": now_iso(),
                 }
                 self._set_update_progress({
@@ -3533,7 +3662,43 @@ class VoteService:
                     "percent": self.update_progress.get("percent", 0),
                     "detail": str(exc),
                     "speed": "",
+                    "restartScheduled": False,
                 })
+                self.pending_update_health_check = False
+                self._persist_update_state(pending_health_check=False)
+                self.add_system_event("error", "updater", "在线升级失败", str(exc), traceback=tb)
+
+    def _post_update_preflight(self) -> dict[str, Any]:
+        self._set_update_progress({
+            "stage": "preflight",
+            "percent": 97,
+            "detail": "正在执行重启前运行目录 preflight……",
+        })
+        config = self.config
+        if self.config_path is not None and self.config_path.exists():
+            try:
+                config = json.loads(self.config_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise UpdateError(f"重启前读取配置失败：{exc}") from exc
+        try:
+            result = run_runtime_preflight(config, config_path=self.config_path, repo_root=self.repo_root, migrate=True)
+        except RuntimePreflightError as exc:
+            raise UpdateError(f"重启前运行目录检查失败：{exc}") from exc
+        if result.changed:
+            if self.config_path is None:
+                raise UpdateError("运行配置需要迁移，但当前服务未指定 --config，无法安全写回配置。")
+            try:
+                save_config_atomic(self.config_path, result.config)
+            except OSError as exc:
+                raise UpdateError(f"运行配置迁移后写回失败：{exc}") from exc
+            self.config = result.config
+            self.collector.apply_config(self.config.get("mgtv", {}))
+            self.recording_collector.apply_config(self._recording_collector_config(self.config.get("mgtv", {})))
+            self.recorder.apply_config(self.config.get("recording", {}))
+            self.add_system_event("warn", "updater", "升级前已自动迁移运行配置", "；".join(result.warnings))
+        detail = "；".join(f"{item['label']}={item['path']}" for item in result.checks)
+        self.add_system_event("info", "updater", "重启前运行目录检查通过", detail)
+        return {"ok": True, "warnings": result.warnings, "checks": result.checks}
 
     def start_feishu_connection(self, loop: asyncio.AbstractEventLoop) -> bool:
         try:
@@ -5060,19 +5225,81 @@ def create_app(service: VoteService) -> web.Application:
     return app
 
 
+def record_startup_failure(config_path: Path, config: dict[str, Any], exc: BaseException) -> None:
+    """Persist a post-restart crash so the next healthy WebUI can show it."""
+    try:
+        data_dir = derive_runtime_data_dir(config if isinstance(config, dict) else {}, config_path=config_path, repo_root=Path(__file__).resolve().parents[1])
+    except Exception:
+        data_dir = Path(config_path).parent / "data"
+    detail = redact_sensitive_text(str(exc))
+    tb = redact_sensitive_text("".join(traceback.format_exception(type(exc), exc, exc.__traceback__))[-6000:])
+    event = {
+        "time": now_iso(),
+        "level": "ERROR",
+        "source": "updater",
+        "sourceLabel": "程序升级",
+        "summary": "服务重启后启动失败",
+        "detail": detail,
+        "traceback": tb,
+        "host": platform.node(),
+    }
+    event_payload = json.dumps({key: event.get(key) for key in ("time", "level", "source", "summary", "detail", "host")}, ensure_ascii=False, sort_keys=True)
+    event["id"] = f"log_{hashlib.sha1(event_payload.encode('utf-8')).hexdigest()[:12]}"
+    update_state = {
+        "progress": {
+            "status": "failed",
+            "stage": "startup",
+            "percent": 99,
+            "detail": f"服务重启后启动失败：{detail}",
+            "speed": "",
+            "logs": [{
+                "time": now_iso(),
+                "stage": "startup",
+                "detail": f"服务重启后启动失败：{detail}",
+                "speed": "",
+            }],
+            "restartScheduled": False,
+        },
+        "lastUpdate": {
+            "updated": False,
+            "healthCheck": "failed",
+            "healthError": detail,
+            "traceback": tb,
+            "requestedAt": now_iso(),
+        },
+        "pendingHealthCheck": False,
+        "savedAt": now_iso(),
+    }
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        state_path = data_dir / "update-state.json"
+        temp_state = state_path.with_name(state_path.name + ".tmp")
+        temp_state.write_text(json.dumps(update_state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temp_state.replace(state_path)
+        with (data_dir / "system-events.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except OSError:
+        pass
+
+
 async def amain() -> None:
     parser = argparse.ArgumentParser(description="MGTV server-side danmaku vote collector")
     parser.add_argument("--config", default="server/config.example.json")
     args = parser.parse_args()
     config_path = Path(args.config)
-    config = json.loads(config_path.read_text(encoding="utf-8"))
-    service = VoteService(config, config_path=config_path)
-    feishu_ws_started = service.start_feishu_connection(asyncio.get_running_loop())
-    app = create_app(service)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, config.get("listen", {}).get("host", "0.0.0.0"), int(config.get("listen", {}).get("port", 8080)))
-    await site.start()
+    config: dict[str, Any] = {}
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        service = VoteService(config, config_path=config_path)
+        feishu_ws_started = service.start_feishu_connection(asyncio.get_running_loop())
+        app = create_app(service)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, config.get("listen", {}).get("host", "0.0.0.0"), int(config.get("listen", {}).get("port", 8080)))
+        await site.start()
+    except Exception as exc:
+        record_startup_failure(config_path, config, exc)
+        raise
     print(f"vote server listening on {config.get('listen', {}).get('host', '0.0.0.0')}:{config.get('listen', {}).get('port', 8080)}", flush=True)
     if feishu_ws_started:
         print("feishu bot connected with WebSocket long connection", flush=True)

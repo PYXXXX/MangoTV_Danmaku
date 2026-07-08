@@ -12,8 +12,44 @@ import threading
 import time
 from typing import Any
 
+try:
+    from server.runtime_preflight import redact_sensitive_text
+except ModuleNotFoundError:
+    from runtime_preflight import redact_sensitive_text
+
 
 LOGGER = logging.getLogger(__name__)
+_SENSITIVE_RECORD_FACTORY_INSTALLED = False
+
+
+class SensitiveLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        redact_log_record(record)
+        return True
+
+
+def redact_log_record(record: logging.LogRecord) -> None:
+    if record.name.startswith("lark_oapi") or record.name in {__name__, "server.feishu_ws"}:
+        record.msg = redact_sensitive_text(record.getMessage())
+        record.args = ()
+
+
+def install_sensitive_log_filter() -> None:
+    global _SENSITIVE_RECORD_FACTORY_INSTALLED
+    if not _SENSITIVE_RECORD_FACTORY_INSTALLED:
+        original_factory = logging.getLogRecordFactory()
+
+        def sensitive_record_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
+            record = original_factory(*args, **kwargs)
+            redact_log_record(record)
+            return record
+
+        logging.setLogRecordFactory(sensitive_record_factory)
+        _SENSITIVE_RECORD_FACTORY_INSTALLED = True
+    for name in ("lark_oapi", "lark_oapi.ws", "server.feishu_ws", __name__):
+        logger = logging.getLogger(name)
+        if not any(isinstance(item, SensitiveLogFilter) for item in logger.filters):
+            logger.addFilter(SensitiveLogFilter())
 
 
 class FeishuLongConnection:
@@ -35,6 +71,7 @@ class FeishuLongConnection:
             raise RuntimeError("飞书长连接缺少 app_id 或 app_secret")
         if importlib.util.find_spec("lark_oapi") is None:
             raise RuntimeError("飞书长连接需要安装 lark-oapi，请重新执行 pip install -r requirements-server.txt")
+        install_sensitive_log_filter()
         self.loop = loop
         self._stopping.clear()
         self.thread = threading.Thread(target=self._run, name="feishu-websocket", daemon=True)

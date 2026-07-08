@@ -58,12 +58,16 @@ class GitUpdater:
         branch: str = "",
         install_dependencies: bool = True,
         requirements_file: str = "requirements-server.txt",
+        build_frontend: bool = True,
+        frontend_dir: str = "frontend",
     ):
         self.repo_root = Path(repo_root)
         self.remote = remote or "origin"
         self.branch = branch
         self.install_dependencies = install_dependencies
         self.requirements_file = requirements_file
+        self.build_frontend = build_frontend
+        self.frontend_dir = frontend_dir
 
     async def _run(
         self,
@@ -238,7 +242,52 @@ class GitUpdater:
             "updateAvailable": bool(remote_sha and remote_sha != current_sha),
             "requirementsFile": self.requirements_file,
             "installDependencies": self.install_dependencies,
+            "buildFrontend": self.build_frontend,
         }
+
+    async def _changed_files(self, base: str, target: str) -> list[str]:
+        result = await self._git(["diff", "--name-only", base, target])
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+    def _frontend_change_plan(self, files: list[str]) -> tuple[bool, bool]:
+        prefix = self.frontend_dir.rstrip("/") + "/"
+        frontend_files = [
+            item for item in files
+            if item.startswith(prefix)
+            and not item.startswith(prefix + "dist/")
+            and not item.startswith(prefix + "node_modules/")
+        ]
+        if not frontend_files:
+            return False, False
+        dependency_files = {prefix + "package.json", prefix + "package-lock.json", prefix + "npm-shrinkwrap.json"}
+        install = any(item in dependency_files for item in frontend_files)
+        return True, install
+
+    async def _run_npm(
+        self,
+        args: list[str],
+        *,
+        timeout: float,
+        progress: ProgressCallback | None,
+        stage: str,
+        start_percent: int,
+        end_percent: int,
+        detail: str,
+    ) -> GitCommandResult:
+        try:
+            return await self._run_stream(
+                ["npm", "--prefix", self.frontend_dir, *args],
+                timeout=timeout,
+                progress=progress,
+                stage=stage,
+                start_percent=start_percent,
+                end_percent=end_percent,
+                detail=detail,
+            )
+        except UpdateError as exc:
+            if "命令不存在：npm" in str(exc):
+                raise UpdateError("缺少 npm/Node.js，无法构建新版前端。请安装 Node.js/npm，或临时关闭 updater.build_frontend 后人工构建。") from exc
+            raise
 
     async def apply_update(self, progress: ProgressCallback | None = None) -> dict[str, Any]:
         if progress:
@@ -272,6 +321,8 @@ class GitUpdater:
         ancestor = await self._git(["merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"], check=False)
         if ancestor.returncode != 0:
             raise UpdateError("当前部署不能快进到远端 commit，已拒绝自动合并。请人工检查是否存在分叉。")
+        changed_files = await self._changed_files("HEAD", "FETCH_HEAD")
+        frontend_changed, frontend_dependencies_changed = self._frontend_change_plan(changed_files)
 
         await self._run_stream(
             ["git", "merge", "--ff-only", "--no-stat", "FETCH_HEAD"],
@@ -297,8 +348,36 @@ class GitUpdater:
             )
             steps.append(f"依赖已按 {self.requirements_file} 更新。")
 
+        if self.build_frontend and frontend_changed:
+            lockfile = self.repo_root / self.frontend_dir / "package-lock.json"
+            if frontend_dependencies_changed:
+                if not lockfile.exists():
+                    raise UpdateError(f"{self.frontend_dir}/package-lock.json 不存在，无法执行 npm ci。请提交 lockfile 或关闭自动前端构建。")
+                await self._run_npm(
+                    ["ci"],
+                    timeout=240,
+                    progress=progress,
+                    stage="frontend-dependencies",
+                    start_percent=92,
+                    end_percent=95,
+                    detail="检测到前端依赖声明变化，正在执行 npm ci……",
+                )
+                steps.append("前端依赖已通过 npm ci 更新。")
+            await self._run_npm(
+                ["run", "build"],
+                timeout=240,
+                progress=progress,
+                stage="frontend-build",
+                start_percent=95,
+                end_percent=98,
+                detail="检测到前端代码变化，正在构建新版 WebUI……",
+            )
+            steps.append("新版前端已构建到 frontend/dist。")
+        elif frontend_changed:
+            steps.append("检测到前端变化，但 updater.build_frontend 已关闭，已跳过自动构建。")
+
         if progress:
-            progress({"stage": "finalize", "percent": 96, "detail": "正在读取升级后的版本状态……"})
+            progress({"stage": "finalize", "percent": 99, "detail": "正在读取升级后的版本状态……"})
         after = await self.status()
         return {
             "ok": True,
