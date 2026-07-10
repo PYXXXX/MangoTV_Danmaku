@@ -22,6 +22,7 @@ import {
   MagnifyingGlass,
   MonitorPlay,
   PaperPlaneTilt,
+  PencilSimple,
   Play,
   Pulse,
   Robot,
@@ -634,6 +635,7 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
     url: ""
   });
   const [renameValue, setRenameValue] = useState("");
+  const [pendingRename, setPendingRename] = useState<null | { roundId: string; originalName: string }>(null);
   const [selectedRecordingId, setSelectedRecordingId] = useState(recordingRounds.find((item) => item.recording?.status === "recording")?.id || recordingRounds[0]?.id || "");
   const [markerForm, setMarkerForm] = useState({ label: "", atSeconds: 0 });
   const [clipForm, setClipForm] = useState({ label: "", startSeconds: 0, endSeconds: 0 });
@@ -713,8 +715,13 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
   });
   const renameRound = useMutation({
-    mutationFn: () => apiPatch("/api/rounds/" + encodeURIComponent(activeRound?.id || ""), { name: renameValue }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
+    mutationFn: ({ roundId, name }: { roundId: string; name: string }) => apiPatch("/api/rounds/" + encodeURIComponent(roundId), { name }),
+    onSuccess: (_data, variables) => {
+      setSelectedRoundId(variables.roundId);
+      setPendingRename(null);
+      setRenameValue("");
+      queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] });
+    }
   });
   const deleteRound = useMutation({
     mutationFn: ({ publish }: { publish: boolean }) => apiDelete(`/api/rounds/${encodeURIComponent(activeRound?.id || "")}?publish=${publish ? "1" : "0"}`),
@@ -767,6 +774,17 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
     if (!activeRound) return;
     setDeleteSyncPublic(true);
     setPendingDelete({ kind: "round", label: roundName(activeRound) });
+  };
+  const openRenameRound = (round: RoundSession) => {
+    const currentName = roundName(round);
+    setSelectedRoundId(round.id);
+    setRenameValue(currentName);
+    setPendingRename({ roundId: round.id, originalName: currentName });
+  };
+  const confirmRename = () => {
+    const name = renameValue.trim();
+    if (!pendingRename || !name || renameRound.isPending) return;
+    renameRound.mutate({ roundId: pendingRename.roundId, name });
   };
   const deleteCurrentActivity = () => {
     const activity = activeRound?.activity || roundForm.activity || defaultActivity;
@@ -984,10 +1002,13 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
                     <td className="px-4 py-3"><RoundStatusPill round={round} /></td>
                     <td className="px-4 py-3 font-mono text-slate-200">{formatCount(round.messageCount)}</td>
                     <td className="px-4 py-3">
-                      <div className="flex justify-end gap-2">
+                      <div className="flex flex-wrap justify-end gap-2">
                         <a className="ops-mini-button" href={`/api/rounds/${encodeURIComponent(round.id)}/result.png?result=${round.results?.precise ? "precise" : "rough"}`}>导出 PNG</a>
                         <a className="ops-mini-button" href={`/api/rounds/${encodeURIComponent(round.id)}.jsonl`}>导出弹幕</a>
-                        <button type="button" className="ops-mini-button" onClick={() => setSelectedRoundId(round.id)}>更多</button>
+                        <button type="button" className="ops-mini-button" onClick={() => openRenameRound(round)}>
+                          <PencilSimple size={14} />
+                          重命名
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -1005,6 +1026,10 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
             <div className="flex flex-wrap gap-2">
               <input className="max-w-56 rounded-xl border border-white/10 bg-black/25 px-3 py-2 text-xs text-slate-100" type="file" accept=".json,.xml,application/json,text/xml,application/xml" onChange={(event) => setPreciseFile(event.target.files?.[0] || null)} />
               <button type="button" className="ops-mini-button border-red-300/25 text-red-100" disabled={!activeRound || activeRound.status === "running" || !preciseFile || uploadPrecise.isPending} onClick={() => uploadPrecise.mutate()}>上传精确结果</button>
+              <button type="button" className="ops-mini-button border-blue-300/25 text-blue-100" disabled={!activeRound || renameRound.isPending} onClick={() => activeRound && openRenameRound(activeRound)}>
+                <PencilSimple size={14} />
+                重命名场次
+              </button>
               <button type="button" className="ops-mini-button border-red-300/25 text-red-100" disabled={!activeRound || activeRound.status === "running" || deleteRound.isPending} onClick={deleteCurrentRound}>删除场次</button>
             </div>
           </div>
@@ -1236,6 +1261,38 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
 
       {operationError && (
         <Notice tone="red">{String((operationError as Error).message || operationError)}</Notice>
+      )}
+      {pendingRename && (
+        <div className="fixed inset-0 z-[80] grid place-items-center bg-black/70 p-4 backdrop-blur-sm" onMouseDown={() => setPendingRename(null)}>
+          <div className="w-full max-w-2xl min-w-0 rounded-3xl border border-blue-300/30 bg-[#101d2f] p-5 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="rename-round-title" onMouseDown={(event) => event.stopPropagation()}>
+            <strong id="rename-round-title" className="block text-lg text-blue-100">重命名场次</strong>
+            <p className="mt-2 min-w-0 text-xs leading-6 text-blue-100/70 [overflow-wrap:anywhere]">
+              当前名称：{pendingRename.originalName}。保存后，场次列表、公开页、飞书同步和新导出的 PNG 将统一使用新名称。
+            </p>
+            <label className="mt-4 block min-w-0">
+              <span className="mb-2 block text-xs font-bold text-blue-100/75">新的场次名称</span>
+              <input
+                className="ops-input min-h-12"
+                value={renameValue}
+                maxLength={100}
+                autoFocus
+                onChange={(event) => setRenameValue(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") confirmRename();
+                  if (event.key === "Escape") setPendingRename(null);
+                }}
+                placeholder="输入新的场次名称"
+              />
+              <span className="mt-1 block text-right font-mono text-[11px] text-blue-100/55">{renameValue.length}/100</span>
+            </label>
+            <div className="mt-4 flex flex-wrap justify-end gap-2 max-sm:grid max-sm:grid-cols-2">
+              <button type="button" className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-xs font-black text-slate-200" onClick={() => setPendingRename(null)}>取消</button>
+              <button type="button" className="rounded-xl bg-blue-500 px-4 py-3 text-xs font-black text-white disabled:opacity-50" disabled={!renameValue.trim() || renameRound.isPending} onClick={confirmRename}>
+                {renameRound.isPending ? "正在保存…" : "保存新名称"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       {pendingDelete && (
         <div className="min-w-0 rounded-3xl border border-red-300/35 bg-[#2a0f0f] p-5">

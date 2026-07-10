@@ -644,6 +644,11 @@ class SettingsApiHttpTest(SettingsHttpBase):
         renamed = await response.json()
         self.assertEqual(renamed["name"], "选歌环节")
 
+        response = await self.client.patch(f"/api/rounds/{meta.id}", json={"name": "  "})
+        self.assertEqual(response.status, 400)
+        invalid_rename = await response.json()
+        self.assertEqual(invalid_rename["error"], "场次名称不能为空")
+
         response = await self.client.get(f"/api/rounds/{meta.id}/results")
         self.assertEqual(response.status, 200)
         results = await response.json()

@@ -5440,8 +5440,15 @@ def create_app(service: VoteService) -> web.Application:
     async def patch_round(request: web.Request) -> web.Response:
         round_id = request.match_info["round_id"]
         data = await request.json()
+        name = normalize_round_name(str(data.get("name") or ""))
+        if not name:
+            return web.json_response(
+                {"error": "场次名称不能为空"},
+                status=400,
+                dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            )
         try:
-            meta = await service.store.rename_round(round_id, str(data.get("name") or ""))
+            meta = await service.store.rename_round(round_id, name)
         except KeyError as exc:
             return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
         await service.publisher.publish(force=True, result_kind="rough")
