@@ -103,6 +103,16 @@ class WebuiSettingsJsTest(unittest.TestCase):
         self.assertIn('recordingRound.status !== "running"', source)
         self.assertIn("正在结束…", source)
 
+    def test_round_name_inputs_allow_one_hundred_characters(self):
+        source = (ROOT / "frontend" / "src" / "apps" / "admin" / "AdminApp.tsx").read_text(encoding="utf-8")
+        legacy_html = (ROOT / "server" / "webui" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("maxLength={100}", source)
+        self.assertIn("{roundForm.name.length}/100", source)
+        self.assertIn('id="roundName" type="text" maxlength="100"', legacy_html)
+        self.assertIn('id="renameInput" type="text" maxlength="100"', legacy_html)
+        self.assertIn('id="postRoundName" type="text" maxlength="100"', legacy_html)
+
     def test_settings_js_keeps_recording_config_fields(self):
         html = (ROOT / "server" / "webui" / "index.html").read_text(encoding="utf-8")
         source = (ROOT / "server" / "webui" / "settings.js").read_text(encoding="utf-8")

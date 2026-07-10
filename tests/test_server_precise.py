@@ -14,6 +14,31 @@ except ModuleNotFoundError:
 
 @unittest.skipIf(VoteService is None, "aiohttp 未安装，跳过服务端集成测试")
 class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
+    async def test_round_names_accept_up_to_one_hundred_characters(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "mgtv": {"dedup_db_path": str(Path(temp) / "fingerprints.sqlite3")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {"enabled": False},
+            }
+            service = VoteService(config)
+            try:
+                original = "场" * 120
+                meta = await service.store.create_round("歌手 2026", original, "", service.default_candidates, "all")
+                self.assertEqual(meta.name, original[:100])
+
+                renamed = await service.store.rename_round(meta.id, "轮" * 120)
+                self.assertEqual(renamed.name, "轮" * 100)
+            finally:
+                service.collector.fingerprints.close()
+                service.recording_collector.fingerprints.close()
+
     async def test_upload_sets_precise_as_public_default(self):
         with tempfile.TemporaryDirectory() as temp:
             config = {

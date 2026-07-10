@@ -938,9 +938,9 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
                 value={roundForm.name}
                 onChange={(event) => setRoundForm({ ...roundForm, name: event.target.value })}
                 placeholder={`例如：第 ${realtimeRounds.length + 1} 轮 选歌`}
-                maxLength={20}
+                maxLength={100}
               />
-              <span className="justify-self-end font-mono text-xs text-ops-subtle">{roundForm.name.length}/20</span>
+              <span className="justify-self-end font-mono text-xs text-ops-subtle">{roundForm.name.length}/100</span>
             </Field>
             <div className="grid gap-3">
               <button type="button" className="orange-glow inline-flex min-h-[3.25rem] items-center justify-center gap-2 rounded-2xl bg-ops-orange px-5 text-sm font-black text-[#1b0d03] transition hover:brightness-110 disabled:opacity-60" onClick={() => startRound.mutate()} disabled={startRound.isPending}>
@@ -1086,7 +1086,7 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
           </div>
           <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_auto_auto] gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
             <Field label="录制名称">
-              <input className="ops-input" value={recordingForm.name} onChange={(event) => setRecordingForm({ ...recordingForm, name: event.target.value })} placeholder={`${recordingForm.activity || "直播"} 全程录制`} />
+              <input className="ops-input" value={recordingForm.name} maxLength={100} onChange={(event) => setRecordingForm({ ...recordingForm, name: event.target.value })} placeholder={`${recordingForm.activity || "直播"} 全程录制`} />
             </Field>
             <Field label="官方活动页或直播 URL">
               <input className="ops-input" value={recordingForm.url} onChange={(event) => setRecordingForm({ ...recordingForm, url: event.target.value })} placeholder="留空使用活动监控/系统配置链接" />

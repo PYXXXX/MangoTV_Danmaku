@@ -172,6 +172,13 @@ def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+ROUND_NAME_MAX_LENGTH = 100
+
+
+def normalize_round_name(text: str) -> str:
+    return normalize(text)[:ROUND_NAME_MAX_LENGTH]
+
+
 def safe_id() -> str:
     return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
 
@@ -523,7 +530,7 @@ class StateStore:
     ) -> RoundMeta:
         async with self.lock:
             round_id = safe_id()
-            base_name = normalize(name) or f"第 {len(self.round_order) + 1} 轮"
+            base_name = normalize_round_name(name) or f"第 {len(self.round_order) + 1} 轮"
             started_at = started_at or now_iso()
             round_kind = normalize(kind) or "realtime"
             round_visibility = "private" if normalize(visibility) == "private" else "public"
@@ -584,7 +591,7 @@ class StateStore:
     ) -> RoundMeta:
         async with self.lock:
             round_id = safe_id()
-            base_name = normalize(name) or f"片段分析 {len(self.round_order) + 1}"
+            base_name = normalize_round_name(name) or f"片段分析 {len(self.round_order) + 1}"
             created_at = now_iso()
             seq_values = [int(item.get("seq") or 0) for item in records if int(item.get("seq") or 0) > 0]
             meta = RoundMeta(
@@ -642,7 +649,7 @@ class StateStore:
     async def rename_round(self, round_id: str, name: str) -> RoundMeta:
         async with self.lock:
             meta = self.require_round(round_id)
-            meta.baseName = normalize(name) or meta.baseName
+            meta.baseName = normalize_round_name(name) or meta.baseName
             meta.name = meta.baseName
             if meta.preciseResult:
                 meta.preciseResult["sessionName"] = meta.name

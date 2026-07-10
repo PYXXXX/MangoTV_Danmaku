@@ -136,7 +136,7 @@
                     <label for="activityName">活动名称</label>
                     <input id="activityName" type="text" placeholder="例如：歌手 2026" />
                     <label for="roundName">场次名称</label>
-                    <input id="roundName" type="text" placeholder="例如：第一轮 · 在线观众选择" />
+                    <input id="roundName" type="text" maxlength="100" placeholder="例如：第一轮 · 在线观众选择" />
                     <label for="liveUrl">直播 URL（可选）</label>
                     <input id="liveUrl" type="url" placeholder="默认使用活动监控中的链接" />
                     <button class="primary" type="submit">开始新一轮</button>
@@ -149,7 +149,7 @@
                     </div>
                     <label for="renameInput">重命名所选场次</label>
                     <div class="inline-row">
-                      <input id="renameInput" type="text" placeholder="输入新名称" />
+                      <input id="renameInput" type="text" maxlength="100" placeholder="输入新名称" />
                       <button id="rename" class="secondary" type="button">重命名</button>
                     </div>
                     <div class="button-row lower">
@@ -179,7 +179,7 @@
                     <label for="postActivityName">活动名称</label>
                     <input id="postActivityName" type="text" placeholder="默认使用活动监控中的活动名称" />
                     <label for="postRoundName">全程场次名称</label>
-                    <input id="postRoundName" type="text" placeholder="例如：歌手 2026 全程录制" />
+                    <input id="postRoundName" type="text" maxlength="100" placeholder="例如：歌手 2026 全程录制" />
                     <label for="postLiveUrl">官方活动页或直播 URL</label>
                     <input id="postLiveUrl" type="url" placeholder="例如：https://www.mgtv.com/z/1001668.html?..." />
                     <label class="switch-line"><input id="postRecordVideo" type="checkbox" checked /> 录制视频</label>
