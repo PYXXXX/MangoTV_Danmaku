@@ -1,8 +1,121 @@
 {
   "schemaVersion": 1,
-  "publishedAt": "2026-07-10T13:37:22.610Z",
-  "activeSessionId": "20260710-202935-8dbe70",
+  "publishedAt": "2026-07-10T13:41:58.306Z",
+  "activeSessionId": "20260710-213820-775eea",
   "sessions": [
+    {
+      "id": "20260710-213820-775eea",
+      "activity": "歌手 2026",
+      "baseName": "安全区|艾略特 VS 胡彦斌 VS 尤长靖 VS 刘惜君",
+      "name": "安全区|艾略特 VS 胡彦斌 VS 尤长靖 VS 刘惜君",
+      "displayName": "安全区|艾略特 VS 胡彦斌 VS 尤长靖 VS 刘惜君",
+      "kind": "realtime",
+      "visibility": "public",
+      "sourceRoundId": "",
+      "timeRange": "2026/07/10 21:38:20 起",
+      "compactTimeRange": "",
+      "status": "running",
+      "startedAt": "2026-07-10T13:38:20.267Z",
+      "updatedAt": "2026-07-10T13:41:53.156Z",
+      "stoppedAt": null,
+      "pageTitle": "",
+      "candidates": [
+        {
+          "id": "c1",
+          "name": "尤长靖",
+          "aliases": [
+            "尤长靖",
+            "尤尤",
+            "长靖",
+            "有长进"
+          ]
+        },
+        {
+          "id": "c2",
+          "name": "胡彦斌",
+          "aliases": [
+            "胡彦斌",
+            "彦斌",
+            "斌斌"
+          ]
+        },
+        {
+          "id": "c3",
+          "name": "刘惜君",
+          "aliases": [
+            "刘惜君",
+            "惜君"
+          ]
+        },
+        {
+          "id": "c4",
+          "name": "万妮达",
+          "aliases": [
+            "万妮达",
+            "妮达",
+            "尼达"
+          ]
+        },
+        {
+          "id": "c5",
+          "name": "艾略特",
+          "aliases": [
+            "艾略特",
+            "小艾"
+          ]
+        },
+        {
+          "id": "c6",
+          "name": "窦靖童",
+          "aliases": [
+            "窦靖童",
+            "童童"
+          ]
+        },
+        {
+          "id": "c7",
+          "name": "齐豫",
+          "aliases": [
+            "齐豫",
+            "齐姐"
+          ]
+        }
+      ],
+      "messageCount": 291,
+      "reviewCount": 4,
+      "voteCounts": {
+        "c1": 46,
+        "c2": 25,
+        "c3": 57,
+        "c4": 4,
+        "c5": 6,
+        "c6": 53,
+        "c7": 26
+      },
+      "defaultResultType": "rough",
+      "results": {
+        "rough": {
+          "resultType": "rough",
+          "voteCounts": {
+            "c1": 46,
+            "c2": 25,
+            "c3": 57,
+            "c4": 4,
+            "c5": 6,
+            "c6": 53,
+            "c7": 26
+          },
+          "messageCount": 291,
+          "reviewCount": 4,
+          "generatedAt": "2026-07-10T13:41:53.156Z"
+        },
+        "precise": null
+      },
+      "sliceStartSeq": 6426,
+      "sliceEndSeq": null,
+      "sliceStartTime": "2026-07-10T13:38:20.267Z",
+      "sliceEndTime": null
+    },
     {
       "id": "20260710-202935-8dbe70",
       "activity": "歌手 2026",
