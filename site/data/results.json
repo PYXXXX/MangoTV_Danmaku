@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "publishedAt": "2026-07-10T12:41:12.286Z",
+  "publishedAt": "2026-07-10T13:04:21.817Z",
   "activeSessionId": "20260710-202935-8dbe70",
   "sessions": [
     {
@@ -16,7 +16,7 @@
       "compactTimeRange": "20260710 20:29:35-20260710 20:41:11",
       "status": "stopped",
       "startedAt": "2026-07-10T12:29:35.538Z",
-      "updatedAt": "2026-07-10T12:41:11.865Z",
+      "updatedAt": "2026-07-10T13:04:21.294Z",
       "stoppedAt": "2026-07-10T12:41:11.865Z",
       "pageTitle": "",
       "candidates": [
@@ -87,7 +87,7 @@
         "c6": 75,
         "c7": 92
       },
-      "defaultResultType": "rough",
+      "defaultResultType": "precise",
       "results": {
         "rough": {
           "resultType": "rough",
@@ -102,9 +102,38 @@
           },
           "messageCount": 701,
           "reviewCount": 22,
-          "generatedAt": "2026-07-10T12:41:11.865Z"
+          "generatedAt": "2026-07-10T13:04:21.294Z"
         },
-        "precise": null
+        "precise": {
+          "schemaVersion": 1,
+          "resultType": "precise",
+          "sessionId": "20260710-202935-8dbe70",
+          "activity": "歌手 2026",
+          "sessionName": "危险区|万妮达 VS 窦靖童 VS 齐豫",
+          "generatedAt": "2026-07-10T12:52:07.284Z",
+          "voteCounts": {
+            "c4": 92,
+            "c7": 91,
+            "c6": 75,
+            "c3": 27,
+            "c1": 25,
+            "c2": 6,
+            "c5": 1
+          },
+          "audit": {
+            "inputMessages": 701,
+            "cleanMessages": 701,
+            "ruleAcceptedMessages": 270,
+            "semanticReviewedMessages": 27,
+            "unresolvedReviewMessages": 0,
+            "invalidDecisionLines": 0
+          },
+          "source": {
+            "format": "json",
+            "sha256": "62cbdcc04cf67a0f555d65a9ba2ee1268de063e2da4b70ad609e4c599b95067e"
+          },
+          "publishedAt": "2026-07-10T13:04:21.294Z"
+        }
       },
       "sliceStartSeq": 678,
       "sliceEndSeq": 2058,
