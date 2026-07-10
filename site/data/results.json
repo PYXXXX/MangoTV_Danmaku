@@ -1,6 +1,109 @@
 {
   "schemaVersion": 1,
-  "publishedAt": "2026-07-07T07:41:49.939Z",
-  "activeSessionId": null,
-  "sessions": []
+  "publishedAt": "2026-07-10T11:27:18.674Z",
+  "activeSessionId": "20260710-192640-e7fae7",
+  "sessions": [
+    {
+      "id": "20260710-192640-e7fae7",
+      "activity": "歌手 2026",
+      "baseName": "第 1 轮",
+      "name": "第 1 轮",
+      "displayName": "第 1 轮",
+      "kind": "realtime",
+      "visibility": "public",
+      "sourceRoundId": "",
+      "timeRange": "2026/07/10 19:26:40 - 19:27:18",
+      "compactTimeRange": "20260710 19:26:40-20260710 19:27:18",
+      "status": "stopped",
+      "startedAt": "2026-07-10T11:26:40.263Z",
+      "updatedAt": "2026-07-10T11:27:18.282Z",
+      "stoppedAt": "2026-07-10T11:27:18.282Z",
+      "pageTitle": "",
+      "candidates": [
+        {
+          "id": "c1",
+          "name": "尤长靖",
+          "aliases": [
+            "尤长靖"
+          ]
+        },
+        {
+          "id": "c2",
+          "name": "胡彦斌",
+          "aliases": [
+            "胡彦斌"
+          ]
+        },
+        {
+          "id": "c3",
+          "name": "刘惜君",
+          "aliases": [
+            "刘惜君"
+          ]
+        },
+        {
+          "id": "c4",
+          "name": "万妮达",
+          "aliases": [
+            "万妮达"
+          ]
+        },
+        {
+          "id": "c5",
+          "name": "艾略特",
+          "aliases": [
+            "艾略特"
+          ]
+        },
+        {
+          "id": "c6",
+          "name": "窦靖童",
+          "aliases": [
+            "窦靖童"
+          ]
+        },
+        {
+          "id": "c7",
+          "name": "齐豫",
+          "aliases": [
+            "齐豫"
+          ]
+        }
+      ],
+      "messageCount": 41,
+      "reviewCount": 0,
+      "voteCounts": {
+        "c1": 1,
+        "c2": 7,
+        "c3": 3,
+        "c4": 1,
+        "c5": 0,
+        "c6": 2,
+        "c7": 1
+      },
+      "defaultResultType": "rough",
+      "results": {
+        "rough": {
+          "resultType": "rough",
+          "voteCounts": {
+            "c1": 1,
+            "c2": 7,
+            "c3": 3,
+            "c4": 1,
+            "c5": 0,
+            "c6": 2,
+            "c7": 1
+          },
+          "messageCount": 41,
+          "reviewCount": 0,
+          "generatedAt": "2026-07-10T11:27:18.282Z"
+        },
+        "precise": null
+      },
+      "sliceStartSeq": 1,
+      "sliceEndSeq": 41,
+      "sliceStartTime": "2026-07-10T11:26:40.263Z",
+      "sliceEndTime": "2026-07-10T11:27:18.282Z"
+    }
+  ]
 }
