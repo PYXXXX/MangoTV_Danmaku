@@ -100,6 +100,7 @@ class WebuiSettingsJsTest(unittest.TestCase):
         self.assertIn("仅结束", source)
         self.assertIn("publish: false", source)
         self.assertIn("stopFullRecording.mutate(recordingRound.id)", source)
+        self.assertIn('recordingRound.status !== "running"', source)
         self.assertIn("正在结束…", source)
 
     def test_settings_js_keeps_recording_config_fields(self):

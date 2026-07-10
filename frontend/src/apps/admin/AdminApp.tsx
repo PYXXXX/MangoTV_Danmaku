@@ -854,7 +854,10 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
         };
   const activeQuality = recording?.status === "recording" ? "录制中" : sourceQuality || "待检测";
   const activePageUrl = activeRound?.pageUrl || roundForm.url || "等待识别";
-  const independentRecordingRunning = recordingRounds.some((round) => ["pending", "recording", "stopping", "stop_failed"].includes(round.recording?.status || ""));
+  const independentRecordingRunning = recordingRounds.some((round) => (
+    round.status === "running"
+    || ["pending", "recording", "stopping", "stop_failed"].includes(round.recording?.status || "")
+  ));
   return (
     <section className="ops-cockpit grid gap-4">
       <div className="grid grid-cols-[290px_minmax(0,1fr)_360px] gap-4 max-2xl:grid-cols-[300px_minmax(0,1fr)] max-xl:grid-cols-1">
@@ -1092,7 +1095,7 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
               <VideoCamera size={18} weight="fill" />
               开始录制
             </button>
-            <button type="button" className="self-end inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl border border-red-400/35 bg-red-400/15 px-5 text-sm font-black text-red-100 transition hover:bg-red-400/20 disabled:opacity-50" disabled={!recordingRound?.recording || !["recording", "stop_failed"].includes(recordingRound.recording.status) || stopFullRecording.isPending} onClick={() => recordingRound?.id && stopFullRecording.mutate(recordingRound.id)}>
+            <button type="button" className="self-end inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl border border-red-400/35 bg-red-400/15 px-5 text-sm font-black text-red-100 transition hover:bg-red-400/20 disabled:opacity-50" disabled={!recordingRound || recordingRound.status !== "running" || stopFullRecording.isPending} onClick={() => recordingRound?.id && stopFullRecording.mutate(recordingRound.id)}>
               <Stop size={18} weight="fill" />
               {stopFullRecording.isPending ? "正在结束…" : "结束录制"}
             </button>
