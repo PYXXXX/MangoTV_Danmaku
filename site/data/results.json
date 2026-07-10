@@ -1,6 +1,115 @@
 {
   "schemaVersion": 1,
-  "publishedAt": "2026-07-10T11:36:47.898Z",
-  "activeSessionId": null,
-  "sessions": []
+  "publishedAt": "2026-07-10T12:41:12.286Z",
+  "activeSessionId": "20260710-202935-8dbe70",
+  "sessions": [
+    {
+      "id": "20260710-202935-8dbe70",
+      "activity": "歌手 2026",
+      "baseName": "危险区|万妮达 VS 窦靖童 VS 齐豫",
+      "name": "危险区|万妮达 VS 窦靖童 VS 齐豫",
+      "displayName": "危险区|万妮达 VS 窦靖童 VS 齐豫",
+      "kind": "realtime",
+      "visibility": "public",
+      "sourceRoundId": "",
+      "timeRange": "2026/07/10 20:29:35 - 20:41:11",
+      "compactTimeRange": "20260710 20:29:35-20260710 20:41:11",
+      "status": "stopped",
+      "startedAt": "2026-07-10T12:29:35.538Z",
+      "updatedAt": "2026-07-10T12:41:11.865Z",
+      "stoppedAt": "2026-07-10T12:41:11.865Z",
+      "pageTitle": "",
+      "candidates": [
+        {
+          "id": "c1",
+          "name": "尤长靖",
+          "aliases": [
+            "尤长靖",
+            "尤尤"
+          ]
+        },
+        {
+          "id": "c2",
+          "name": "胡彦斌",
+          "aliases": [
+            "胡彦斌"
+          ]
+        },
+        {
+          "id": "c3",
+          "name": "刘惜君",
+          "aliases": [
+            "刘惜君",
+            "惜君"
+          ]
+        },
+        {
+          "id": "c4",
+          "name": "万妮达",
+          "aliases": [
+            "万妮达",
+            "妮达",
+            "尼达"
+          ]
+        },
+        {
+          "id": "c5",
+          "name": "艾略特",
+          "aliases": [
+            "艾略特"
+          ]
+        },
+        {
+          "id": "c6",
+          "name": "窦靖童",
+          "aliases": [
+            "窦靖童",
+            "童童"
+          ]
+        },
+        {
+          "id": "c7",
+          "name": "齐豫",
+          "aliases": [
+            "齐豫",
+            "齐姐"
+          ]
+        }
+      ],
+      "messageCount": 701,
+      "reviewCount": 22,
+      "voteCounts": {
+        "c1": 25,
+        "c2": 6,
+        "c3": 27,
+        "c4": 93,
+        "c5": 1,
+        "c6": 75,
+        "c7": 92
+      },
+      "defaultResultType": "rough",
+      "results": {
+        "rough": {
+          "resultType": "rough",
+          "voteCounts": {
+            "c1": 25,
+            "c2": 6,
+            "c3": 27,
+            "c4": 93,
+            "c5": 1,
+            "c6": 75,
+            "c7": 92
+          },
+          "messageCount": 701,
+          "reviewCount": 22,
+          "generatedAt": "2026-07-10T12:41:11.865Z"
+        },
+        "precise": null
+      },
+      "sliceStartSeq": 678,
+      "sliceEndSeq": 2058,
+      "sliceStartTime": "2026-07-10T12:29:35.538Z",
+      "sliceEndTime": "2026-07-10T12:41:11.865Z"
+    }
+  ]
 }
