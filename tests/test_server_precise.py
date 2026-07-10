@@ -751,6 +751,8 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
             service = VoteService(config)
             try:
                 realtime = await service.store.create_round("歌手 2026", "实时第一轮", config["mgtv"]["url"], service.default_candidates, "all")
+                with self.assertRaisesRegex(ValueError, "实时运营"):
+                    await service.stop_independent_recording(realtime.id)
 
                 async def fake_resolve(url, *, persist=False):
                     return {"ok": True, "pageUrl": url, "cameraId": "5366", "activityId": "1001668"}
@@ -833,6 +835,84 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 service.collector.fingerprints.close()
 
+    async def test_recording_manager_stop_terminates_process_and_persists_finished_status(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "recording": {
+                    "enabled": True,
+                    "directory": str(Path(temp) / "recordings"),
+                    "auto_split_enabled": False,
+                    "stop_grace_seconds": 0.1,
+                },
+                "mgtv": {"dedup_db_path": str(Path(temp) / "fingerprints.sqlite3")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {"enabled": False},
+            }
+            service = VoteService(config)
+            process = None
+            try:
+                meta = await service.store.create_round(
+                    "歌手 2026",
+                    "全程录制",
+                    "https://www.mgtv.com/z/1001668/5366.html",
+                    service.default_candidates,
+                    "all",
+                    activate=False,
+                    kind="recording",
+                    visibility="private",
+                )
+                video_path = service.recorder.round_dir(meta.id) / "recording.mp4"
+                video_path.write_bytes(b"complete-video")
+                process = await asyncio.create_subprocess_exec(
+                    "/bin/sh",
+                    "-c",
+                    "trap 'exit 0' INT TERM; while :; do sleep 1; done",
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
+                    start_new_session=True,
+                )
+                service.recorder.records[meta.id] = {
+                    "roundId": meta.id,
+                    "activity": meta.activity,
+                    "roundName": meta.name,
+                    "path": str(video_path),
+                    "status": "recording",
+                    "startedAt": meta.startedAt,
+                    "timelineOriginAt": meta.startedAt,
+                    "videoStartedAt": meta.startedAt,
+                    "endedAt": "",
+                    "error": "",
+                    "autoSplitSeconds": 0,
+                    "autoSplitStatus": "disabled",
+                    "markers": [],
+                    "clips": [],
+                }
+                service.recorder.processes[meta.id] = process
+                watch_task = asyncio.create_task(service.recorder._watch(meta.id, process))
+                service.recorder.watch_tasks[meta.id] = watch_task
+
+                stopped = await service.recorder.stop(meta.id)
+
+                self.assertIsNotNone(stopped)
+                self.assertEqual(stopped["status"], "finished")
+                self.assertIsNotNone(process.returncode)
+                self.assertNotIn(meta.id, service.recorder.processes)
+                self.assertTrue(stopped.get("stopRequestedAt"))
+                self.assertTrue(stopped.get("stopCompletedAt"))
+            finally:
+                if process is not None and process.returncode is None:
+                    process.kill()
+                    await process.wait()
+                service.collector.fingerprints.close()
+                service.recording_collector.fingerprints.close()
+
     async def test_recording_clip_exports_danmaku_and_creates_analysis_round(self):
         with tempfile.TemporaryDirectory() as temp:
             config = {
@@ -849,7 +929,14 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
             }
             service = VoteService(config)
             try:
-                meta = await service.store.create_round("歌手 2026", "全程录制", "", service.default_candidates, "all")
+                meta = await service.store.create_round(
+                    "歌手 2026",
+                    "全程录制",
+                    "",
+                    service.default_candidates,
+                    "all",
+                    started_at="2026-07-05T01:00:00Z",
+                )
                 for seconds, content in [(5, "片段前"), (15, "甲中间"), (25, "片段后")]:
                     await service.store.append_message(
                         meta.id,
@@ -888,6 +975,15 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                     "path": str(Path(temp) / "recordings" / meta.id / "recording.mp4"),
                     "status": "finished",
                     "startedAt": "2026-07-05T01:00:00Z",
+                    "timelineOriginAt": "2026-07-05T01:00:00Z",
+                    "videoStartedAt": "2026-07-05T01:00:02Z",
+                    "alignment": {
+                        "version": 1,
+                        "clock": "server_utc",
+                        "timelineOriginAt": "2026-07-05T01:00:00Z",
+                        "videoStartedAt": "2026-07-05T01:00:02Z",
+                        "method": "wall_clock_capture",
+                    },
                     "endedAt": "2026-07-05T01:01:00Z",
                     "error": "",
                     "markers": [],
@@ -904,11 +1000,14 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
 
                 exported, filename = service.export_recording_clip_danmaku(meta.id, "clip-1")
                 self.assertIn("clip-1", filename)
+                self.assertIn('"clipTimelineOriginAt":"2026-07-05T01:00:02Z"', exported)
+                self.assertIn('"captureOffsetSeconds":15.0', exported)
                 self.assertIn("甲中间", exported)
                 self.assertNotIn("片段前", exported)
                 self.assertNotIn("片段后", exported)
                 raw_exported, _ = service.export_recording_clip_danmaku(meta.id, "clip-1", raw=True)
                 self.assertIn('"rawTrack":"observed_api_items"', raw_exported)
+                self.assertIn('"captureOffsetSeconds":15.0', raw_exported)
                 self.assertIn("甲中间", raw_exported)
                 self.assertNotIn("片段后", raw_exported)
 

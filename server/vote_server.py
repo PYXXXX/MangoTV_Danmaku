@@ -519,11 +519,12 @@ class StateStore:
         activate: bool = True,
         kind: str = "realtime",
         visibility: str = "public",
+        started_at: str | None = None,
     ) -> RoundMeta:
         async with self.lock:
             round_id = safe_id()
             base_name = normalize(name) or f"第 {len(self.round_order) + 1} 轮"
-            started_at = now_iso()
+            started_at = started_at or now_iso()
             round_kind = normalize(kind) or "realtime"
             round_visibility = "private" if normalize(visibility) == "private" else "public"
             meta = RoundMeta(
@@ -754,6 +755,13 @@ class StateStore:
                 for candidate_id in message.votes:
                     meta.voteCounts[candidate_id] = meta.voteCounts.get(candidate_id, 0) + 1
                 record = {"type": "message", "seq": seq, "roundId": round_id, **asdict(message)}
+                try:
+                    record["captureOffsetSeconds"] = round(
+                        (parse_iso(message.ts) - parse_iso(meta.startedAt)).total_seconds(),
+                        3,
+                    )
+                except ValueError:
+                    pass
                 lines.append(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
             payload = "\n".join(lines) + "\n"
             meta.updatedAt = now_iso()
@@ -798,7 +806,14 @@ class StateStore:
         if not items:
             return
         async with self.lock:
-            self.require_round(round_id)
+            meta = self.require_round(round_id)
+            try:
+                capture_offset = round(
+                    (parse_iso(observed_at) - parse_iso(meta.startedAt)).total_seconds(),
+                    3,
+                )
+            except ValueError:
+                capture_offset = None
             lines = []
             for index, item in enumerate(items):
                 record = {
@@ -811,6 +826,8 @@ class StateStore:
                     "url": url,
                     "raw": item,
                 }
+                if capture_offset is not None:
+                    record["captureOffsetSeconds"] = capture_offset
                 lines.append(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
             await asyncio.to_thread(
                 self._append_payload,
@@ -1107,15 +1124,21 @@ class MgtvCollector:
         self.task = asyncio.create_task(self._run_forever(), name=f"mgtv-collector-{round_id}")
 
     async def stop(self) -> None:
-        if not self.task:
+        task = self.task
+        if not task:
             return
         self.stop_event.set()
         try:
-            await asyncio.wait_for(self.task, timeout=10)
+            await asyncio.wait_for(task, timeout=10)
         except asyncio.TimeoutError:
-            self.task.cancel()
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         finally:
-            self.task = None
+            if self.task is task:
+                self.task = None
 
     def fingerprint(self, raw: dict[str, Any]) -> str:
         message_id = raw.get("message_id") or raw.get("messageId") or raw.get("msg_id") or raw.get("mid") or raw.get("id")
@@ -1350,6 +1373,8 @@ class RecordingManager:
         self.config = config or {}
         self.records: dict[str, dict[str, Any]] = {}
         self.processes: dict[str, asyncio.subprocess.Process] = {}
+        self.watch_tasks: dict[str, asyncio.Task[None]] = {}
+        self.stop_locks: dict[str, asyncio.Lock] = {}
         self.directory = self._desired_directory(self.config)
         self.meta_path = self.directory / "recordings.json"
         self._switch_directory(self.directory)
@@ -1408,7 +1433,7 @@ class RecordingManager:
             return
         self.records = {item.get("roundId", ""): item for item in raw.get("recordings", []) if item.get("roundId")}
         for item in self.records.values():
-            if item.get("status") == "recording":
+            if item.get("status") in {"pending", "recording", "stopping", "stop_failed"}:
                 item["status"] = "interrupted"
                 item["endedAt"] = item.get("endedAt") or now_iso()
         self.save()
@@ -1472,6 +1497,10 @@ class RecordingManager:
         if self.can_post_process(record):
             return "录制完成，可打标与切片"
         status = str(record.get("status") or "")
+        if status == "stopping":
+            return "正在结束录制并封装完整视频，请稍候"
+        if status == "stop_failed":
+            return "结束录制失败，录制进程可能仍在运行，请重试并检查系统日志"
         if status == "recording":
             return "正在录制中，完整视频封装完成后才能打标与手动切片"
         if status in {"pending"}:
@@ -1500,7 +1529,18 @@ class RecordingManager:
             "sourceUrl": source,
             "path": str(output),
             "status": "pending",
-            "startedAt": now_iso(),
+            "startedAt": meta.startedAt,
+            "timelineOriginAt": meta.startedAt,
+            "videoStartedAt": "",
+            "danmakuStartedAt": "",
+            "alignment": {
+                "version": 1,
+                "clock": "server_utc",
+                "timelineOriginAt": meta.startedAt,
+                "videoStartedAt": "",
+                "danmakuStartedAt": "",
+                "method": "wall_clock_capture",
+            },
             "endedAt": "",
             "error": "",
             "autoSplitSeconds": self.auto_split_seconds(),
@@ -1545,6 +1585,7 @@ class RecordingManager:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=os.name != "nt",
             )
         except OSError as exc:
             record["status"] = "failed"
@@ -1553,53 +1594,133 @@ class RecordingManager:
             self.save()
             return record
         self.processes[meta.id] = process
+        video_started_at = now_iso()
         record["status"] = "recording"
         record["pid"] = process.pid
+        record["videoStartedAt"] = video_started_at
+        record["alignment"]["videoStartedAt"] = video_started_at
+        record["alignment"]["videoStartOffsetSeconds"] = round(
+            (parse_iso(video_started_at) - parse_iso(meta.startedAt)).total_seconds(),
+            3,
+        )
         self.save()
-        asyncio.create_task(self._watch(meta.id, process), name=f"recording-watch-{meta.id}")
+        watch_task = asyncio.create_task(self._watch(meta.id, process), name=f"recording-watch-{meta.id}")
+        self.watch_tasks[meta.id] = watch_task
         return record
 
     async def _watch(self, round_id: str, process: asyncio.subprocess.Process) -> None:
-        _, stderr = await process.communicate()
-        if self.processes.get(round_id) is process:
-            self.processes.pop(round_id, None)
+        stderr = b""
+        communicate_error = ""
+        try:
+            _, stderr = await process.communicate()
+        except Exception as exc:  # noqa: BLE001 - status must still be persisted
+            communicate_error = str(exc)
+        finally:
+            if self.processes.get(round_id) is process:
+                self.processes.pop(round_id, None)
+            if self.watch_tasks.get(round_id) is asyncio.current_task():
+                self.watch_tasks.pop(round_id, None)
         record = self.records.get(round_id)
         if not record:
             return
-        if record.get("status") == "recording":
-            record["status"] = "finished" if process.returncode == 0 else "failed"
-            record["endedAt"] = record.get("endedAt") or now_iso()
-            if process.returncode not in (0, None):
-                record["error"] = (stderr or b"").decode("utf-8", errors="replace")[-1200:]
-            self.save()
-            if record["status"] == "finished":
-                await self.finalize_recording(round_id)
+        if record.get("status") not in {"pending", "recording", "stopping", "stop_failed"}:
+            return
+        output = Path(str(record.get("path") or ""))
+        try:
+            output_ready = output.is_file() and output.stat().st_size > 0
+        except OSError:
+            output_ready = False
+        operator_stop = bool(record.get("stopRequestedAt"))
+        completed = output_ready and (
+            process.returncode == 0
+            or (operator_stop and record.get("stopSignal") != "SIGKILL")
+        )
+        record["status"] = "finished" if completed else "failed"
+        record["endedAt"] = record.get("endedAt") or now_iso()
+        record["stopCompletedAt"] = now_iso() if operator_stop else ""
+        record["returnCode"] = process.returncode
+        if not completed:
+            detail = communicate_error or (stderr or b"").decode("utf-8", errors="replace")[-1200:]
+            record["error"] = detail or "ffmpeg 已退出但未生成可用的完整视频文件"
+        elif operator_stop:
+            record["error"] = ""
+        self.save()
+        if record["status"] == "finished":
+            asyncio.create_task(self.finalize_recording(round_id), name=f"recording-finalize-{round_id}")
+
+    async def _wait_for_watch(self, round_id: str, timeout: float) -> bool:
+        task = self.watch_tasks.get(round_id)
+        if task is None:
+            process = self.processes.get(round_id)
+            return process is None or process.returncode is not None
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=max(0.05, timeout))
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    @staticmethod
+    def _signal_process(process: asyncio.subprocess.Process, sig: signal.Signals) -> None:
+        if process.returncode is not None:
+            return
+        try:
+            if os.name != "nt":
+                os.killpg(process.pid, sig)
+            else:
+                process.send_signal(sig)
+        except ProcessLookupError:
+            return
+        except OSError:
+            try:
+                process.send_signal(sig)
+            except ProcessLookupError:
+                pass
 
     async def stop(self, round_id: str) -> dict[str, Any] | None:
-        record = self.records.get(round_id)
-        process = self.processes.pop(round_id, None)
-        if process and process.returncode is None:
+        lock = self.stop_locks.setdefault(round_id, asyncio.Lock())
+        async with lock:
+            record = self.records.get(round_id)
+            process = self.processes.get(round_id)
+            if not record:
+                return None
+            if process is None or process.returncode is not None:
+                if record.get("status") in {"recording", "stopping", "pending"}:
+                    output = Path(str(record.get("path") or ""))
+                    record["status"] = "finished" if output.is_file() and output.stat().st_size > 0 else "interrupted"
+                    record["endedAt"] = record.get("endedAt") or now_iso()
+                    self.save()
+                return record
+
+            record["status"] = "stopping"
+            record["stopRequestedAt"] = now_iso()
+            self.save()
+
             if process.stdin:
                 try:
                     process.stdin.write(b"q")
                     await process.stdin.drain()
-                except (BrokenPipeError, ConnectionError):
+                except (BrokenPipeError, ConnectionError, RuntimeError):
                     pass
-            try:
-                await asyncio.wait_for(process.wait(), timeout=12)
-            except asyncio.TimeoutError:
-                process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    process.kill()
-        if record:
-            record["status"] = "finished" if Path(str(record.get("path") or "")).exists() else record.get("status", "stopped")
-            record["endedAt"] = record.get("endedAt") or now_iso()
-            self.save()
-            if record["status"] == "finished":
-                await self.finalize_recording(round_id)
-        return record
+
+            grace = max(0.1, float(self.config.get("stop_grace_seconds") or 0.75))
+            if not await self._wait_for_watch(round_id, grace):
+                record["stopSignal"] = "SIGINT"
+                self.save()
+                self._signal_process(process, signal.SIGINT)
+            if not await self._wait_for_watch(round_id, 5.0):
+                record["stopSignal"] = "SIGTERM"
+                self.save()
+                self._signal_process(process, signal.SIGTERM)
+            if not await self._wait_for_watch(round_id, 3.0):
+                record["stopSignal"] = "SIGKILL"
+                self.save()
+                self._signal_process(process, signal.SIGKILL)
+            if not await self._wait_for_watch(round_id, 3.0):
+                record["status"] = "stop_failed"
+                record["error"] = "无法确认 ffmpeg 录制进程已经退出"
+                self.save()
+                raise RuntimeError("无法停止 ffmpeg 录制进程，请在系统日志中检查进程状态")
+            return self.records.get(round_id)
 
     async def stop_all(self) -> None:
         for round_id in list(self.processes):
@@ -1770,6 +1891,8 @@ class RecordingManager:
     def delete_round(self, round_id: str) -> None:
         self.records.pop(round_id, None)
         self.processes.pop(round_id, None)
+        self.watch_tasks.pop(round_id, None)
+        self.stop_locks.pop(round_id, None)
         shutil.rmtree(self.directory / round_id, ignore_errors=True)
         self.save()
 
@@ -2472,7 +2595,10 @@ class VoteService:
         host = self.system_host()
         cpu_temperature = (host.get("cpu") or {}).get("temperature") or {}
         feishu_thread = getattr(self.feishu_connection, "thread", None)
-        active_recordings = [item for item in self.recorder.public_records() if item.get("status") == "recording"]
+        active_recordings = [
+            item for item in self.recorder.public_records()
+            if item.get("status") in {"pending", "recording", "stopping", "stop_failed"}
+        ]
         update_in_progress = self.update_task is not None and not self.update_task.done()
         monitor = self.monitor_status_view()
         health = "warning" if self.pending_restart_fields else "ok"
@@ -3415,7 +3541,12 @@ class VoteService:
         if not record:
             raise KeyError(f"找不到录制：{round_id}")
         bucket = max(5, min(300, int(bucket_seconds or 30)))
-        started = parse_iso(str(record.get("startedAt") or self.store.require_round(round_id).sliceStartTime))
+        started = parse_iso(str(
+            record.get("videoStartedAt")
+            or record.get("timelineOriginAt")
+            or record.get("startedAt")
+            or self.store.require_round(round_id).sliceStartTime
+        ))
         counts: dict[int, int] = {}
         for item in self.store.iter_slice_records(round_id) or []:
             try:
@@ -3428,6 +3559,8 @@ class VoteService:
         ended_at = str(record.get("endedAt") or "")
         if ended_at:
             duration = max(0.0, (parse_iso(ended_at) - started).total_seconds())
+        elif record.get("status") in {"recording", "stopping"}:
+            duration = max(0.0, (datetime.now(timezone.utc) - started).total_seconds())
         elif counts:
             duration = max(counts) + bucket
         else:
@@ -3630,7 +3763,12 @@ class VoteService:
         if not record:
             raise KeyError(f"找不到录制：{round_id}")
         clip = self.recorder.clip_for(round_id, clip_id)
-        start = parse_iso(str(record.get("startedAt") or self.store.require_round(round_id).sliceStartTime))
+        start = parse_iso(str(
+            record.get("videoStartedAt")
+            or record.get("timelineOriginAt")
+            or record.get("startedAt")
+            or self.store.require_round(round_id).sliceStartTime
+        ))
         start_time = iso_z(start + timedelta(seconds=max(0.0, float(clip.get("startSeconds") or 0))))
         end_time = iso_z(start + timedelta(seconds=max(0.0, float(clip.get("endSeconds") or 0))))
         return record, clip, start_time, end_time
@@ -3641,7 +3779,7 @@ class VoteService:
 
     def iter_recording_clip_danmaku(self, round_id: str, clip_id: str, *, raw: bool = False):
         meta = self.store.require_round(round_id)
-        _record, clip, start_time, end_time = self.recording_clip_time_range(round_id, clip_id)
+        record, clip, start_time, end_time = self.recording_clip_time_range(round_id, clip_id)
         iterator = (
             self.store.iter_raw_round_records_by_time(round_id, start_time, end_time)
             if raw
@@ -3659,6 +3797,12 @@ class VoteService:
             "timeRange": format_beijing_display_range(start_time, end_time),
             "rawTrack": "observed_api_items" if raw else "",
             "derivedFromRecordingClip": True,
+            "alignment": record.get("alignment") or {},
+            "clipTimelineOriginAt": (
+                record.get("videoStartedAt")
+                or record.get("timelineOriginAt")
+                or record.get("startedAt")
+            ),
         }, ensure_ascii=False, separators=(",", ":")) + "\n"
         suffix = "-raw" if raw else ""
         filename = f"mgtv-round-{round_id}-clip-{clip_id}{suffix}.jsonl"
@@ -4326,6 +4470,7 @@ class VoteService:
                 raise ValueError(str(detected.get("error") or "录制源检测失败"))
             recording_source = str((self.config.get("recording") or {}).get("stream_url") or "")
         activity = activity or self.config.get("vote", {}).get("activity") or "未分类活动"
+        timeline_origin_at = now_iso()
         meta = await self.store.create_round(
             activity,
             name,
@@ -4335,13 +4480,26 @@ class VoteService:
             activate=False,
             kind="recording",
             visibility="private",
+            started_at=timeline_origin_at,
         )
+        record: dict[str, Any] | None = None
         if record_video:
             record = await self.recorder.start(meta, recording_source, force=True)
             if record and record.get("status") in {"failed", "skipped"}:
                 self.add_system_event("warn", "recorder", "独立录屏未能启动", record.get("error") or record.get("status") or "", roundId=meta.id)
         if collect_danmaku:
             await self.recording_collector.start(meta.id, page_url)
+            if record:
+                danmaku_started_at = now_iso()
+                record["danmakuStartedAt"] = danmaku_started_at
+                alignment = record.setdefault("alignment", {})
+                alignment["danmakuStartedAt"] = danmaku_started_at
+                alignment["danmakuPollingSeconds"] = float((self.config.get("mgtv") or {}).get("poll_seconds") or 2.0)
+                alignment["danmakuStartOffsetSeconds"] = round(
+                    (parse_iso(danmaku_started_at) - parse_iso(meta.startedAt)).total_seconds(),
+                    3,
+                )
+                self.recorder.save()
         self.add_system_event(
             "info",
             "recorder",
@@ -4353,13 +4511,23 @@ class VoteService:
 
     async def stop_independent_recording(self, round_id: str) -> RoundMeta:
         meta = self.store.require_round(round_id)
+        if meta.kind != "recording" and meta.visibility != "private":
+            raise ValueError("该场次属于实时运营，请使用“仅结束”或“结束并发布”完成场次")
         record = self.recorder.record_for(round_id)
-        if self.recording_collector.round_id == round_id:
-            await self.recording_collector.stop()
-        if record:
-            await self.recorder.stop(round_id)
+        stop_tasks: list[asyncio.Task[Any]] = []
+        if self.recording_collector.round_id == round_id and self.recording_collector.running():
+            stop_tasks.append(asyncio.create_task(self.recording_collector.stop(), name=f"danmaku-stop-{round_id}"))
+        if record and record.get("status") in {"pending", "recording", "stopping", "stop_failed"}:
+            stop_tasks.append(asyncio.create_task(self.recorder.stop(round_id), name=f"video-stop-{round_id}"))
+        stop_errors: list[Exception] = []
+        if stop_tasks:
+            stop_results = await asyncio.gather(*stop_tasks, return_exceptions=True)
+            stop_errors = [item for item in stop_results if isinstance(item, Exception)]
         meta = await self.store.stop_round(round_id)
-        await self.recorder.finalize_recording(round_id)
+        if stop_errors:
+            detail = "; ".join(str(item) for item in stop_errors)
+            self.add_system_event("error", "recorder", "独立录制停止不完整", detail, roundId=meta.id)
+            raise RuntimeError(f"录制任务已结束，但部分采集进程停止失败：{detail}")
         self.add_system_event("info", "recorder", "独立录制已结束", f"{meta.activity} / {meta.name}", roundId=meta.id)
         return meta
 
@@ -5349,7 +5517,16 @@ def create_app(service: VoteService) -> web.Application:
         except (ValueError, RuntimeError) as exc:
             return web.json_response({"error": str(exc)}, status=409, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
         return web.json_response(
-            {"ok": True, "roundId": meta.id, "activity": meta.activity, "name": meta.name},
+            {
+                "ok": True,
+                "roundId": meta.id,
+                "activity": meta.activity,
+                "name": meta.name,
+                "recording": next(
+                    (item for item in service.recorder.public_records() if item.get("roundId") == meta.id),
+                    None,
+                ),
+            },
             dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
             headers={"Cache-Control": "no-store"},
         )

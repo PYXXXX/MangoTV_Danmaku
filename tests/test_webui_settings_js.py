@@ -94,6 +94,14 @@ class WebuiSettingsJsTest(unittest.TestCase):
         self.assertIn("text-[1.7rem]", admin)
         self.assertIn("text-[1.35rem]", admin)
 
+    def test_operations_workspace_exposes_end_only_and_explicit_recording_stop(self):
+        source = (ROOT / "frontend" / "src" / "apps" / "admin" / "AdminApp.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("仅结束", source)
+        self.assertIn("publish: false", source)
+        self.assertIn("stopFullRecording.mutate(recordingRound.id)", source)
+        self.assertIn("正在结束…", source)
+
     def test_settings_js_keeps_recording_config_fields(self):
         html = (ROOT / "server" / "webui" / "index.html").read_text(encoding="utf-8")
         source = (ROOT / "server" / "webui" / "settings.js").read_text(encoding="utf-8")

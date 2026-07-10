@@ -232,20 +232,41 @@ multipart 上传。
 
 ### `GET /api/recordings`
 
+### `POST /api/recordings/start`
+
+独立启动视频与弹幕录制；可与实时运营场次并行。
+
+### `POST /api/recordings/{round_id}/stop`
+
+停止独立录制。服务先把状态持久化为 `stopping`，确认 FFmpeg 进程组退出并完成视频封装后返回；自动切片在后台继续，不阻塞停止响应。该接口不会结束实时运营场次。
+
 ### `GET /api/recordings/{round_id}`
 
 ```json
 {
   "roundId": "round_1",
-  "status": "recording|finished|failed|skipped|interrupted",
+  "status": "pending|recording|stopping|finished|failed|stop_failed|skipped|interrupted",
   "hasVideo": true,
-  "videoUrl": "/api/recordings/round_1/video",
+  "videoUrl": "/api/rounds/round_1/recording/video",
   "durationSeconds": 7220.5,
   "fileSizeBytes": 123456789,
+  "timelineOriginAt": "2026-07-10T11:27:19.000Z",
+  "videoStartedAt": "2026-07-10T11:27:19.120Z",
+  "danmakuStartedAt": "2026-07-10T11:27:19.180Z",
+  "alignment": {
+    "version": 1,
+    "clock": "server_utc",
+    "method": "wall_clock_capture",
+    "videoStartOffsetSeconds": 0.12,
+    "danmakuStartOffsetSeconds": 0.18,
+    "danmakuPollingSeconds": 2
+  },
   "markers": [],
   "clips": []
 }
 ```
+
+处理后的弹幕 JSONL 与原始弹幕 JSONL 都带 `captureOffsetSeconds`。片段导出以 `videoStartedAt` 为视频 0 秒映射弹幕时间；旧录制没有对齐元数据时兼容回退到 `startedAt`。
 
 ### `GET /api/recordings/{round_id}/timeline`
 

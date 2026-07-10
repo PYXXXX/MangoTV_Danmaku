@@ -46,7 +46,22 @@ export interface Recording {
   sourceUrl?: string;
   error?: string;
   startedAt?: string;
+  timelineOriginAt?: string;
+  videoStartedAt?: string;
+  danmakuStartedAt?: string;
   endedAt?: string;
+  stopRequestedAt?: string;
+  alignment?: {
+    version?: number;
+    clock?: string;
+    method?: string;
+    timelineOriginAt?: string;
+    videoStartedAt?: string;
+    danmakuStartedAt?: string;
+    videoStartOffsetSeconds?: number;
+    danmakuStartOffsetSeconds?: number;
+    danmakuPollingSeconds?: number;
+  };
   autoSplitSeconds?: number;
   autoSplitStatus?: string;
   autoSplitMessage?: string;

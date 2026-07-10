@@ -609,7 +609,14 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
   const selectedRoundId = useUiStore((state) => state.selectedRoundId);
   const setSelectedRoundId = useUiStore((state) => state.setSelectedRoundId);
   const publishableRounds = useMemo(() => rounds.filter((item) => item.visibility !== "private" && item.kind !== "recording"), [rounds]);
-  const recordingRounds = useMemo(() => rounds.filter((item) => item.kind === "recording" || item.visibility === "private" || Boolean(item.recording)), [rounds]);
+  const recordingRounds = useMemo(
+    () => rounds.filter((item) => (
+      item.kind === "recording"
+      || item.visibility === "private"
+      || (Boolean(item.recording) && item.status !== "running")
+    )),
+    [rounds]
+  );
   const realtimeRounds = useMemo(() => publishableRounds.filter((item) => (item.kind || "realtime") === "realtime"), [publishableRounds]);
   const analysisRounds = useMemo(() => publishableRounds.filter((item) => item.kind === "analysis"), [publishableRounds]);
   const result = selectedResult(activeRound, resultType);
@@ -681,12 +688,17 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
   });
   const endRound = useMutation({
-    mutationFn: () => apiPost("/api/rounds/" + encodeURIComponent(activeRound?.id || "") + "/end", { publish: true }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
+    mutationFn: ({ roundId, publish }: { roundId: string; publish: boolean }) => apiPost("/api/rounds/" + encodeURIComponent(roundId) + "/end", { publish }),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
   });
   const stopFullRecording = useMutation({
-    mutationFn: () => apiPost("/api/recordings/" + encodeURIComponent(recordingRound?.id || "") + "/stop"),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
+    mutationFn: (roundId: string) => apiPost("/api/recordings/" + encodeURIComponent(roundId) + "/stop"),
+    onSettled: async (_data, _error, roundId) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] }),
+        queryClient.invalidateQueries({ queryKey: ["recording-timeline", roundId] })
+      ]);
+    }
   });
   const publish = useMutation({
     mutationFn: () => apiPost("/api/rounds/" + encodeURIComponent(activeRound?.id || "") + "/publish", { resultKind: result.type }),
@@ -780,7 +792,7 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
   const timeline = recordingTimeline.data;
   const density = timeline?.danmakuDensity || [];
   const maxDensity = Math.max(1, ...density.map((item) => item.count));
-  const recording = timeline?.recording || recordingRound?.recording || null;
+  const recording = recordingRound?.recording || timeline?.recording || null;
   const sortedRounds = [...publishableRounds].sort((a, b) => String(b.startedAt || b.endedAt || "").localeCompare(String(a.startedAt || a.endedAt || "")));
   const roundRows = sortedRounds.slice(0, 6);
   const activeDurationSeconds = activeRound?.startedAt ? Math.max(0, (Date.now() - new Date(activeRound.startedAt).getTime()) / 1000) : 0;
@@ -791,6 +803,8 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
   const manualClips = clips.filter((clip) => clip.kind !== "auto");
   const canPostProcess = Boolean(recording?.canPostProcess && recordingRound?.id);
   const postProcessReason = recording?.postProcessReason || (recording?.status === "recording" ? "正在录制中，完整视频封装完成后才能打标与手动切片" : "选择已完成录制后可后处理");
+  const alignmentReady = Boolean(recording?.alignment?.videoStartedAt && recording?.alignment?.danmakuStartedAt);
+  const danmakuPrecisionSeconds = Number(recording?.alignment?.danmakuPollingSeconds || 0);
   const firstCandidate = rows[0];
   const activityLabel = activeRound?.activity || defaultActivity || roundForm.activity || "歌手 2026";
   const activeRoundLabel = activeRound ? roundName(activeRound) : "等待场次";
@@ -840,7 +854,7 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
         };
   const activeQuality = recording?.status === "recording" ? "录制中" : sourceQuality || "待检测";
   const activePageUrl = activeRound?.pageUrl || roundForm.url || "等待识别";
-  const independentRecordingRunning = recordingRounds.some((round) => round.recording?.status === "recording");
+  const independentRecordingRunning = recordingRounds.some((round) => ["pending", "recording", "stopping", "stop_failed"].includes(round.recording?.status || ""));
   return (
     <section className="ops-cockpit grid gap-4">
       <div className="grid grid-cols-[290px_minmax(0,1fr)_360px] gap-4 max-2xl:grid-cols-[300px_minmax(0,1fr)] max-xl:grid-cols-1">
@@ -914,7 +928,7 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
             </div>
           </div>
 
-          <div className="mb-5 grid grid-cols-[minmax(0,1fr)_230px] gap-5 max-lg:grid-cols-1">
+          <div className="mb-5 grid grid-cols-[minmax(0,1fr)_340px] gap-5 max-lg:grid-cols-1">
             <Field label="场次名称">
               <input
                 className="ops-input min-h-[3.25rem]"
@@ -930,10 +944,16 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
                 <Play size={18} weight="fill" />
                 开始新一轮
               </button>
-              <button type="button" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl border border-orange-400/35 bg-orange-400/10 px-5 text-sm font-black text-ops-gold transition hover:bg-orange-400/15 disabled:opacity-60" onClick={() => endRound.mutate()} disabled={!activeRound || activeRound.status !== "running" || endRound.isPending}>
-                <UploadSimple size={18} weight="bold" />
-                结束并发布粗略结果
-              </button>
+              <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+                <button type="button" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl border border-blue-300/25 bg-blue-400/10 px-4 text-sm font-black text-blue-100 transition hover:bg-blue-400/15 disabled:opacity-60" onClick={() => activeRound && endRound.mutate({ roundId: activeRound.id, publish: false })} disabled={!activeRound || activeRound.status !== "running" || endRound.isPending}>
+                  <Stop size={18} weight="fill" />
+                  仅结束
+                </button>
+                <button type="button" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl border border-orange-400/35 bg-orange-400/10 px-4 text-sm font-black text-ops-gold transition hover:bg-orange-400/15 disabled:opacity-60" onClick={() => activeRound && endRound.mutate({ roundId: activeRound.id, publish: true })} disabled={!activeRound || activeRound.status !== "running" || endRound.isPending}>
+                  <UploadSimple size={18} weight="bold" />
+                  结束并发布
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1072,9 +1092,9 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
               <VideoCamera size={18} weight="fill" />
               开始录制
             </button>
-            <button type="button" className="self-end inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl border border-red-400/35 bg-red-400/15 px-5 text-sm font-black text-red-100 transition hover:bg-red-400/20 disabled:opacity-50" disabled={!recordingRound?.recording || recordingRound.recording.status !== "recording" || stopFullRecording.isPending} onClick={() => stopFullRecording.mutate()}>
+            <button type="button" className="self-end inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl border border-red-400/35 bg-red-400/15 px-5 text-sm font-black text-red-100 transition hover:bg-red-400/20 disabled:opacity-50" disabled={!recordingRound?.recording || !["recording", "stop_failed"].includes(recordingRound.recording.status) || stopFullRecording.isPending} onClick={() => recordingRound?.id && stopFullRecording.mutate(recordingRound.id)}>
               <Stop size={18} weight="fill" />
-              结束录制
+              {stopFullRecording.isPending ? "正在结束…" : "结束录制"}
             </button>
           </div>
         </div>
@@ -1087,8 +1107,8 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
               {!recordingRounds.length && <option value="">暂无录制</option>}
             </select>
             <span className="inline-flex items-center gap-2 text-sm text-ops-muted">
-              <span className={`size-2 rounded-full ${recording?.status === "recording" ? "bg-emerald-400" : canPostProcess ? "bg-blue-400" : "bg-white/25"}`} />
-              {recording?.status === "recording" ? "录制中" : canPostProcess ? "可后处理" : "等待完整录制"}
+              <span className={`size-2 rounded-full ${recording?.status === "recording" ? "bg-emerald-400" : recording?.status === "stopping" ? "bg-orange-400" : canPostProcess ? "bg-blue-400" : "bg-white/25"}`} />
+              {recording?.status === "recording" ? "录制中" : recording?.status === "stopping" ? "正在结束" : canPostProcess ? "可后处理" : "等待完整录制"}
             </span>
             <span className="font-mono text-sm text-ops-muted">{formatClockDuration(recordingDuration)}</span>
           </div>
@@ -1144,7 +1164,9 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
               </button>
             </div>
             <p className="mt-3 rounded-2xl border border-white/10 bg-white/[0.035] px-4 py-3 text-xs leading-6 text-ops-muted">
-              {postProcessReason}。录制中的弹幕密度会继续刷新，但视频打标和手动切片只读取已完成的完整文件。
+              {postProcessReason}。{alignmentReady
+                ? `视频零点与弹幕均已写入服务器 UTC 时间轴${danmakuPrecisionSeconds ? `，弹幕时间精度约 ${danmakuPrecisionSeconds} 秒` : ""}。`
+                : "旧录制按开始时间兼容匹配。"}录制中的弹幕密度会继续刷新，但视频打标和手动切片只读取已完成的完整文件。
             </p>
             <div className="mt-4 grid gap-3">
               <Field label="当前位置标记">
