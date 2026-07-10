@@ -1691,9 +1691,13 @@ class RecordingManager:
             if not record:
                 return None
             if process is None or process.returncode is not None:
-                if record.get("status") in {"recording", "stopping", "pending"}:
+                if record.get("status") in {"recording", "stopping", "pending", "stop_failed"}:
                     output = Path(str(record.get("path") or ""))
-                    record["status"] = "finished" if output.is_file() and output.stat().st_size > 0 else "interrupted"
+                    try:
+                        output_ready = output.is_file() and output.stat().st_size > 0
+                    except OSError:
+                        output_ready = False
+                    record["status"] = "finished" if output_ready else "interrupted"
                     record["endedAt"] = record.get("endedAt") or now_iso()
                     self.save()
                 return record
@@ -1928,6 +1932,8 @@ class VoteService:
         self.startup_config = json.loads(json.dumps(self.config))
         self.config_lock = asyncio.Lock()
         self.update_lock = asyncio.Lock()
+        self.recording_reconcile_lock = asyncio.Lock()
+        self.independent_recording_transitions: set[str] = set()
         self.result_png_lock = asyncio.Lock()
         self.result_png_cache: OrderedDict[str, tuple[bytes, str, str]] = OrderedDict()
         self.last_update_result: dict[str, Any] | None = None
@@ -2606,6 +2612,7 @@ class VoteService:
             item for item in self.recorder.public_records()
             if item.get("status") in {"pending", "recording", "stopping", "stop_failed"}
         ]
+        live_independent_round_ids = sorted(self.live_independent_recording_ids())
         update_in_progress = self.update_task is not None and not self.update_task.done()
         monitor = self.monitor_status_view()
         health = "warning" if self.pending_restart_fields else "ok"
@@ -2649,6 +2656,12 @@ class VoteService:
             "services": {
                 "collector": {"status": "running" if self.collector.running() else "idle", "activeRoundId": self.store.active_round_id},
                 "recorder": {"status": "recording" if active_recordings else "idle", "activeCount": len(active_recordings), "enabled": self.recorder.enabled()},
+                "independentRecording": {
+                    "status": "recording" if live_independent_round_ids else "idle",
+                    "activeCount": len(live_independent_round_ids),
+                    "activeRoundId": live_independent_round_ids[0] if live_independent_round_ids else None,
+                    "activeRoundIds": live_independent_round_ids,
+                },
                 "feishu": {"status": "connected" if feishu_thread and feishu_thread.is_alive() else ("enabled" if self.feishu.enabled() else "disabled")},
                 "github": {"status": "enabled" if (config.get("github") or {}).get("enabled") else "disabled"},
                 "updater": {"status": "running" if update_in_progress else "idle", "progress": self.update_progress},
@@ -2899,6 +2912,7 @@ class VoteService:
 
     def start_background_tasks(self, loop: asyncio.AbstractEventLoop) -> None:
         self.background_stopped = False
+        loop.create_task(self.reconcile_inactive_recording_rounds(), name="mgtv-recording-state-reconcile")
         if self.monitor_task is None or self.monitor_task.done():
             self.monitor_task = loop.create_task(self._monitor_loop(), name="mgtv-activity-monitor")
             self._set_monitor_state(taskRunning=True)
@@ -4084,15 +4098,49 @@ class VoteService:
             "reauthRequired": update.reauth_required,
         }
 
-    def independent_recording_active(self) -> bool:
+    def live_independent_recording_ids(self) -> set[str]:
+        round_ids = set(self.independent_recording_transitions)
         if self.recording_collector.running():
-            return True
-        if any(getattr(process, "returncode", None) is None for process in self.recorder.processes.values()):
-            return True
-        return any(
-            meta.kind == "recording" and meta.status == "running"
-            for meta in self.store.rounds.values()
-        )
+            if self.recording_collector.round_id:
+                round_ids.add(self.recording_collector.round_id)
+        for round_id, process in self.recorder.processes.items():
+            if getattr(process, "returncode", None) is None:
+                round_ids.add(round_id)
+        for round_id, task in self.recorder.watch_tasks.items():
+            if not task.done():
+                round_ids.add(round_id)
+        return round_ids
+
+    def independent_recording_active(self) -> bool:
+        return bool(self.live_independent_recording_ids())
+
+    async def reconcile_inactive_recording_rounds(self) -> list[str]:
+        """Close stale private rounds when no collector or ffmpeg process owns them."""
+        async with self.recording_reconcile_lock:
+            live_round_ids = self.live_independent_recording_ids()
+            stale_round_ids = [
+                meta.id
+                for meta in self.store.rounds.values()
+                if meta.kind == "recording" and meta.status == "running" and meta.id not in live_round_ids
+            ]
+            reconciled: list[str] = []
+            for round_id in stale_round_ids:
+                record = self.recorder.record_for(round_id)
+                if record and record.get("status") in {"pending", "recording", "stopping", "stop_failed"}:
+                    await self.recorder.stop(round_id)
+                meta = self.store.rounds.get(round_id)
+                if meta is None or meta.status != "running" or round_id in self.live_independent_recording_ids():
+                    continue
+                meta = await self.store.stop_round(round_id)
+                reconciled.append(round_id)
+                self.add_system_event(
+                    "warn",
+                    "recorder",
+                    "已清理失效的独立录制状态",
+                    f"{meta.activity} / {meta.name} · 未发现仍在运行的 ffmpeg 或弹幕采集任务",
+                    roundId=round_id,
+                )
+            return reconciled
 
     def request_safe_restart(self, loop: asyncio.AbstractEventLoop) -> list[str]:
         if self.store.active_round_id or self.collector.running() or self.independent_recording_active():
@@ -4114,6 +4162,7 @@ class VoteService:
         return blockers
 
     async def update_status(self) -> dict[str, Any]:
+        reconciled_recordings = await self.reconcile_inactive_recording_rounds()
         in_progress = self.update_task is not None and not self.update_task.done()
         if in_progress and self.last_update_status is not None:
             status = dict(self.last_update_status)
@@ -4130,6 +4179,7 @@ class VoteService:
             "restartWillApplyConfig": bool(self.pending_restart_fields),
             "lastUpdate": self.last_update_result,
             "progress": self.update_progress,
+            "reconciledRecordingRoundIds": reconciled_recordings,
         })
         return status
 
@@ -4481,13 +4531,14 @@ class VoteService:
         collect_danmaku: bool = True,
         use_cached_recording_source: bool = False,
     ) -> RoundMeta:
+        await self.reconcile_inactive_recording_rounds()
+        if self.independent_recording_active():
+            raise ValueError("已有独立录制正在运行，请先结束后再开始新的独立录制")
         url = url or self.config.get("mgtv", {}).get("url")
         if not url:
             raise ValueError("未配置直播 URL")
         if not record_video and not collect_danmaku:
             raise ValueError("至少需要启用视频录制或弹幕录制中的一项")
-        if collect_danmaku and self.recording_collector.running():
-            raise ValueError("已有独立弹幕录制正在运行，请先结束后再开始新的独立录制")
         resolution = await self.resolve_mgtv_live_url(str(url), persist=True)
         if not resolution.get("ok"):
             raise ValueError(str(resolution.get("error") or "直播 URL 无法解析出可采集的机位"))
@@ -4512,24 +4563,35 @@ class VoteService:
             visibility="private",
             started_at=timeline_origin_at,
         )
+        self.independent_recording_transitions.add(meta.id)
         record: dict[str, Any] | None = None
-        if record_video:
-            record = await self.recorder.start(meta, recording_source, force=True)
-            if record and record.get("status") in {"failed", "skipped"}:
-                self.add_system_event("warn", "recorder", "独立录屏未能启动", record.get("error") or record.get("status") or "", roundId=meta.id)
-        if collect_danmaku:
-            await self.recording_collector.start(meta.id, page_url)
-            if record:
-                danmaku_started_at = now_iso()
-                record["danmakuStartedAt"] = danmaku_started_at
-                alignment = record.setdefault("alignment", {})
-                alignment["danmakuStartedAt"] = danmaku_started_at
-                alignment["danmakuPollingSeconds"] = float((self.config.get("mgtv") or {}).get("poll_seconds") or 2.0)
-                alignment["danmakuStartOffsetSeconds"] = round(
-                    (parse_iso(danmaku_started_at) - parse_iso(meta.startedAt)).total_seconds(),
-                    3,
-                )
-                self.recorder.save()
+        try:
+            if record_video:
+                record = await self.recorder.start(meta, recording_source, force=True)
+                if record and record.get("status") in {"failed", "skipped"}:
+                    self.add_system_event("warn", "recorder", "独立录屏未能启动", record.get("error") or record.get("status") or "", roundId=meta.id)
+            if collect_danmaku:
+                await self.recording_collector.start(meta.id, page_url)
+                if record:
+                    danmaku_started_at = now_iso()
+                    record["danmakuStartedAt"] = danmaku_started_at
+                    alignment = record.setdefault("alignment", {})
+                    alignment["danmakuStartedAt"] = danmaku_started_at
+                    alignment["danmakuPollingSeconds"] = float((self.config.get("mgtv") or {}).get("poll_seconds") or 2.0)
+                    alignment["danmakuStartOffsetSeconds"] = round(
+                        (parse_iso(danmaku_started_at) - parse_iso(meta.startedAt)).total_seconds(),
+                        3,
+                    )
+                    self.recorder.save()
+        except Exception:
+            if self.recording_collector.round_id == meta.id and self.recording_collector.running():
+                await self.recording_collector.stop()
+            if self.recorder.record_for(meta.id):
+                await self.recorder.stop(meta.id)
+            await self.store.stop_round(meta.id)
+            raise
+        finally:
+            self.independent_recording_transitions.discard(meta.id)
         self.add_system_event(
             "info",
             "recorder",
@@ -4543,23 +4605,27 @@ class VoteService:
         meta = self.store.require_round(round_id)
         if meta.kind != "recording" and meta.visibility != "private":
             raise ValueError("该场次属于实时运营，请使用“仅结束”或“结束并发布”完成场次")
-        record = self.recorder.record_for(round_id)
-        stop_tasks: list[asyncio.Task[Any]] = []
-        if self.recording_collector.round_id == round_id and self.recording_collector.running():
-            stop_tasks.append(asyncio.create_task(self.recording_collector.stop(), name=f"danmaku-stop-{round_id}"))
-        if record and record.get("status") in {"pending", "recording", "stopping", "stop_failed"}:
-            stop_tasks.append(asyncio.create_task(self.recorder.stop(round_id), name=f"video-stop-{round_id}"))
-        stop_errors: list[Exception] = []
-        if stop_tasks:
-            stop_results = await asyncio.gather(*stop_tasks, return_exceptions=True)
-            stop_errors = [item for item in stop_results if isinstance(item, Exception)]
-        meta = await self.store.stop_round(round_id)
-        if stop_errors:
-            detail = "; ".join(str(item) for item in stop_errors)
-            self.add_system_event("error", "recorder", "独立录制停止不完整", detail, roundId=meta.id)
-            raise RuntimeError(f"录制任务已结束，但部分采集进程停止失败：{detail}")
-        self.add_system_event("info", "recorder", "独立录制已结束", f"{meta.activity} / {meta.name}", roundId=meta.id)
-        return meta
+        self.independent_recording_transitions.add(round_id)
+        try:
+            record = self.recorder.record_for(round_id)
+            stop_tasks: list[asyncio.Task[Any]] = []
+            if self.recording_collector.round_id == round_id and self.recording_collector.running():
+                stop_tasks.append(asyncio.create_task(self.recording_collector.stop(), name=f"danmaku-stop-{round_id}"))
+            if record and record.get("status") in {"pending", "recording", "stopping", "stop_failed"}:
+                stop_tasks.append(asyncio.create_task(self.recorder.stop(round_id), name=f"video-stop-{round_id}"))
+            stop_errors: list[Exception] = []
+            if stop_tasks:
+                stop_results = await asyncio.gather(*stop_tasks, return_exceptions=True)
+                stop_errors = [item for item in stop_results if isinstance(item, Exception)]
+            meta = await self.store.stop_round(round_id)
+            if stop_errors:
+                detail = "; ".join(str(item) for item in stop_errors)
+                self.add_system_event("error", "recorder", "独立录制停止不完整", detail, roundId=meta.id)
+                raise RuntimeError(f"录制任务已结束，但部分采集进程停止失败：{detail}")
+            self.add_system_event("info", "recorder", "独立录制已结束", f"{meta.activity} / {meta.name}", roundId=meta.id)
+            return meta
+        finally:
+            self.independent_recording_transitions.discard(round_id)
 
     async def start_round(
         self,
@@ -5050,6 +5116,9 @@ def create_app(service: VoteService) -> web.Application:
         }, headers={"Cache-Control": "no-store"})
 
     async def system_status(_: web.Request) -> web.Response:
+        reconcile_recordings = getattr(service, "reconcile_inactive_recording_rounds", None)
+        if callable(reconcile_recordings):
+            await reconcile_recordings()
         return web.json_response(
             service.system_status(),
             dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
@@ -5162,6 +5231,9 @@ def create_app(service: VoteService) -> web.Application:
         )
 
     async def studio_bootstrap(_: web.Request) -> web.Response:
+        reconcile_recordings = getattr(service, "reconcile_inactive_recording_rounds", None)
+        if callable(reconcile_recordings):
+            await reconcile_recordings()
         return web.json_response(
             service.studio_bootstrap_view(),
             dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
@@ -5558,6 +5630,9 @@ def create_app(service: VoteService) -> web.Application:
         )
 
     async def recordings(_: web.Request) -> web.Response:
+        reconcile_recordings = getattr(service, "reconcile_inactive_recording_rounds", None)
+        if callable(reconcile_recordings):
+            await reconcile_recordings()
         return web.json_response(
             {
                 "enabled": service.recorder.enabled(),

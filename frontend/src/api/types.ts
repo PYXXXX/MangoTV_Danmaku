@@ -344,6 +344,7 @@ export interface SystemStatus {
     enabled?: boolean;
     activeCount?: number;
     activeRoundId?: string | null;
+    activeRoundIds?: string[];
     taskRunning?: boolean;
     configured?: boolean;
     quality?: string;

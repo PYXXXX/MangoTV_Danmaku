@@ -964,13 +964,18 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                     kind="recording",
                     visibility="private",
                 )
+                service.independent_recording_transitions.add(meta.id)
                 self.assertTrue(service.independent_recording_active())
                 self.assertIn("独立录制或弹幕采集正在运行，需先结束录制", service.update_blockers())
                 with self.assertRaisesRegex(Exception, "独立录制"):
                     service.request_safe_restart(asyncio.get_running_loop())
 
-                await service.store.stop_round(meta.id)
+                service.independent_recording_transitions.discard(meta.id)
+                reconciled = await service.reconcile_inactive_recording_rounds()
+                self.assertEqual(reconciled, [meta.id])
+                self.assertEqual(service.store.require_round(meta.id).status, "stopped")
                 self.assertFalse(service.independent_recording_active())
+                self.assertNotIn("独立录制或弹幕采集正在运行，需先结束录制", service.update_blockers())
             finally:
                 service.collector.fingerprints.close()
                 service.recording_collector.fingerprints.close()

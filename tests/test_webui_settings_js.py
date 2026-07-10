@@ -105,6 +105,12 @@ class WebuiSettingsJsTest(unittest.TestCase):
         self.assertIn('recordingRound.status !== "running"', source)
         self.assertIn("正在结束…", source)
 
+    def test_recording_state_uses_live_service_instead_of_stale_round_metadata(self):
+        source = (ROOT / "frontend" / "src" / "apps" / "admin" / "AdminApp.tsx").read_text(encoding="utf-8")
+        self.assertIn("const selectedExists = recordingRounds.some", source)
+        self.assertIn('status?.services?.independentRecording?.status === "recording"', source)
+        self.assertNotIn('round.status === "running"\n    || ["pending", "recording", "stopping", "stop_failed"]', source)
+
     def test_round_name_inputs_allow_one_hundred_characters(self):
         source = (ROOT / "frontend" / "src" / "apps" / "admin" / "AdminApp.tsx").read_text(encoding="utf-8")
         legacy_html = (ROOT / "server" / "webui" / "index.html").read_text(encoding="utf-8")

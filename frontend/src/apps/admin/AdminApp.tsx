@@ -654,11 +654,14 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
     }));
   }, [defaultActivity, activeRound?.activity]);
   useEffect(() => {
-    const selectedHasRecording = recordingRounds.some((item) => item.id === selectedRecordingId && item.recording);
-    const preferredRecordingId = recordingRounds.find((item) => item.recording?.status === "recording")?.id
+    const selectedExists = recordingRounds.some((item) => item.id === selectedRecordingId);
+    const preferredRecordingId = recordingRounds.find((item) => (
+      item.status === "running"
+      || ["pending", "recording", "stopping", "stop_failed"].includes(item.recording?.status || "")
+    ))?.id
       || recordingRounds.find((item) => item.recording)?.id
       || "";
-    if (!selectedRecordingId || (!selectedHasRecording && preferredRecordingId)) {
+    if (!selectedRecordingId || (!selectedExists && preferredRecordingId)) {
       setSelectedRecordingId(preferredRecordingId);
     }
   }, [recordingRounds, selectedRecordingId]);
@@ -872,10 +875,8 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
         };
   const activeQuality = recording?.status === "recording" ? "录制中" : sourceQuality || "待检测";
   const activePageUrl = activeRound?.pageUrl || roundForm.url || "等待识别";
-  const independentRecordingRunning = recordingRounds.some((round) => (
-    round.status === "running"
-    || ["pending", "recording", "stopping", "stop_failed"].includes(round.recording?.status || "")
-  ));
+  const independentRecordingRunning = status?.services?.independentRecording?.status === "recording"
+    || recordingRounds.some((round) => ["pending", "recording", "stopping", "stop_failed"].includes(round.recording?.status || ""));
   return (
     <section className="ops-cockpit grid gap-4">
       <div className="grid grid-cols-[290px_minmax(0,1fr)_360px] gap-4 max-2xl:grid-cols-[300px_minmax(0,1fr)] max-xl:grid-cols-1">
