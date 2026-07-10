@@ -97,6 +97,9 @@ def mgtv_live_source_sign(params: dict[str, Any]) -> str:
 
 def parse_mgtv_activity_camera(page_url: str) -> tuple[str, str]:
     parsed = urlparse(str(page_url or ""))
+    host = str(parsed.hostname or "").lower()
+    if host != "mgtv.com" and not host.endswith(".mgtv.com"):
+        return "", ""
     match = re.search(r"/z2?/([^/?#]+)/([^/?#]+)", parsed.path)
     if not match:
         return "", ""
@@ -107,6 +110,9 @@ def parse_mgtv_activity_camera(page_url: str) -> tuple[str, str]:
 
 def parse_mgtv_activity_id(page_url: str) -> str:
     parsed = urlparse(str(page_url or ""))
+    host = str(parsed.hostname or "").lower()
+    if host != "mgtv.com" and not host.endswith(".mgtv.com"):
+        return ""
     match = re.search(r"^/z2?/([^/?#]+?)(?:\.html)?/?$", parsed.path)
     if not match:
         return ""
@@ -469,6 +475,33 @@ class MgtvAuthManager:
         sources = payload.get("sources") if isinstance(payload.get("sources"), list) else []
         selected = self._select_source(sources, preferred_quality)
         stream_url = str(selected.get("url") or "") if selected else ""
+        def timestamp_value(key: str) -> int:
+            try:
+                return int(payload.get(key) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        server_timestamp = timestamp_value("servertime") or int(time.time())
+        start_timestamp = timestamp_value("streamBeginTimeStamp") or timestamp_value("beginTimeStamp")
+        end_timestamp = timestamp_value("endTimeStamp")
+        if start_timestamp and server_timestamp < start_timestamp:
+            live_status = "upcoming"
+        elif end_timestamp and server_timestamp >= end_timestamp:
+            live_status = "ended"
+        elif stream_url:
+            live_status = "live"
+        else:
+            live_status = "unknown"
+        live_metadata = {
+            "liveStatus": live_status,
+            "serverTimestamp": server_timestamp,
+            "streamBeginTimestamp": start_timestamp,
+            "streamEndTimestamp": end_timestamp,
+            "streamBeginTime": str(payload.get("streamBeginTime") or payload.get("beginTime") or ""),
+            "streamEndTime": str(payload.get("endTime") or ""),
+            "preview": bool(payload.get("preview")),
+            "cameraName": str(payload.get("cameraName") or ""),
+        }
         available_qualities = list(dict.fromkeys(
             str(item.get("name") or item.get("definition") or "").strip()
             for item in sources
@@ -493,6 +526,7 @@ class MgtvAuthManager:
                 "activityId": activity_id,
                 "cameraId": camera_id,
                 "resolvedFrom": resolution.get("resolvedFrom") or "",
+                **live_metadata,
             }
         return {
             "ok": True,
@@ -510,6 +544,7 @@ class MgtvAuthManager:
             "cameraId": camera_id,
             "resolvedFrom": resolution.get("resolvedFrom") or "",
             "message": "已通过芒果直播源接口检测到可交给 ffmpeg 直录的播放流。",
+            **live_metadata,
         }
 
     @staticmethod

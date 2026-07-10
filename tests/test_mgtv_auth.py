@@ -48,9 +48,10 @@ class MgtvAuthHelpersTest(unittest.TestCase):
         }
         self.assertEqual(mgtv_live_source_sign(params), "6D108FC7CAF4BB944D5DE95C91E46E58")
         self.assertEqual(
-            parse_mgtv_activity_camera("https://www.mgtv.com/z/1001668/5366.html?fpa=1"),
+            parse_mgtv_activity_camera("https://www.mgtv.com/z/1001668/5366.html?fpa=12437&fpos&lastp=ch_home&_source_=B"),
             ("1001668", "5366"),
         )
+        self.assertEqual(parse_mgtv_activity_camera("https://example.com/z/1001668/5366.html"), ("", ""))
         self.assertEqual(
             parse_mgtv_activity_id("https://www.mgtv.com/z/1001668.html?fpa=12437&fpos&lastp=ch_home&_source_=B"),
             "1001668",
@@ -98,6 +99,10 @@ class MgtvAuthAsyncTest(unittest.IsolatedAsyncioTestCase):
                 "code": 200,
                 "msg": "ok",
                 "data": {
+                    "servertime": 100,
+                    "streamBeginTimeStamp": 200,
+                    "endTimeStamp": 300,
+                    "streamBeginTime": "2026-07-10 18:25:00",
                     "sources": [
                         {"name": "720P", "definition": 3, "url": "https://example.com/720.m3u8"},
                         {"name": "1080P ·50帧", "definition": 5, "needPay": "1", "url": "https://example.com/1080.m3u8"},
@@ -112,6 +117,8 @@ class MgtvAuthAsyncTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["actualQuality"], "1080P ·50帧")
         self.assertEqual(result["availableQualities"], ["720P", "1080P ·50帧"])
         self.assertEqual(result["pageUrl"], "https://www.mgtv.com/z/1001668/5366.html")
+        self.assertEqual(result["liveStatus"], "upcoming")
+        self.assertEqual(result["streamBeginTimestamp"], 200)
 
     async def test_detect_stream_accepts_activity_url_after_resolution(self):
         manager = MgtvAuthManager({"device_id": "device-id"})

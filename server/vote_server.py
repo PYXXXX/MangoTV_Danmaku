@@ -52,7 +52,7 @@ try:
         build_round_list_card,
         build_system_card,
     )
-    from server.mgtv_auth import MgtvAuthManager
+    from server.mgtv_auth import MgtvAuthManager, parse_mgtv_activity_camera, parse_mgtv_activity_id
     from server.operator_auth import OperatorAuth, safe_next_url
     from server.runtime_settings import (
         SettingsValidationError,
@@ -83,7 +83,7 @@ except ModuleNotFoundError:  # Support `python server/vote_server.py`.
         build_round_list_card,
         build_system_card,
     )
-    from mgtv_auth import MgtvAuthManager
+    from mgtv_auth import MgtvAuthManager, parse_mgtv_activity_camera, parse_mgtv_activity_id
     from operator_auth import OperatorAuth, safe_next_url
     from runtime_settings import SettingsValidationError, build_settings_update, has_real_value, public_settings, save_config_atomic
     from runtime_preflight import RuntimePreflightError, derive_runtime_data_dir, migrate_runtime_config, redact_sensitive_text, run_runtime_preflight
@@ -92,6 +92,61 @@ except ModuleNotFoundError:  # Support `python server/vote_server.py`.
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def synchronize_direct_mgtv_source(config: dict[str, Any]) -> tuple[bool, str]:
+    """Make a direct /z/{activity}/{camera}.html URL authoritative.
+
+    Older configurations can retain an activity-only monitor URL or a stale
+    room_id even after the operator supplies a direct live-page URL. That can
+    make video detection work while danmaku still connects to the old room.
+    """
+    mgtv = dict(config.get("mgtv") or {})
+    monitor_present = isinstance(config.get("monitor"), dict)
+    monitor = dict(config.get("monitor") or {})
+    mgtv_url = str(mgtv.get("url") or "").strip()
+    monitor_url = str(monitor.get("url") or "").strip()
+    monitor_activity, monitor_camera = parse_mgtv_activity_camera(monitor_url)
+    mgtv_activity, mgtv_camera = parse_mgtv_activity_camera(mgtv_url)
+
+    if monitor_activity and monitor_camera:
+        direct_url, activity_id, camera_id = monitor_url, monitor_activity, monitor_camera
+    elif mgtv_activity and mgtv_camera:
+        direct_url, activity_id, camera_id = mgtv_url, mgtv_activity, mgtv_camera
+    else:
+        return False, ""
+
+    flag = str(mgtv.get("flag") or "liveshow").strip() or "liveshow"
+    room_id = f"{flag}-{camera_id}"
+    changed = False
+    desired_mgtv = {
+        "url": direct_url,
+        "activity_id": activity_id,
+        "camera_id": camera_id,
+        "room_id": room_id,
+    }
+    for key, value in desired_mgtv.items():
+        if str(mgtv.get(key) or "") != value:
+            mgtv[key] = value
+            changed = True
+
+    if monitor_present:
+        activity_only_id = parse_mgtv_activity_id(monitor_url)
+        should_promote_monitor = bool(
+            monitor_activity and monitor_camera
+            or not monitor_url
+            or (activity_only_id and activity_only_id == activity_id)
+        )
+        if should_promote_monitor and monitor_url != direct_url:
+            monitor["url"] = direct_url
+            changed = True
+
+    if not changed:
+        return False, ""
+    config["mgtv"] = mgtv
+    if monitor_present:
+        config["monitor"] = monitor
+    return True, f"已将直接直播机位设为采集源：activity_id={activity_id}，camera_id={camera_id}，room_id={room_id}"
 
 
 def append_jsonl_rotating(path: Path, payload: dict[str, Any], *, max_bytes: int = 10 * 1024 * 1024, backups: int = 2) -> None:
@@ -1073,6 +1128,9 @@ class MgtvCollector:
 
     def resolve_room_id(self, url: str) -> str:
         flag = self.config.get("flag", "liveshow")
+        _activity_id, url_camera_id = parse_mgtv_activity_camera(url)
+        if url_camera_id:
+            return f"{flag}-{url_camera_id}"
         explicit = self.config.get("room_id")
         if explicit:
             return explicit
@@ -1721,7 +1779,10 @@ class VoteService:
         self.config_path = config_path
         self.repo_root = repo_root or Path(__file__).resolve().parents[1]
         migration = migrate_runtime_config(config, config_path=config_path, repo_root=self.repo_root)
+        source_changed, source_warning = synchronize_direct_mgtv_source(migration.config)
         self.startup_migration_warnings = list(migration.warnings)
+        if source_warning:
+            self.startup_migration_warnings.append(source_warning)
         self.startup_migration_error = ""
         self.config = migration.config
         if config_path is not None and config_path.exists():
@@ -1729,7 +1790,7 @@ class VoteService:
                 os.chmod(config_path, 0o600)
             except OSError:
                 pass
-        if migration.changed and config_path is not None:
+        if (migration.changed or source_changed) and config_path is not None:
             try:
                 save_config_atomic(config_path, self.config)
             except OSError as exc:
@@ -1968,6 +2029,16 @@ class VoteService:
     def monitor_status_view(self) -> dict[str, Any]:
         self._set_monitor_state()
         state = dict(self.monitor_state)
+        monitor = self.monitor_config()
+        activity_id, camera_id = parse_mgtv_activity_camera(monitor.get("url") or "")
+        if not activity_id:
+            activity_id = parse_mgtv_activity_id(monitor.get("url") or "")
+        state.update({
+            "activityId": activity_id,
+            "cameraId": camera_id,
+            "roomId": f"{str((self.config.get('mgtv') or {}).get('flag') or 'liveshow')}-{camera_id}" if camera_id else "",
+            "sourceInputMode": "direct_camera" if camera_id else "activity_page",
+        })
         recording = self.config.get("recording") or {}
         available_qualities = self._normalize_quality_list(
             state.get("availableQualities") or recording.get("available_qualities")
@@ -2907,6 +2978,11 @@ class VoteService:
         config = self.monitor_config()
         activity = normalize(config["activity"]) or "未分类活动"
         url = normalize(config["url"])
+        direct_activity_id, direct_camera_id = parse_mgtv_activity_camera(url)
+        direct_room_id = (
+            f"{str((self.config.get('mgtv') or {}).get('flag') or 'liveshow')}-{direct_camera_id}"
+            if direct_camera_id else ""
+        )
         if self.monitor_last_url != url:
             self.monitor_last_url = url
             self.monitor_auto_started = False
@@ -2933,14 +3009,15 @@ class VoteService:
             await self.notify_monitor_status_once()
             return self.monitor_status_view()
 
-        active = self.store.find_round(self.store.active_round_id)
-        if active:
+        monitor_round_id = str(self.monitor_state.get("roundId") or "") if self.monitor_auto_started else ""
+        monitor_round = self.store.rounds.get(monitor_round_id)
+        if monitor_round and monitor_round.status == "running":
             self._set_monitor_state(
                 status="running",
-                message=f"正在采集：{active.activity} / {active.name}",
-                activity=active.activity,
+                message=f"正在执行监控录制：{monitor_round.activity} / {monitor_round.name}",
+                activity=monitor_round.activity,
                 url=url,
-                roundId=active.id,
+                roundId=monitor_round.id,
                 lastCheckAt=now_iso(),
                 lastError="",
             )
@@ -2949,28 +3026,64 @@ class VoteService:
 
         self._set_monitor_state(
             status="checking",
-            message="正在检测直播源与机位。",
+            message=(
+                f"已从 URL 识别机位 {direct_camera_id}，正在直接检测播放源。"
+                if direct_camera_id else "正在从活动页解析直播机位与播放源。"
+            ),
             activity=activity,
             url=url,
+            activityId=direct_activity_id or parse_mgtv_activity_id(url),
+            cameraId=direct_camera_id,
+            roomId=direct_room_id,
+            sourceInputMode="direct_camera" if direct_camera_id else "activity_page",
             lastCheckAt=now_iso(),
             lastError="",
         )
 
         source_ready = False
         quality = ""
+        live_status = "unknown"
         try:
             if config["autoDetectSource"] or config["autoRecordVideo"]:
                 detected = await self.detect_mgtv_recording_source(url, str((self.config.get("recording") or {}).get("preferred_quality") or "auto"))
                 source_ready = bool(detected.get("ok"))
                 quality = str(detected.get("actualQuality") or detected.get("quality") or "")
+                live_status = str(detected.get("liveStatus") or "unknown")
                 available_qualities = self._normalize_quality_list(detected.get("availableQualities"))
+                if source_ready and live_status in {"upcoming", "ended"}:
+                    self.monitor_auto_started = False
+                    status_message = (
+                        f"机位 {direct_camera_id or detected.get('cameraId') or '-'} 已识别，计划于 {detected.get('streamBeginTime') or detected.get('streamBeginTimestamp') or '-'} 开始，继续等待开播。"
+                        if live_status == "upcoming"
+                        else "该机位直播已结束，未启动新的自动录制。"
+                    )
+                    self._set_monitor_state(
+                        status="waiting" if live_status == "upcoming" else "ended",
+                        message=status_message,
+                        lastError="",
+                        quality=quality,
+                        liveStatus=live_status,
+                        streamBeginTime=str(detected.get("streamBeginTime") or ""),
+                        streamBeginTimestamp=int(detected.get("streamBeginTimestamp") or 0),
+                        streamEndTime=str(detected.get("streamEndTime") or ""),
+                        streamEndTimestamp=int(detected.get("streamEndTimestamp") or 0),
+                        availableQualities=available_qualities or self.monitor_state.get("availableQualities") or [],
+                    )
+                    await self.notify_monitor_status_once()
+                    return self.monitor_status_view()
                 if not source_ready:
                     self.monitor_auto_started = False
+                    detected_error = str(detected.get("error") or "直播源暂不可用，等待下一次检测。")
+                    waiting_message = (
+                        f"机位 {direct_camera_id} 已识别，但播放源暂不可用（可能尚未开播）：{detected_error}"
+                        if direct_camera_id else detected_error
+                    )
                     self._set_monitor_state(
                         status="waiting",
-                        message=str(detected.get("error") or "直播源暂不可用，等待下一次检测。"),
-                        lastError=str(detected.get("error") or ""),
+                        message=waiting_message,
+                        lastError=detected_error,
                         quality=quality,
+                        liveStatus=live_status,
                         availableQualities=available_qualities or self.monitor_state.get("availableQualities") or [],
                     )
                     await self.notify_monitor_status_once()
@@ -2999,10 +3112,14 @@ class VoteService:
 
         self._set_monitor_state(
             status="source_ready",
-            message="已检测到可用直播源。",
+            message=(
+                f"已直接检测到机位 {direct_camera_id} 的可用直播源。"
+                if direct_camera_id else "已解析机位并检测到可用直播源。"
+            ),
             lastSuccessAt=now_iso(),
             lastError="",
             quality=quality,
+            liveStatus=live_status if live_status != "unknown" else "source_ready",
             availableQualities=self._normalize_quality_list((self.config.get("recording") or {}).get("available_qualities")) or self.monitor_state.get("availableQualities") or [],
         )
 
@@ -3025,6 +3142,7 @@ class VoteService:
             activity,
             record_video=config["autoRecordVideo"],
             collect_danmaku=config["autoRecordDanmaku"],
+            use_cached_recording_source=True,
         )
         self.monitor_auto_started = True
         self._set_monitor_state(
@@ -3412,6 +3530,7 @@ class VoteService:
                 flag = str(mgtv.get("flag") or "liveshow")
                 mgtv["room_id"] = f"{flag}-{camera_id}"
                 target["mgtv"] = mgtv
+                synchronize_direct_mgtv_source(target)
                 if self.config_path is not None:
                     save_config_atomic(self.config_path, target)
                 self.config = target
@@ -3425,6 +3544,11 @@ class VoteService:
         if not page_url:
             return {"ok": False, "error": "未配置芒果直播页 URL", "quality": preferred}
         result = await self.mgtv_auth.detect_stream(page_url, preferred)
+        result_activity_id = str(result.get("activityId") or "")
+        result_camera_id = str(result.get("cameraId") or "")
+        flag = str((self.config.get("mgtv") or {}).get("flag") or "liveshow")
+        result["roomId"] = f"{flag}-{result_camera_id}" if result_camera_id else ""
+        result["sourceInputMode"] = "direct_camera" if parse_mgtv_activity_camera(page_url)[1] else "activity_page"
         available_qualities = self._normalize_quality_list(result.get("availableQualities"))
         if result.get("ok") and result.get("streamUrl"):
             async with self.config_lock:
@@ -3441,11 +3565,12 @@ class VoteService:
                     mgtv["url"] = result["pageUrl"]
                 if result.get("cameraId"):
                     mgtv["camera_id"] = result["cameraId"]
-                    flag = str(mgtv.get("flag") or "liveshow")
-                    mgtv["room_id"] = f"{flag}-{result['cameraId']}"
+                    mgtv_flag = str(mgtv.get("flag") or "liveshow")
+                    mgtv["room_id"] = f"{mgtv_flag}-{result['cameraId']}"
                 if result.get("activityId"):
                     mgtv["activity_id"] = result["activityId"]
                 target["mgtv"] = mgtv
+                synchronize_direct_mgtv_source(target)
                 if self.config_path is not None:
                     save_config_atomic(self.config_path, target)
                 self.config = target
@@ -3457,14 +3582,32 @@ class VoteService:
                 "直播源检测成功",
                 f"quality={result.get('actualQuality') or result.get('quality') or preferred}, camera_id={result.get('cameraId') or ''}",
             )
+            detected_live_status = str(result.get("liveStatus") or "unknown")
+            detected_status = "waiting" if detected_live_status == "upcoming" else "ended" if detected_live_status == "ended" else "source_ready"
+            detected_message = (
+                f"机位 {result_camera_id or '-'} 已识别，计划于 {result.get('streamBeginTime') or '-'} 开始。"
+                if detected_live_status == "upcoming"
+                else "该机位直播已结束。"
+                if detected_live_status == "ended"
+                else f"已检测到机位 {result_camera_id or '-'} 的可录制播放源。"
+            )
             self._set_monitor_state(
-                status="source_ready",
-                message="直播源已检测，可开始录制。",
+                status=detected_status,
+                message=detected_message,
                 lastCheckAt=now_iso(),
                 lastSuccessAt=now_iso(),
                 lastError="",
                 quality=str(result.get("actualQuality") or result.get("quality") or preferred),
                 availableQualities=available_qualities,
+                activityId=result_activity_id,
+                cameraId=result_camera_id,
+                roomId=result.get("roomId") or "",
+                sourceInputMode=result.get("sourceInputMode") or "",
+                liveStatus=detected_live_status,
+                streamBeginTime=str(result.get("streamBeginTime") or ""),
+                streamBeginTimestamp=int(result.get("streamBeginTimestamp") or 0),
+                streamEndTime=str(result.get("streamEndTime") or ""),
+                streamEndTimestamp=int(result.get("streamEndTimestamp") or 0),
             )
         elif result.get("error"):
             if available_qualities:
@@ -3700,6 +3843,9 @@ class VoteService:
             )
             old_config = self.config
             new_config = update.config
+            source_changed, source_warning = synchronize_direct_mgtv_source(new_config)
+            if source_changed and source_warning:
+                update.warnings.append(source_warning)
             save_config_atomic(self.config_path, new_config)
 
             self.config = new_config
@@ -3752,6 +3898,9 @@ class VoteService:
             payload,
             active_round=bool(self.store.active_round_id),
         )
+        source_changed, source_warning = synchronize_direct_mgtv_source(update.config)
+        if source_changed and source_warning:
+            update.warnings.append(source_warning)
         restart_fields = self._restart_fields_for(update.config)
         next_round_fields: list[str] = []
         if (self.config.get("vote") or {}) != (update.config.get("vote") or {}):
@@ -4156,6 +4305,7 @@ class VoteService:
         *,
         record_video: bool = True,
         collect_danmaku: bool = True,
+        use_cached_recording_source: bool = False,
     ) -> RoundMeta:
         url = url or self.config.get("mgtv", {}).get("url")
         if not url:
@@ -4170,7 +4320,7 @@ class VoteService:
         page_url = str(resolution.get("pageUrl") or url)
         recording = self.config.get("recording") or {}
         recording_source = str(recording.get("stream_url") or "")
-        if record_video:
+        if record_video and not (use_cached_recording_source and recording_source):
             detected = await self.detect_mgtv_recording_source(page_url, str(recording.get("preferred_quality") or "auto"))
             if not detected.get("ok"):
                 raise ValueError(str(detected.get("error") or "录制源检测失败"))

@@ -329,7 +329,7 @@ class WebuiSettingsJsTest(unittest.TestCase):
             if (!elementFor("mgtvUrlHint").textContent.includes("activity_id=1001668")) {
               throw new Error("activity page hint did not report activity id: " + elementFor("mgtvUrlHint").textContent);
             }
-            if (!elementFor("mgtvUrlHint").textContent.includes("自动解析 camera_id")) {
+            if (!elementFor("mgtvUrlHint").textContent.includes("轮询解析机位")) {
               throw new Error("activity page hint did not explain deferred camera parsing: " + elementFor("mgtvUrlHint").textContent);
             }
             """

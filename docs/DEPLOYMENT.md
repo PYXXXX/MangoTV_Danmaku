@@ -154,14 +154,14 @@ sudoedit /var/lib/mgtv-danmaku/config.json
 
 `recording.stream_url` 必须是 ffmpeg 可直接读取的媒体流地址，例如 HLS/m3u8；普通芒果网页 URL 不一定能录制。推荐运营在 WebUI「系统配置 → 直播录屏与后处理」里点击“发起扫码登录”，用有对应观看权益的芒果 TV 账号扫码后，再点击“检测播放源”。系统会直接调用芒果 TV 用户端扫码登录接口和直播播放源接口，按 `recording.preferred_quality` 尝试解析 1080P/720P 等清晰度并保存播放源，敏感 cookie 与 m3u8 URL 不会在页面回显。
 
-歌手 2026 这类官方活动页可能是 `https://www.mgtv.com/z/1001668.html?...`，直播开始后才由前端刷新到 `/z/{activityId}/{cameraId}.html`。系统在“检测播放源”和“开始场次”前会先尝试刷新官方活动页并解析机位；成功后会保存解析出的 `mgtv.url`、`camera_id` 和 `room_id=liveshow-{camera_id}`。如果直播尚未开始、页面仍未暴露机位，运营端会提示稍后重试或手动填写带 camera_id 的直播页 URL。
+当前歌手 2026 直播页可直接使用 `https://www.mgtv.com/z/1001668/5366.html?...`，其中 `1001668` 是活动 ID、`5366` 是机位 ID。系统会把直接机位 URL 作为最高优先级输入，不再等待活动页刷新，并自动同步 `mgtv.camera_id=5366` 和 `room_id=liveshow-5366`。只有输入 `/z/{activityId}.html` 这类纯活动页时，才会启用活动页轮询解析作为回退方案。
 
 注意：该功能只使用账号自身可观看的清晰度，不绕过登录、VIP、DRM 或平台限制。如果页面提示需要 VIP、清晰度不可用、DRM 保护或芒果 TV 前端接口变化，系统会提示检测失败；此时需要更换有权限账号、降低清晰度，或手动填入合法可录制的 m3u8。
 
 说明：
 
 - 服务会从 `/z/{activityId}/{cameraId}.html` 解析 cameraId，并请求 `room_id=liveshow-{cameraId}`。
-- 如页面 URL 无法自动刷新解析，可在 `mgtv` 中显式增加 `"room_id": "liveshow-5366"` 或填写带 cameraId 的直播页 URL。
+- 若当前只有纯活动页，请在确认真实直播机位后改填带 cameraId 的直播页 URL；也可在 `mgtv` 中显式填写 `"room_id": "liveshow-5366"`。
 - `count_initial_history=false` 表示场次启动时先预热历史列表但不计票，避免把开场前缓存算入本轮；原始观测轨仍会保存首批历史返回，便于后处理复盘。
 - 去重索引主要占磁盘；`dedup_hot_cache_size` 控制内存中的热缓存规模。
 
@@ -646,7 +646,7 @@ sudo systemctl reload nginx
 适合运营无法一直盯直播的场景。该模式仍复用场次、录制和弹幕采集后端，只是在运营端单独成区。
 
 1. 在系统配置中完成芒果 TV 扫码登录，选择清晰度并检测播放源。
-2. 在“录制后处理”里点击“开始全程录制与弹幕”。系统会自动刷新官方活动页并解析机位。
+2. 在“录制后处理”里点击“开始全程录制与弹幕”。直接机位 URL 会立即用于播放源和弹幕房间检测；纯活动页才会尝试解析机位。
 3. 直播结束后结束该全程场次；此时本地已有完整视频、处理后弹幕 JSONL 和原始观测弹幕 JSONL。
 4. 在播放器里回看，给关键时间点打标。
 5. 输入开始/结束秒数截取片段。
@@ -868,7 +868,7 @@ sudo systemctl restart mgtv-danmaku
 | GET | `/api/results.json` | 否 | 当前聚合状态 |
 | GET | `/api/settings` | 否 | 读取已脱敏的在线配置 |
 | POST | `/api/settings` | 否 | 校验、保存并热应用配置 |
-| POST | `/api/mgtv/url/resolve` | 否 | 刷新官方活动页并解析直播机位 |
+| POST | `/api/mgtv/url/resolve` | 否 | 识别直接机位 URL；纯活动页则尝试解析直播机位 |
 | POST | `/api/mgtv/source/check` | 否 | 检测芒果 TV 可录制播放源 |
 | GET | `/api/feishu/binding` | 否 | 读取飞书一键绑定状态 |
 | POST | `/api/feishu/binding/start` | 否 | 发起飞书授权绑定 |

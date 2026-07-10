@@ -179,8 +179,11 @@ function ActivityMonitorPage({ activity, status, rounds = [], recordings = [] }:
   };
   const busy = save.isPending || detect.isPending || stop.isPending;
   const error = save.error || detect.error || stop.error;
-  const parsedActivityId = parseMgtvActivityId(form.url);
+  const parsedSource = parseMgtvSource(form.url);
+  const parsedActivityId = parsedSource.activityId;
+  const parsedCameraId = parsedSource.cameraId;
   const isRecognizedActivity = Boolean(parsedActivityId);
+  const isDirectCameraPage = Boolean(parsedCameraId);
   const statusText = form.monitorEnabled ? "监控中" : "未启用";
   const statusTone = form.monitorEnabled ? "green" : isDirty ? "orange" : "neutral";
   const detectedQualities = useMemo(
@@ -199,6 +202,22 @@ function ActivityMonitorPage({ activity, status, rounds = [], recordings = [] }:
     return ["auto", ...fetched.filter((item) => item !== "auto")];
   }, [detectedQualities]);
   const availableQualityText = detectedQualities.length ? detectedQualities.join(" / ") : "待检测";
+  const detectionResultText = state.liveStatus === "upcoming"
+    ? "等待开播"
+    : state.liveStatus === "ended"
+      ? "直播已结束"
+      : state.lastError
+        ? "检测失败"
+        : state.quality
+          ? "可录制"
+          : "待检测";
+  const detectionResultTone = state.liveStatus === "ended" || state.lastError
+    ? "red"
+    : state.liveStatus === "upcoming"
+      ? "orange"
+      : state.quality
+        ? "green"
+        : "neutral";
   const recordingRounds = useMemo(() => rounds.filter((round) => round.kind === "recording" || round.visibility === "private" || Boolean(round.recording)), [rounds]);
   const activeRecording = recordings.find((item) => item.status === "recording")
     || recordingRounds.find((round) => round.recording?.status === "recording")?.recording
@@ -283,7 +302,7 @@ function ActivityMonitorPage({ activity, status, rounds = [], recordings = [] }:
                     className="ops-input min-h-[3.25rem]"
                     value={form.url}
                     onChange={(event) => updateForm({ url: event.target.value })}
-                    placeholder="https://www.mgtv.com/z/1001668.html"
+                    placeholder="https://www.mgtv.com/z/1001668/5366.html"
                   />
                   <a
                     className="grid size-[3.25rem] shrink-0 place-items-center rounded-2xl border border-white/10 bg-white/[0.04] text-slate-200 transition hover:border-orange-300/35 hover:text-ops-gold max-sm:size-auto max-sm:min-h-12"
@@ -299,14 +318,19 @@ function ActivityMonitorPage({ activity, status, rounds = [], recordings = [] }:
               <div className={`rounded-2xl border px-4 py-3 text-sm ${isRecognizedActivity ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-100" : "border-white/10 bg-black/20 text-ops-muted"}`}>
                 <span className="inline-flex items-center gap-2 font-bold">
                   {isRecognizedActivity ? <CheckCircle size={18} weight="fill" /> : <WarningCircle size={18} />}
-                  {isRecognizedActivity ? "已识别为官方活动页" : "未识别到标准活动页"}
+                  {isDirectCameraPage ? "已识别为直播机位页" : isRecognizedActivity ? "已识别为官方活动页" : "未识别到标准活动页"}
                 </span>
                 <span className="mt-1 block text-xs opacity-80">
-                  {isRecognizedActivity ? `活动 ID：${parsedActivityId}。直播开始后会自动解析机位与直播源。` : "请填写 mgtv.com/z/{活动ID}.html，或使用直播开始后的跳转链接。"}
+                  {isDirectCameraPage
+                    ? `活动 ID：${parsedActivityId}，机位 ID：${parsedCameraId}。系统会直接检测该机位，不再等待页面跳转。`
+                    : isRecognizedActivity
+                      ? `活动 ID：${parsedActivityId}。系统会轮询活动页；如已知直播机位，请优先填写 /z/${parsedActivityId}/{cameraId}.html。`
+                      : "请填写 mgtv.com/z/{活动ID}/{机位ID}.html；仅有活动页时也可保存为回退方案。"}
                 </span>
               </div>
-              <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+              <div className="grid grid-cols-3 gap-3 max-sm:grid-cols-1">
                 <InfoPill label="活动 ID" value={parsedActivityId || "待识别"} />
+                <InfoPill label="机位 ID" value={parsedCameraId || "待解析"} tone={parsedCameraId ? "green" : "neutral"} />
                 <InfoPill label="状态" value={form.monitorEnabled ? "监控策略已启用" : "未开始监控"} />
               </div>
               <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
@@ -324,10 +348,12 @@ function ActivityMonitorPage({ activity, status, rounds = [], recordings = [] }:
           <Card title="直播源检测" action={<StatusBadge tone={state.quality ? "green" : "neutral"}>{state.quality ? "已检测" : "待检测"}</StatusBadge>}>
             <div className="grid gap-4 text-sm">
               <p className="leading-7 text-ops-muted">
-                系统会在开播后自动刷新活动页并解析可录制源。手动检测用于开播前复核配置。
+                {isDirectCameraPage
+                  ? `系统将直接使用机位 ${parsedCameraId} 检测播放源与清晰度，不依赖活动页刷新。`
+                  : "系统会轮询活动页寻找直播机位；手动检测用于开播前复核配置。"}
               </p>
               <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
-                <InfoPill label="检测结果" value={state.lastError ? "检测失败" : state.quality ? "可录制" : "等待开播"} tone={state.lastError ? "red" : state.quality ? "green" : "neutral"} />
+                <InfoPill label="检测结果" value={detectionResultText} tone={detectionResultTone} />
                 <InfoPill label="可用清晰度" value={availableQualityText} tone={detectedQualities.length ? "green" : "neutral"} />
               </div>
               <button
@@ -415,15 +441,15 @@ function ActivityMonitorPage({ activity, status, rounds = [], recordings = [] }:
             <Timeline
               items={[
                 { title: form.monitorEnabled ? "等待开播" : "监控未启用", description: state.lastCheckAt || "系统已准备监控活动页与直播状态", tone: form.monitorEnabled ? "active" : "idle" },
-                { title: isRecognizedActivity ? "已解析活动页" : "活动页待识别", description: isRecognizedActivity ? `识别活动 ID：${parsedActivityId}` : "请先保存标准活动链接", tone: isRecognizedActivity ? "done" : "idle" },
-                { title: "直播源待检测", description: state.lastError || state.quality || "等待开播或手动检测", tone: state.lastError ? "warn" : state.quality ? "done" : "idle" }
+                { title: isDirectCameraPage ? "已锁定直播机位" : isRecognizedActivity ? "已解析活动页" : "活动页待识别", description: isDirectCameraPage ? `activity_id=${parsedActivityId} · camera_id=${parsedCameraId}` : isRecognizedActivity ? `识别活动 ID：${parsedActivityId}` : "请先保存标准活动链接", tone: isRecognizedActivity ? "done" : "idle" },
+                { title: state.liveStatus === "live" ? "直播源已就绪" : state.liveStatus === "upcoming" ? "等待计划开播" : state.liveStatus === "ended" ? "直播已结束" : "直播源待检测", description: state.lastError || state.message || state.quality || "等待开播或手动检测", tone: state.lastError || state.liveStatus === "ended" ? "warn" : state.quality ? "done" : "idle" }
               ]}
             />
             <div className="mt-5 grid grid-cols-4 gap-2 rounded-2xl border border-white/10 bg-black/20 p-3 text-xs max-sm:grid-cols-2">
               <InfoPill label="当前状态" value={form.monitorEnabled ? "监控中" : "待命"} tone={form.monitorEnabled ? "green" : "neutral"} />
-              <InfoPill label="开播时间" value="-" />
-              <InfoPill label="当前机位" value={state.quality ? "已解析" : "-"} />
-              <InfoPill label="直播源" value={state.quality ? "可录制" : "未检测"} tone={state.quality ? "green" : "neutral"} />
+              <InfoPill label="开播时间" value={state.streamBeginTime || "-"} />
+              <InfoPill label="当前机位" value={state.cameraId || parsedCameraId || "-"} tone={state.cameraId || parsedCameraId ? "green" : "neutral"} />
+              <InfoPill label="直播源" value={state.liveStatus === "upcoming" ? "预告流已检测" : state.quality ? "可录制" : "未检测"} tone={state.liveStatus === "upcoming" ? "orange" : state.quality ? "green" : "neutral"} />
             </div>
           </Card>
 
@@ -483,9 +509,19 @@ function ActivityMonitorPage({ activity, status, rounds = [], recordings = [] }:
   );
 }
 
-function parseMgtvActivityId(url = "") {
-  const match = url.match(/mgtv\.com\/z\/(\d+)(?:\.html|\/|\?|#|$)/i);
-  return match?.[1] || "";
+function parseMgtvSource(url = "") {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    if (host !== "mgtv.com" && !host.endsWith(".mgtv.com")) return { activityId: "", cameraId: "" };
+    const match = parsed.pathname.match(/^\/z2?\/([^/]+?)(?:\.html)?(?:\/([^/]+?)(?:\.html)?)?\/?$/i);
+    return {
+      activityId: match?.[1] || "",
+      cameraId: match?.[2] || ""
+    };
+  } catch {
+    return { activityId: "", cameraId: "" };
+  }
 }
 
 function normalizeQualityOptions(values?: Array<string | undefined | null>) {
@@ -509,8 +545,14 @@ function formatShortTime(value?: string) {
   return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 }
 
-function InfoPill({ label, value, tone = "neutral" }: { label: string; value: string; tone?: "green" | "red" | "neutral" }) {
-  const toneClass = tone === "green" ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100" : tone === "red" ? "border-red-400/25 bg-red-400/10 text-red-100" : "border-white/10 bg-black/20 text-slate-100";
+function InfoPill({ label, value, tone = "neutral" }: { label: string; value: string; tone?: "green" | "orange" | "red" | "neutral" }) {
+  const toneClass = tone === "green"
+    ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
+    : tone === "orange"
+      ? "border-orange-400/25 bg-orange-400/10 text-orange-100"
+      : tone === "red"
+        ? "border-red-400/25 bg-red-400/10 text-red-100"
+        : "border-white/10 bg-black/20 text-slate-100";
   return (
     <div className={`rounded-2xl border px-3 py-3 ${toneClass}`}>
       <span className="block text-[11px] font-bold text-ops-muted">{label}</span>

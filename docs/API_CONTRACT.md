@@ -52,7 +52,7 @@
     {
       "id": "1001668",
       "name": "歌手 2026",
-      "url": "https://www.mgtv.com/z/1001668.html",
+      "url": "https://www.mgtv.com/z/1001668/5366.html",
       "status": "waiting",
       "monitorEnabled": true,
       "createdAt": "...",
@@ -69,7 +69,7 @@
 ```json
 {
   "name": "歌手 2026",
-  "url": "https://www.mgtv.com/z/1001668.html",
+  "url": "https://www.mgtv.com/z/1001668/5366.html",
   "monitorEnabled": true
 }
 ```
@@ -125,16 +125,20 @@
 {
   "ok": true,
   "activityId": "1001668",
-  "pageUrl": "https://www.mgtv.com/z/1001668.html",
+  "pageUrl": "https://www.mgtv.com/z/1001668/5366.html",
   "cameraId": "5366",
   "roomId": "liveshow-5366",
+  "sourceInputMode": "direct_camera",
   "quality": "1080P",
   "actualQuality": "1080P",
   "availableQualities": ["1080P", "720P"],
   "loginRequired": false,
   "vipRequired": false,
   "recordable": true,
-  "streamConfigured": true,
+  "streamUrlConfigured": true,
+  "liveStatus": "live",
+  "streamBeginTime": "2026-07-10 18:25:00",
+  "streamEndTime": "2026-07-11 05:00:00",
   "message": "已解析直播源"
 }
 ```
@@ -152,7 +156,7 @@
   "activityId": "1001668",
   "activity": "歌手 2026",
   "name": "第 1 轮",
-  "url": "https://www.mgtv.com/z/1001668.html",
+  "url": "https://www.mgtv.com/z/1001668/5366.html",
   "recordVideo": false,
   "collectDanmaku": true
 }

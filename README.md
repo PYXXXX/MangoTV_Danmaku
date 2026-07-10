@@ -47,7 +47,7 @@ Chrome 扩展模式依赖 DOM；服务器模式默认直接调用客户端接口
 
 如果未来客户端接口变更，只需调整 [server/config.example.json](server/config.example.json) 的 `mgtv.history_api` 和 `mgtv.flag/camera_id/room_id`。
 
-服务端在“检测播放源”和“开始场次”前会尝试自动刷新官方活动页并解析机位；如果直播尚未开始、页面没有暴露 cameraId，会提示稍后重试或手动填写带 cameraId 的直播页。
+已知直播页时应直接填写 `/z/{activityId}/{cameraId}.html`。服务端会立即锁定机位、同步 `camera_id/room_id` 并检测播放源，不依赖页面刷新；只有仅提供 `/z/{activityId}.html` 时才会轮询活动页作为回退。
 
 接口排查细节见 [server/interface_notes.md](server/interface_notes.md)。
 

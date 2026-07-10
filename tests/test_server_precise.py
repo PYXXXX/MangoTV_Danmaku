@@ -351,13 +351,14 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                 calls.append({"detect": url, "quality": quality})
                 return {"ok": True, "quality": "1080P", "actualQuality": "1080P"}
 
-            async def fake_start_independent_recording(name, url=None, activity=None, *, record_video=None, collect_danmaku=True):
+            async def fake_start_independent_recording(name, url=None, activity=None, *, record_video=None, collect_danmaku=True, use_cached_recording_source=False):
                 calls.append({
                     "start_independent": name,
                     "url": url,
                     "activity": activity,
                     "record_video": record_video,
                     "collect_danmaku": collect_danmaku,
+                    "use_cached_recording_source": use_cached_recording_source,
                 })
                 return SimpleNamespace(id="round-monitor", name=name, activity=activity)
 
@@ -377,6 +378,7 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                         "activity": "歌手 2026",
                         "record_video": True,
                         "collect_danmaku": True,
+                        "use_cached_recording_source": True,
                     },
                 ])
                 self.assertEqual(status["state"]["status"], "running")

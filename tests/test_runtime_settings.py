@@ -589,7 +589,7 @@ class SettingsApiHttpTest(SettingsHttpBase):
             "/api/activities",
             json={
                 "name": "歌手 2026",
-                "url": "https://www.mgtv.com/z/1001668.html",
+                "url": "https://www.mgtv.com/z/1001668/5366.html?fpa=12437&fpos&lastp=ch_home&_source_=B",
                 "monitorEnabled": True,
                 "policy": {
                     "autoDetectSource": True,
@@ -605,7 +605,9 @@ class SettingsApiHttpTest(SettingsHttpBase):
         activity_result = await response.json()
         self.assertTrue(activity_result["ok"])
         self.assertEqual(self.service.config["vote"]["activity"], "歌手 2026")
-        self.assertEqual(self.service.config["monitor"]["url"], "https://www.mgtv.com/z/1001668.html")
+        self.assertEqual(self.service.config["monitor"]["url"], "https://www.mgtv.com/z/1001668/5366.html?fpa=12437&fpos&lastp=ch_home&_source_=B")
+        self.assertEqual(self.service.config["mgtv"]["camera_id"], "5366")
+        self.assertEqual(self.service.config["mgtv"]["room_id"], "liveshow-5366")
         self.assertTrue(self.service.config["monitor"]["enabled"])
         self.assertEqual(self.service.config["recording"]["preferred_quality"], "720P")
 

@@ -112,7 +112,7 @@ function applyMgtvUrlAutofill() {
   if (!settingsEl.cfgHistoryApi.value.trim()) setField("cfgHistoryApi", parsed.historyApi);
   if (parsed.type === "activity") {
     if (settingsEl.mgtvUrlHint) {
-      settingsEl.mgtvUrlHint.textContent = "已识别官方活动页 activity_id=" + parsed.activityId + "；直播开始后检测播放源或开始场次时会自动解析 camera_id。";
+      settingsEl.mgtvUrlHint.textContent = "已识别纯活动页 activity_id=" + parsed.activityId + "；系统会轮询解析机位，已知机位时建议直接填写 /z/{活动ID}/{camera_id}.html。";
       settingsEl.mgtvUrlHint.className = "field-hint success";
     }
     return true;

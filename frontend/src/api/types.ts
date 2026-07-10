@@ -140,6 +140,10 @@ export interface MonitorView {
     feishuNotify?: boolean;
     pollSeconds?: number;
     preferredQuality?: string;
+    activityId?: string;
+    cameraId?: string;
+    roomId?: string;
+    sourceInputMode?: "direct_camera" | "activity_page" | string;
   };
   state?: {
     status?: string;
@@ -149,6 +153,15 @@ export interface MonitorView {
     quality?: string;
     availableQualities?: string[];
     taskRunning?: boolean;
+    activityId?: string;
+    cameraId?: string;
+    roomId?: string;
+    sourceInputMode?: "direct_camera" | "activity_page" | string;
+    liveStatus?: "upcoming" | "live" | "ended" | "unknown" | string;
+    streamBeginTime?: string;
+    streamBeginTimestamp?: number;
+    streamEndTime?: string;
+    streamEndTimestamp?: number;
   };
 }
 
@@ -168,6 +181,16 @@ export interface SourceDetectionResult {
   activityId?: string;
   cameraId?: string;
   resolvedFrom?: string;
+  liveStatus?: "upcoming" | "live" | "ended" | "unknown" | string;
+  serverTimestamp?: number;
+  streamBeginTimestamp?: number;
+  streamEndTimestamp?: number;
+  streamBeginTime?: string;
+  streamEndTime?: string;
+  preview?: boolean;
+  cameraName?: string;
+  roomId?: string;
+  sourceInputMode?: "direct_camera" | "activity_page" | string;
 }
 
 export interface MgtvAuthStatus {
