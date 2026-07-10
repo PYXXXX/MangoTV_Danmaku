@@ -87,7 +87,12 @@ def mgtv_live_source_sign(params: dict[str, Any]) -> str:
         for key in sorted(params)
         if params[key] is not None
     )
-    return hashlib.md5(f"{MANGO_LIVE_SOURCE_SIGN_SALT}{payload}{MANGO_LIVE_SOURCE_SIGN_SALT}".encode()).hexdigest().upper()
+    # Mango TV's upstream protocol requires this MD5-shaped signature; it is
+    # not used for password storage or any local security decision.
+    return hashlib.md5(
+        f"{MANGO_LIVE_SOURCE_SIGN_SALT}{payload}{MANGO_LIVE_SOURCE_SIGN_SALT}".encode(),
+        usedforsecurity=False,
+    ).hexdigest().upper()
 
 
 def parse_mgtv_activity_camera(page_url: str) -> tuple[str, str]:

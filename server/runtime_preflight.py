@@ -65,10 +65,21 @@ def redact_sensitive_text(value: str) -> str:
             parsed = urlsplit(raw)
         except ValueError:
             return raw
-        if not parsed.query:
-            return raw
-        pairs = []
+        netloc = parsed.netloc
         changed = False
+        if parsed.username is not None or parsed.password is not None:
+            host = parsed.hostname or ""
+            if ":" in host and not host.startswith("["):
+                host = f"[{host}]"
+            netloc = f"***@{host}"
+            try:
+                port = parsed.port
+            except ValueError:
+                port = None
+            if port is not None:
+                netloc += f":{port}"
+            changed = True
+        pairs = []
         for key, item in parse_qsl(parsed.query, keep_blank_values=True):
             if key.lower() in SENSITIVE_KEYS:
                 pairs.append((key, "***"))
@@ -77,7 +88,7 @@ def redact_sensitive_text(value: str) -> str:
                 pairs.append((key, item))
         if not changed:
             return raw
-        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(pairs), parsed.fragment))
+        return urlunsplit((parsed.scheme, netloc, parsed.path, urlencode(pairs), parsed.fragment))
 
     text = re.sub(r"(?:https?|wss?)://[^\s\"'<>]+", redact_url, text)
     key_pattern = "|".join(sorted(re.escape(key) for key in SENSITIVE_KEYS))
@@ -87,6 +98,8 @@ def redact_sensitive_text(value: str) -> str:
         text,
     )
     text = re.sub(r"(?i)(Authorization:\s*Bearer\s+)[^\s]+", r"\1***", text)
+    text = re.sub(r"\bgithub_pat_[A-Za-z0-9_]{12,}\b", "github_pat_***", text)
+    text = re.sub(r"\bgh[pousr]_[A-Za-z0-9]{12,}\b", "gh*_***", text)
     return text
 
 

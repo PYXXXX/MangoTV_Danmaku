@@ -11,6 +11,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from defusedxml import ElementTree as DefusedET
+from defusedxml.common import DefusedXmlException
+
 
 AUDIT_FIELDS = (
     "inputMessages", "cleanMessages", "ruleAcceptedMessages",
@@ -48,8 +51,8 @@ def parse_precise_result(filename: str, content: bytes) -> dict[str, Any]:
         if b"<!DOCTYPE" in content.upper() or b"<!ENTITY" in content.upper():
             raise ValueError("XML 不允许包含 DOCTYPE 或 ENTITY")
         try:
-            root = ET.fromstring(content)
-        except ET.ParseError as exc:
+            root = DefusedET.fromstring(content)
+        except (ET.ParseError, DefusedXmlException) as exc:
             raise ValueError(f"XML 文件无效：{exc}") from exc
         if root.tag != "preciseResult":
             raise ValueError("XML 根节点必须是 preciseResult")

@@ -21,7 +21,7 @@ except ModuleNotFoundError:
 
 def base_config(root: Path) -> dict:
     return {
-        "listen": {"host": "127.0.0.1", "port": 8080, "public_base_url": "https://example.com"},
+        "listen": {"host": "127.0.0.1", "port": 8080, "public_base_url": "http://127.0.0.1:8080"},
         "storage": {"directory": str(root / "data")},
         "recording": {
             "enabled": False,

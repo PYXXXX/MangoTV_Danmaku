@@ -153,6 +153,15 @@ class OperatorAuth:
 
     def record_failure(self, key: str, *, now: float | None = None) -> None:
         current_time = time.monotonic() if now is None else now
+        if len(self._failures) >= 4096 and key not in self._failures:
+            cutoff = current_time - self.failure_window_seconds
+            self._failures = {
+                item: failures
+                for item, failures in self._failures.items()
+                if failures and failures[-1] >= cutoff
+            }
+            while len(self._failures) >= 4096:
+                self._failures.pop(next(iter(self._failures)))
         failures = self._recent_failures(key, now=current_time)
         failures.append(current_time)
         self._failures[key] = failures

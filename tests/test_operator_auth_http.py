@@ -118,7 +118,26 @@ class PublicDisabledAuthService(FakeService):
 @unittest.skipIf(AioHTTPTestCase is None, "aiohttp 未安装，跳过认证 HTTP 测试")
 class OperatorAuthHttpTest(AuthHttpTestBase):
     async def get_application(self):
-        return create_app(FakeService())
+        self.service = FakeService()
+        return create_app(self.service)
+
+    async def test_same_site_browser_mutation_is_rejected(self):
+        cookie = f"mgtv_operator_session={self.service.operator_auth.make_session_token()}"
+        blocked = await self.client.post(
+            "/auth/logout",
+            headers={"Cookie": cookie, "Origin": "https://other.bilirec.com", "Sec-Fetch-Site": "same-site"},
+            allow_redirects=False,
+        )
+        self.assertEqual(blocked.status, 403)
+        self.assertIn("跨站", (await blocked.json())["error"])
+
+        origin = str(self.client.make_url("/")).rstrip("/")
+        allowed = await self.client.post(
+            "/auth/logout",
+            headers={"Cookie": cookie, "Origin": origin, "Sec-Fetch-Site": "same-origin"},
+            allow_redirects=False,
+        )
+        self.assertEqual(allowed.status, 303)
 
     async def test_login_page_stylesheet_is_cache_busted(self):
         login = await self.client.get("/login")
@@ -241,6 +260,9 @@ class DisabledOperatorAuthHttpTest(AuthHttpTestBase):
         self.assertIn('/studio/assets/admin-test.js', page)
         api = await self.client.get("/api/results.json")
         self.assertEqual(api.status, 200)
+
+        external = await self.client.get("/api/results.json", headers={"Host": "192.0.2.10"})
+        self.assertEqual(external.status, 403)
 
 
 @unittest.skipIf(AioHTTPTestCase is None, "aiohttp 未安装，跳过认证 HTTP 测试")

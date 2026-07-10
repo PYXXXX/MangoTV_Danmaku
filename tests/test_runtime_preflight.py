@@ -56,13 +56,18 @@ class RuntimePreflightTest(unittest.TestCase):
                 run_runtime_preflight(config, config_path=root / "config.json", repo_root=root / "repo")
 
     def test_redacts_lark_websocket_sensitive_query_fields(self):
-        raw = "wss://example.test/ws?access_key=ak-123&ticket=t-456&session=s-789&ok=1 Cookie: abc token=secret"
+        raw = (
+            "wss://user:password@example.test/ws?access_key=ak-123&ticket=t-456&session=s-789&ok=1 "
+            "Cookie: abc token=secret github_pat_abcdefghijklmnopqrstuvwxyz123456"
+        )
         redacted = redact_sensitive_text(raw)
 
         self.assertNotIn("ak-123", redacted)
         self.assertNotIn("t-456", redacted)
         self.assertNotIn("s-789", redacted)
         self.assertNotIn("secret", redacted)
+        self.assertNotIn("password", redacted)
+        self.assertNotIn("abcdefghijklmnopqrstuvwxyz", redacted)
         self.assertIn("ok=1", redacted)
 
 

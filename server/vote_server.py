@@ -12,6 +12,7 @@ import asyncio
 import base64
 import hashlib
 import html
+import ipaddress
 import json
 import os
 import platform
@@ -22,6 +23,7 @@ import shutil
 import signal
 import sqlite3
 import subprocess
+import threading
 import time
 import traceback
 import unicodedata
@@ -31,7 +33,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from zoneinfo import ZoneInfo
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, FormData, web
@@ -90,6 +92,24 @@ except ModuleNotFoundError:  # Support `python server/vote_server.py`.
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def append_jsonl_rotating(path: Path, payload: dict[str, Any], *, max_bytes: int = 10 * 1024 * 1024, backups: int = 2) -> None:
+    """Append an event while keeping persistent diagnostic logs bounded."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+    encoded_size = len(line.encode("utf-8"))
+    if path.exists() and path.stat().st_size + encoded_size > max(1024, max_bytes):
+        for index in range(max(1, backups), 0, -1):
+            source = path if index == 1 else path.with_name(f"{path.name}.{index - 1}")
+            target = path.with_name(f"{path.name}.{index}")
+            if source.exists():
+                target.unlink(missing_ok=True)
+                source.replace(target)
+                os.chmod(target, 0o600)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(line)
+    os.chmod(path, 0o600)
 
 
 def normalize(text: str) -> str:
@@ -197,7 +217,9 @@ class PersistentDeduper:
         self.max_records = max(1, int(max_records))
         self.seq = 0
         self.insertions_since_prune = 0
-        self.conn = sqlite3.connect(self.db_path)
+        self.lock = threading.RLock()
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self.closed = False
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.execute("PRAGMA temp_store=MEMORY")
@@ -207,50 +229,78 @@ class PersistentDeduper:
         self.seq = int(row[0] or 0)
 
     def clear(self) -> None:
-        self.hot.clear()
-        self.conn.execute("DELETE FROM fingerprints")
-        self.conn.commit()
-        self.seq = 0
-        self.insertions_since_prune = 0
+        with self.lock:
+            self.hot.clear()
+            self.conn.execute("DELETE FROM fingerprints")
+            self.conn.commit()
+            self.seq = 0
+            self.insertions_since_prune = 0
 
     def close(self) -> None:
-        self.conn.close()
+        with self.lock:
+            if self.closed:
+                return
+            self.conn.close()
+            self.closed = True
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            # Interpreter shutdown can tear down the SQLite module first.
+            pass
 
     def reconfigure(self, hot_cache_size: int, max_records: int) -> None:
-        self.hot.resize(hot_cache_size)
-        self.max_records = max(1, int(max_records))
-        self.prune()
+        with self.lock:
+            self.hot.resize(hot_cache_size)
+            self.max_records = max(1, int(max_records))
+            self.prune()
 
     def key_for(self, fingerprint: str) -> bytes:
-        return hashlib.sha1(fingerprint.encode("utf-8")).digest()
+        return hashlib.sha1(fingerprint.encode("utf-8"), usedforsecurity=False).digest()
 
     def seen_or_add(self, fingerprint: str) -> bool:
-        key = self.key_for(fingerprint)
-        if self.hot.contains(key):
-            return True
-        self.seq += 1
-        cursor = self.conn.execute("INSERT OR IGNORE INTO fingerprints(fp, seq) VALUES (?, ?)", (key, self.seq))
-        self.conn.commit()
-        self.hot.add(key)
-        if cursor.rowcount == 0:
-            return True
-        self.insertions_since_prune += 1
-        if self.insertions_since_prune >= 10_000:
-            self.prune()
-        return False
+        return self.seen_or_add_many([fingerprint])[0]
+
+    def seen_or_add_many(self, fingerprints: Iterable[str]) -> list[bool]:
+        """Check a polling batch using one SQLite transaction."""
+        with self.lock:
+            results: list[bool] = []
+            inserted = 0
+            with self.conn:
+                for fingerprint in fingerprints:
+                    key = self.key_for(fingerprint)
+                    if self.hot.contains(key):
+                        results.append(True)
+                        continue
+                    self.seq += 1
+                    cursor = self.conn.execute(
+                        "INSERT OR IGNORE INTO fingerprints(fp, seq) VALUES (?, ?)",
+                        (key, self.seq),
+                    )
+                    self.hot.add(key)
+                    duplicate = cursor.rowcount == 0
+                    results.append(duplicate)
+                    if not duplicate:
+                        inserted += 1
+            self.insertions_since_prune += inserted
+            if self.insertions_since_prune >= 10_000:
+                self.prune()
+            return results
 
     def prune(self) -> None:
-        self.insertions_since_prune = 0
-        row = self.conn.execute("SELECT COUNT(*) FROM fingerprints").fetchone()
-        count = int(row[0] or 0)
-        overflow = count - self.max_records
-        if overflow <= 0:
-            return
-        self.conn.execute(
-            "DELETE FROM fingerprints WHERE fp IN (SELECT fp FROM fingerprints ORDER BY seq ASC LIMIT ?)",
-            (overflow,),
-        )
-        self.conn.commit()
+        with self.lock:
+            self.insertions_since_prune = 0
+            row = self.conn.execute("SELECT COUNT(*) FROM fingerprints").fetchone()
+            count = int(row[0] or 0)
+            overflow = count - self.max_records
+            if overflow <= 0:
+                return
+            self.conn.execute(
+                "DELETE FROM fingerprints WHERE fp IN (SELECT fp FROM fingerprints ORDER BY seq ASC LIMIT ?)",
+                (overflow,),
+            )
+            self.conn.commit()
 
 
 @dataclass
@@ -390,9 +440,18 @@ class StateStore:
             "roundOrder": self.round_order,
             "rounds": [asdict(self.rounds[round_id]) for round_id in self.round_order if round_id in self.rounds],
         }
+        await asyncio.to_thread(self._write_state, payload)
+
+    def _write_state(self, payload: dict[str, Any]) -> None:
         tmp = self.meta_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         tmp.replace(self.meta_path)
+
+    @staticmethod
+    def _append_payload(paths: Iterable[Path], payload: str) -> None:
+        for path in paths:
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(payload)
 
     async def create_round(
         self,
@@ -509,9 +568,11 @@ class StateStore:
             self.rounds[round_id] = meta
             self.round_order.insert(0, round_id)
             path = self.rounds_dir / f"{round_id}.jsonl"
-            with path.open("w", encoding="utf-8") as handle:
-                for record in output_records:
-                    handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+            output = "".join(
+                json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+                for record in output_records
+            )
+            await asyncio.to_thread(path.write_text, output, encoding="utf-8")
             await self.save()
             return meta
 
@@ -550,6 +611,7 @@ class StateStore:
                 (self.raw_rounds_dir / f"{round_id}.jsonl").unlink()
             except FileNotFoundError:
                 pass
+            await asyncio.to_thread(self._purge_rounds_from_global_log, {round_id})
             return meta
 
     async def delete_activity(self, activity: str) -> list[RoundMeta]:
@@ -578,6 +640,7 @@ class StateStore:
                     (self.raw_rounds_dir / f"{round_id}.jsonl").unlink()
                 except FileNotFoundError:
                     pass
+            await asyncio.to_thread(self._purge_rounds_from_global_log, match_ids)
             return matches
 
     async def set_precise_result(self, round_id: str, result: dict[str, Any]) -> RoundMeta:
@@ -619,22 +682,53 @@ class StateStore:
         return None
 
     async def append_message(self, round_id: str, message: DanmakuMessage) -> None:
+        await self.append_messages(round_id, [message])
+
+    async def append_messages(self, round_id: str, messages: Iterable[DanmakuMessage]) -> None:
+        batch = list(messages)
+        if not batch:
+            return
         async with self.lock:
             meta = self.require_round(round_id)
-            self.global_seq += 1
-            seq = self.global_seq
-            meta.messageCount += 1
-            meta.reviewCount += 1 if message.needsReview else 0
-            for candidate_id in message.votes:
-                meta.voteCounts[candidate_id] = meta.voteCounts.get(candidate_id, 0) + 1
+            lines: list[str] = []
+            for message in batch:
+                self.global_seq += 1
+                seq = self.global_seq
+                meta.messageCount += 1
+                meta.reviewCount += 1 if message.needsReview else 0
+                for candidate_id in message.votes:
+                    meta.voteCounts[candidate_id] = meta.voteCounts.get(candidate_id, 0) + 1
+                record = {"type": "message", "seq": seq, "roundId": round_id, **asdict(message)}
+                lines.append(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
+            payload = "\n".join(lines) + "\n"
             meta.updatedAt = now_iso()
-            record = {"type": "message", "seq": seq, "roundId": round_id, **asdict(message)}
-            line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
-            with self.raw_messages_path.open("a", encoding="utf-8") as handle:
-                handle.write(line + "\n")
-            with (self.rounds_dir / f"{round_id}.jsonl").open("a", encoding="utf-8") as handle:
-                handle.write(line + "\n")
+            await asyncio.to_thread(
+                self._append_payload,
+                (self.raw_messages_path, self.rounds_dir / f"{round_id}.jsonl"),
+                payload,
+            )
             await self.save()
+
+    def _purge_rounds_from_global_log(self, round_ids: set[str]) -> None:
+        """Remove deleted rounds from the legacy all-round audit log."""
+        if not round_ids or not self.raw_messages_path.exists():
+            return
+        temp = self.raw_messages_path.with_suffix(".jsonl.tmp")
+        try:
+            with self.raw_messages_path.open("r", encoding="utf-8") as source, temp.open("w", encoding="utf-8") as target:
+                for line in source:
+                    if not line.strip():
+                        continue
+                    try:
+                        item = json.loads(line)
+                    except json.JSONDecodeError:
+                        target.write(line)
+                        continue
+                    if str(item.get("roundId") or "") not in round_ids:
+                        target.write(line)
+            temp.replace(self.raw_messages_path)
+        finally:
+            temp.unlink(missing_ok=True)
 
     async def append_raw_danmaku_batch(
         self,
@@ -650,20 +744,24 @@ class StateStore:
             return
         async with self.lock:
             self.require_round(round_id)
-            path = self.raw_rounds_dir / f"{round_id}.jsonl"
-            with path.open("a", encoding="utf-8") as handle:
-                for index, item in enumerate(items):
-                    record = {
-                        "type": "raw_danmaku",
-                        "roundId": round_id,
-                        "pollSeq": poll_seq,
-                        "itemIndex": index,
-                        "observedAt": observed_at,
-                        "roomId": room_id,
-                        "url": url,
-                        "raw": item,
-                    }
-                    handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+            lines = []
+            for index, item in enumerate(items):
+                record = {
+                    "type": "raw_danmaku",
+                    "roundId": round_id,
+                    "pollSeq": poll_seq,
+                    "itemIndex": index,
+                    "observedAt": observed_at,
+                    "roomId": room_id,
+                    "url": url,
+                    "raw": item,
+                }
+                lines.append(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
+            await asyncio.to_thread(
+                self._append_payload,
+                (self.raw_rounds_dir / f"{round_id}.jsonl",),
+                "\n".join(lines) + "\n",
+            )
 
     def iter_slice_records(self, round_id: str):
         meta = self.require_round(round_id)
@@ -715,30 +813,38 @@ class StateStore:
                     yield item
 
     def export_round_jsonl(self, round_id: str) -> str:
+        return "".join(self.iter_export_round_jsonl(round_id))
+
+    def iter_export_round_jsonl(self, round_id: str):
         meta = self.require_round(round_id)
-        lines = [json.dumps({
+        yield json.dumps({
             "type": "meta",
             **asdict(meta),
             "displayName": meta.baseName,
             "timeRange": format_beijing_display_range(meta.sliceStartTime, meta.sliceEndTime),
             "compactTimeRange": format_beijing_range(meta.sliceStartTime, meta.sliceEndTime) if meta.sliceEndTime else "",
-        }, ensure_ascii=False, separators=(",", ":"))]
-        lines.extend(json.dumps(record, ensure_ascii=False, separators=(",", ":")) for record in self.iter_slice_records(round_id))
-        return "\n".join(lines) + "\n"
+        }, ensure_ascii=False, separators=(",", ":")) + "\n"
+        for record in self.iter_slice_records(round_id):
+            yield json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
 
     def export_round_raw_jsonl(self, round_id: str) -> str:
+        return "".join(self.iter_export_round_raw_jsonl(round_id))
+
+    def iter_export_round_raw_jsonl(self, round_id: str):
         meta = self.require_round(round_id)
-        lines = [json.dumps({
+        yield json.dumps({
             "type": "meta",
             **asdict(meta),
             "displayName": meta.baseName,
             "timeRange": format_beijing_display_range(meta.sliceStartTime, meta.sliceEndTime),
             "rawTrack": "observed_api_items",
-        }, ensure_ascii=False, separators=(",", ":"))]
+        }, ensure_ascii=False, separators=(",", ":")) + "\n"
         path = self.raw_rounds_dir / f"{round_id}.jsonl"
         if path.exists():
-            lines.extend(line.rstrip("\n") for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
-        return "\n".join(lines) + "\n"
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if line.strip():
+                        yield line if line.endswith("\n") else line + "\n"
 
     def public_state(self, *, include_private: bool = False) -> dict[str, Any]:
         sessions = []
@@ -813,7 +919,7 @@ class VoteEngine:
             if any(alias.casefold() in lowered for alias in candidate.aliases)
         ]
 
-    async def ingest(self, round_id: str, raw: dict[str, Any]) -> DanmakuMessage | None:
+    def prepare(self, round_id: str, raw: dict[str, Any]) -> DanmakuMessage | None:
         meta = self.store.require_round(round_id)
         content = normalize(raw.get("content", ""))
         if not content:
@@ -830,8 +936,18 @@ class VoteEngine:
             needsReview=needs_review,
             url=raw.get("url") or meta.pageUrl,
         )
-        await self.store.append_message(round_id, message)
         return message
+
+    async def ingest(self, round_id: str, raw: dict[str, Any]) -> DanmakuMessage | None:
+        message = self.prepare(round_id, raw)
+        if message is not None:
+            await self.store.append_message(round_id, message)
+        return message
+
+    async def ingest_batch(self, round_id: str, raws: Iterable[dict[str, Any]]) -> list[DanmakuMessage]:
+        messages = [message for raw in raws if (message := self.prepare(round_id, raw)) is not None]
+        await self.store.append_messages(round_id, messages)
+        return messages
 
 
 class GithubPublisher:
@@ -927,11 +1043,11 @@ class MgtvCollector:
 
     async def start(self, round_id: str, url: str) -> None:
         await self.stop()
-        self._sync_deduper_for_config()
+        await asyncio.to_thread(self._sync_deduper_for_config)
         self.round_id = round_id
         self.url = url
         self.room_id = self.resolve_room_id(url)
-        self.fingerprints.clear()
+        await asyncio.to_thread(self.fingerprints.clear)
         self.stop_event = asyncio.Event()
         self.task = asyncio.create_task(self._run_forever(), name=f"mgtv-collector-{round_id}")
 
@@ -953,7 +1069,7 @@ class MgtvCollector:
         # The public history endpoint currently has no stable message id/cursor.
         # User id + nickname + content gives us a useful anti-dup/anti-spam key.
         key = f"{normalize(raw.get('user_id', raw.get('u', '')))}\n{normalize(raw.get('nickname', raw.get('n', '')))}\n{normalize(raw.get('content', raw.get('c', '')))}"
-        return "sha1:" + hashlib.sha1(key.encode("utf-8")).hexdigest()
+        return "sha1:" + hashlib.sha1(key.encode("utf-8"), usedforsecurity=False).hexdigest()
 
     def resolve_room_id(self, url: str) -> str:
         flag = self.config.get("flag", "liveshow")
@@ -1011,6 +1127,7 @@ class MgtvCollector:
                     items=items,
                 )
                 # Oldest first makes the local JSONL easier to audit.
+                prepared: list[dict[str, Any]] = []
                 for item in reversed(items):
                     raw = {
                         "ts": now_iso(),
@@ -1020,11 +1137,19 @@ class MgtvCollector:
                         "content": item.get("c") or item.get("tp") or "",
                         "url": self.url,
                     }
-                    if self.fingerprints.seen_or_add(self.fingerprint(raw)):
+                    prepared.append(raw)
+                duplicate_flags = await asyncio.to_thread(
+                    self.fingerprints.seen_or_add_many,
+                    [self.fingerprint(raw) for raw in prepared],
+                )
+                new_messages: list[dict[str, Any]] = []
+                for raw, duplicate in zip(prepared, duplicate_flags):
+                    if duplicate:
                         continue
                     if first_batch and not count_initial:
                         continue
-                    await self.engine.ingest(self.round_id, raw)
+                    new_messages.append(raw)
+                await self.engine.ingest_batch(self.round_id, new_messages)
                 first_batch = False
                 poll_seconds = float(self.config.get("poll_seconds", 2.0))
                 try:
@@ -1332,6 +1457,16 @@ class RecordingManager:
             record["error"] = "未配置录制源 URL"
             self.save()
             return record
+        try:
+            free_bytes = shutil.disk_usage(record_dir).free
+        except OSError:
+            free_bytes = 0
+        if free_bytes and free_bytes < 512 * 1024 * 1024:
+            record["status"] = "failed"
+            record["error"] = "录制目录可用空间不足 512 MB，已拒绝开始录制"
+            record["endedAt"] = now_iso()
+            self.save()
+            return record
         args = [
             self.ffmpeg_path(),
             "-y",
@@ -1514,7 +1649,15 @@ class RecordingManager:
         record["autoSplitStatus"] = "running"
         self.save()
         try:
-            duration = await self.probe_duration(Path(str(record.get("path") or "")))
+            source_path = Path(str(record.get("path") or ""))
+            source_size = source_path.stat().st_size
+            required_free = source_size + 512 * 1024 * 1024
+            available_free = shutil.disk_usage(source_path.parent).free
+            if available_free < required_free:
+                raise RuntimeError(
+                    "自动切片需要额外可用空间约等于完整录屏大小并预留 512 MB；当前空间不足，已保留完整录屏且跳过切片"
+                )
+            duration = await self.probe_duration(source_path)
             record["durationSeconds"] = duration
             if duration <= interval:
                 record["autoSplitStatus"] = "skipped"
@@ -1581,6 +1724,11 @@ class VoteService:
         self.startup_migration_warnings = list(migration.warnings)
         self.startup_migration_error = ""
         self.config = migration.config
+        if config_path is not None and config_path.exists():
+            try:
+                os.chmod(config_path, 0o600)
+            except OSError:
+                pass
         if migration.changed and config_path is not None:
             try:
                 save_config_atomic(config_path, self.config)
@@ -1589,6 +1737,8 @@ class VoteService:
         self.startup_config = json.loads(json.dumps(self.config))
         self.config_lock = asyncio.Lock()
         self.update_lock = asyncio.Lock()
+        self.result_png_lock = asyncio.Lock()
+        self.result_png_cache: OrderedDict[str, tuple[bytes, str, str]] = OrderedDict()
         self.last_update_result: dict[str, Any] | None = None
         self.last_update_status: dict[str, Any] | None = None
         self.update_task: asyncio.Task[Any] | None = None
@@ -1617,6 +1767,7 @@ class VoteService:
         self.system_events: list[dict[str, Any]] = []
         self.metric_samples: list[dict[str, Any]] = []
         self.monitor_task: asyncio.Task[Any] | None = None
+        self.background_stopped = False
         self.monitor_auto_started = False
         self.monitor_last_url = ""
         self.monitor_state: dict[str, Any] = self._initial_monitor_state()
@@ -1660,9 +1811,7 @@ class VoteService:
         self.system_events = self.system_events[-300:]
         try:
             log_path = self.store.directory / "system-events.jsonl"
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            with log_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+            append_jsonl_rotating(log_path, event)
         except OSError:
             pass
 
@@ -1705,7 +1854,7 @@ class VoteService:
             ensure_ascii=False,
             sort_keys=True,
         )
-        return f"log_{hashlib.sha1(payload.encode('utf-8')).hexdigest()[:12]}"
+        return f"log_{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:12]}"
 
     @staticmethod
     def _log_remediation(event: dict[str, Any]) -> list[str]:
@@ -1983,10 +2132,11 @@ class VoteService:
         state = self.store.public_state(include_private=include_private)
         state["defaults"] = {
             "activity": str((self.config.get("vote") or {}).get("activity") or "未分类活动"),
-            "mgtvUrl": str((self.config.get("mgtv") or {}).get("url") or ""),
             "publicBaseUrl": self.public_base_url(),
             "publicResultsUrl": str((self.config.get("feishu") or {}).get("public_results_url") or self.public_base_url() or ""),
         }
+        if include_private:
+            state["defaults"]["mgtvUrl"] = str((self.config.get("mgtv") or {}).get("url") or "")
         recordings = {item.get("roundId"): item for item in self.recorder.public_records()} if include_private else {}
         for session in state.get("sessions") or []:
             if include_private:
@@ -2517,16 +2667,20 @@ class VoteService:
 
     def _persisted_system_events(self, limit: int) -> list[dict[str, Any]]:
         path = self.store.directory / "system-events.jsonl"
-        if not path.exists():
+        paths = [path.with_name(f"{path.name}.{index}") for index in range(2, 0, -1)] + [path]
+        if not any(item.exists() for item in paths):
             return []
         lines: list[str] = []
         try:
-            with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    if line.strip():
-                        lines.append(line)
-                        if len(lines) > limit:
-                            lines = lines[-limit:]
+            for candidate in paths:
+                if not candidate.exists():
+                    continue
+                with candidate.open("r", encoding="utf-8") as handle:
+                    for line in handle:
+                        if line.strip():
+                            lines.append(line)
+                            if len(lines) > limit:
+                                lines = lines[-limit:]
         except OSError:
             return []
         events: list[dict[str, Any]] = []
@@ -2540,6 +2694,7 @@ class VoteService:
         return events
 
     def start_background_tasks(self, loop: asyncio.AbstractEventLoop) -> None:
+        self.background_stopped = False
         if self.monitor_task is None or self.monitor_task.done():
             self.monitor_task = loop.create_task(self._monitor_loop(), name="mgtv-activity-monitor")
             self._set_monitor_state(taskRunning=True)
@@ -2548,6 +2703,9 @@ class VoteService:
             loop.create_task(self._complete_update_health_check(), name="mgtv-update-health-check")
 
     async def stop_background_tasks(self) -> None:
+        if self.background_stopped:
+            return
+        self.background_stopped = True
         task = self.monitor_task
         if task is not None and not task.done():
             task.cancel()
@@ -2557,12 +2715,18 @@ class VoteService:
                 pass
         self.monitor_task = None
         self._set_monitor_state(taskRunning=False)
+        await self.collector.stop()
         await self.recording_collector.stop()
+        await self.recorder.stop_all()
+        if self.feishu_connection is not None:
+            await asyncio.to_thread(self.feishu_connection.stop)
+        await asyncio.to_thread(self.collector.fingerprints.close)
+        await asyncio.to_thread(self.recording_collector.fingerprints.close)
 
     def _local_health_url(self) -> str:
         listen = self.config.get("listen") if isinstance(self.config.get("listen"), dict) else {}
         host = str(listen.get("host") or "127.0.0.1").strip()
-        if host in {"0.0.0.0", "::", ""}:
+        if host in {"::", ""} or host == str(ipaddress.ip_address(0)):
             host = "127.0.0.1"
         port = int(listen.get("port") or 8080)
         return f"http://{host}:{port}/healthz"
@@ -3176,6 +3340,41 @@ class VoteService:
     def export_round_result_png(self, round_id: str, result_type: str | None = None) -> tuple[bytes, str]:
         return render_result_png(self.public_state(), round_id, result_type)
 
+    async def export_round_result_png_async(self, round_id: str, result_type: str | None = None) -> tuple[bytes, str, str]:
+        meta = self.store.require_round(round_id)
+        selected_type = result_type if result_type in {"rough", "precise"} else ("precise" if meta.preciseResult else "rough")
+        revision_payload = {
+            "name": meta.name,
+            "status": meta.status,
+            "stoppedAt": meta.stoppedAt,
+            "messageCount": meta.messageCount,
+            "reviewCount": meta.reviewCount,
+            "voteCounts": meta.voteCounts,
+            "precisePublishedAt": meta.precisePublishedAt,
+            "preciseResult": meta.preciseResult if selected_type == "precise" else None,
+        }
+        revision = hashlib.sha256(
+            json.dumps(revision_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:24]
+        cache_key = "|".join((round_id, selected_type, revision))
+        cached = self.result_png_cache.get(cache_key)
+        if cached is not None:
+            self.result_png_cache.move_to_end(cache_key)
+            return cached
+        async with self.result_png_lock:
+            cached = self.result_png_cache.get(cache_key)
+            if cached is not None:
+                self.result_png_cache.move_to_end(cache_key)
+                return cached
+            state = self.public_state()
+            body, filename = await asyncio.to_thread(render_result_png, state, round_id, selected_type)
+            etag = '"' + hashlib.sha256(body).hexdigest()[:24] + '"'
+            cached = (body, filename, etag)
+            self.result_png_cache[cache_key] = cached
+            while len(self.result_png_cache) > 16:
+                self.result_png_cache.popitem(last=False)
+            return cached
+
     async def _save_mgtv_login(self, cookies: list[dict[str, Any]], cookie_header: str, user_info: dict[str, Any]) -> None:
         if self.config_path is None:
             return
@@ -3294,6 +3493,10 @@ class VoteService:
         return record, clip, start_time, end_time
 
     def export_recording_clip_danmaku(self, round_id: str, clip_id: str, *, raw: bool = False) -> tuple[str, str]:
+        iterator, filename = self.iter_recording_clip_danmaku(round_id, clip_id, raw=raw)
+        return "".join(iterator), filename
+
+    def iter_recording_clip_danmaku(self, round_id: str, clip_id: str, *, raw: bool = False):
         meta = self.store.require_round(round_id)
         _record, clip, start_time, end_time = self.recording_clip_time_range(round_id, clip_id)
         iterator = (
@@ -3301,7 +3504,7 @@ class VoteService:
             if raw
             else self.store.iter_round_records_by_time(round_id, start_time, end_time)
         )
-        lines = [json.dumps({
+        meta_line = json.dumps({
             "type": "meta",
             **asdict(meta),
             "sourceRoundId": round_id,
@@ -3313,11 +3516,16 @@ class VoteService:
             "timeRange": format_beijing_display_range(start_time, end_time),
             "rawTrack": "observed_api_items" if raw else "",
             "derivedFromRecordingClip": True,
-        }, ensure_ascii=False, separators=(",", ":"))]
-        lines.extend(json.dumps(record, ensure_ascii=False, separators=(",", ":")) for record in iterator)
+        }, ensure_ascii=False, separators=(",", ":")) + "\n"
         suffix = "-raw" if raw else ""
         filename = f"mgtv-round-{round_id}-clip-{clip_id}{suffix}.jsonl"
-        return "\n".join(lines) + "\n", filename
+
+        def lines():
+            yield meta_line
+            for record in iterator:
+                yield json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+        return lines(), filename
 
     async def create_analysis_round_from_clip(self, round_id: str, clip_id: str, name: str = "") -> RoundMeta:
         source = self.store.require_round(round_id)
@@ -3861,7 +4069,7 @@ class VoteService:
                     notice = "暂无可导出的场次。"
                 else:
                     result_type = "precise" if target.preciseResult else "rough"
-                    content, filename = self.export_round_result_png(target.id, result_type)
+                    content, filename, _etag = await self.export_round_result_png_async(target.id, result_type)
                     receive_id = chat_id or open_id
                     receive_type = "chat_id" if chat_id else "open_id"
                     await self.feishu.send_image(receive_id, receive_type, content, filename)
@@ -4251,6 +4459,73 @@ def create_app(service: VoteService) -> web.Application:
     login_template = (webui_dir / "login.html").read_text(encoding="utf-8")
     version_root = getattr(service, "repo_root", Path(__file__).resolve().parents[1])
     static_version = static_asset_version(Path(version_root))
+    feishu_event_ids: OrderedDict[str, float] = OrderedDict()
+
+    def hostname(value: str) -> str:
+        try:
+            return str(urlsplit("//" + str(value or "")).hostname or "").lower()
+        except ValueError:
+            return ""
+
+    def is_loopback(value: str) -> bool:
+        host = hostname(value) or str(value or "").strip("[]").lower()
+        if host in {"localhost", ""}:
+            return host == "localhost"
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
+
+    def configured_public_origin() -> str:
+        value = str((service.config.get("listen") or {}).get("public_base_url") or "").strip()
+        try:
+            parsed = urlsplit(value)
+        except ValueError:
+            return ""
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc or is_loopback(parsed.hostname or ""):
+            return ""
+        return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+
+    def request_appears_external(request: web.Request) -> bool:
+        if configured_public_origin():
+            return True
+        if request.remote and not is_loopback(request.remote):
+            return True
+        host = hostname(request.headers.get("Host", ""))
+        return bool(host and not is_loopback(host))
+
+    def browser_mutation_allowed(request: web.Request) -> bool:
+        if request.method in {"GET", "HEAD", "OPTIONS"} or request.path in {"/auth/login", "/feishu/events"}:
+            return True
+        fetch_site = str(request.headers.get("Sec-Fetch-Site") or "").lower()
+        if fetch_site in {"cross-site", "same-site"}:
+            return False
+        origin = str(request.headers.get("Origin") or "").strip()
+        if not origin:
+            return True  # Preserve non-browser API clients and existing automation.
+        if origin == "null":
+            return False
+        try:
+            parsed = urlsplit(origin)
+        except ValueError:
+            return False
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return False
+        supplied = f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+        forwarded_scheme = str(request.headers.get("X-Forwarded-Proto") or request.scheme).split(",", 1)[0].strip().lower()
+        request_origin = f"{forwarded_scheme}://{str(request.headers.get('Host') or request.host).lower()}"
+        return supplied in {request_origin, configured_public_origin()}
+
+    def client_rate_limit_key(request: web.Request) -> str:
+        remote = str(request.remote or "unknown")
+        if is_loopback(remote):
+            real_ip = str(request.headers.get("X-Real-IP") or "").strip()
+            if real_ip:
+                return real_ip
+            forwarded = [item.strip() for item in str(request.headers.get("X-Forwarded-For") or "").split(",") if item.strip()]
+            if forwarded:
+                return forwarded[-1]
+        return remote
 
     def render_static_version(template: str) -> str:
         return template.replace("{{STATIC_VERSION}}", html.escape(static_version, quote=True))
@@ -4296,16 +4571,7 @@ def create_app(service: VoteService) -> web.Application:
         public_studio_asset = request.path.startswith("/studio/assets/")
         public_request = request.path in public_paths or public_export or public_studio_asset
         if not auth.enabled:
-            public_base = str((service.config.get("listen") or {}).get("public_base_url") or "").strip().lower()
-            looks_public = (
-                public_base
-                and "your-domain.example.com" not in public_base
-                and "example.com" not in public_base
-                and "localhost" not in public_base
-                and "127.0.0.1" not in public_base
-                and "[::1]" not in public_base
-            )
-            if looks_public and not public_request:
+            if request_appears_external(request) and not public_request:
                 return web.json_response(
                     {"error": "公网部署必须启用运营端登录保护 operator_auth.enabled"},
                     status=403,
@@ -4313,7 +4579,16 @@ def create_app(service: VoteService) -> web.Application:
                     dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
                 )
             return await handler(request)
-        if public_request or auth.request_is_authenticated(request):
+        if public_request:
+            return await handler(request)
+        if auth.request_is_authenticated(request):
+            if not browser_mutation_allowed(request):
+                return web.json_response(
+                    {"error": "已拒绝跨站操作，请从当前运营端页面重试"},
+                    status=403,
+                    headers={"Cache-Control": "no-store"},
+                    dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+                )
             return await handler(request)
         if request.path.startswith("/api/"):
             return web.json_response({"error": "登录已过期，请重新登录"}, status=401, headers={"Cache-Control": "no-store"})
@@ -4392,7 +4667,7 @@ def create_app(service: VoteService) -> web.Application:
             raise web.HTTPFound(location="/")
         data = await request.post()
         next_url = safe_next_url(str(data.get("next") or "/"))
-        client_key = request.remote or "unknown"
+        client_key = client_rate_limit_key(request)
         if auth.is_rate_limited(client_key):
             return login_response("尝试次数过多，请稍后再试。", next_url, status=429)
         password = str(data.get("password") or "")
@@ -4715,43 +4990,63 @@ def create_app(service: VoteService) -> web.Application:
         status = 200 if result.get("ok") else 409
         return web.json_response(result, status=status, dumps=lambda payload: json.dumps(payload, ensure_ascii=False), headers={"Cache-Control": "no-store"})
 
-    async def round_export(request: web.Request) -> web.Response:
-        round_id = request.match_info["round_id"]
-        try:
-            body = service.store.export_round_jsonl(round_id)
-        except KeyError as exc:
-            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
-        return web.Response(
-            text=body,
-            content_type="application/x-ndjson",
-            headers={"Content-Disposition": f'attachment; filename="mgtv-round-{round_id}.jsonl"'},
+    async def stream_jsonl(request: web.Request, lines: Iterable[str], filename: str) -> web.StreamResponse:
+        response = web.StreamResponse(
+            headers={
+                "Content-Type": "application/x-ndjson; charset=utf-8",
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Cache-Control": "no-store",
+            }
         )
+        await response.prepare(request)
+        buffer = bytearray()
+        try:
+            for line in lines:
+                buffer.extend(line.encode("utf-8"))
+                if len(buffer) >= 64 * 1024:
+                    await response.write(bytes(buffer))
+                    buffer.clear()
+            if buffer:
+                await response.write(bytes(buffer))
+            await response.write_eof()
+        except (ConnectionResetError, RuntimeError):
+            pass
+        return response
 
-    async def round_raw_export(request: web.Request) -> web.Response:
+    async def round_export(request: web.Request) -> web.StreamResponse:
         round_id = request.match_info["round_id"]
         try:
-            body = service.store.export_round_raw_jsonl(round_id)
+            service.store.require_round(round_id)
+            lines = service.store.iter_export_round_jsonl(round_id)
         except KeyError as exc:
             return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
-        return web.Response(
-            text=body,
-            content_type="application/x-ndjson",
-            headers={"Content-Disposition": f'attachment; filename="mgtv-round-{round_id}-raw.jsonl"'},
-        )
+        return await stream_jsonl(request, lines, f"mgtv-round-{round_id}.jsonl")
+
+    async def round_raw_export(request: web.Request) -> web.StreamResponse:
+        round_id = request.match_info["round_id"]
+        try:
+            service.store.require_round(round_id)
+            lines = service.store.iter_export_round_raw_jsonl(round_id)
+        except KeyError as exc:
+            return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        return await stream_jsonl(request, lines, f"mgtv-round-{round_id}-raw.jsonl")
 
     async def round_result_png(request: web.Request) -> web.Response:
         round_id = request.match_info["round_id"]
         requested = str(request.query.get("result") or "")
         result_type = requested if requested in {"rough", "precise"} else None
         try:
-            body, filename = service.export_round_result_png(round_id, result_type)
+            body, filename, etag = await service.export_round_result_png_async(round_id, result_type)
         except KeyError as exc:
             return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
+        if request.headers.get("If-None-Match") == etag:
+            return web.Response(status=304, headers={"ETag": etag, "Cache-Control": "public, max-age=5, stale-while-revalidate=30"})
         return web.Response(
             body=body,
             content_type="image/png",
             headers={
-                "Cache-Control": "no-store",
+                "Cache-Control": "public, max-age=5, stale-while-revalidate=30",
+                "ETag": etag,
                 "Content-Disposition": f'attachment; filename="{filename}"',
             },
         )
@@ -4985,35 +5280,27 @@ def create_app(service: VoteService) -> web.Application:
         except FileNotFoundError as exc:
             return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
 
-    async def recording_clip_export(request: web.Request) -> web.Response:
+    async def recording_clip_export(request: web.Request) -> web.StreamResponse:
         round_id = request.match_info["round_id"]
         clip_id = request.match_info["clip_id"]
         try:
-            body, filename = service.export_recording_clip_danmaku(round_id, clip_id, raw=False)
+            lines, filename = service.iter_recording_clip_danmaku(round_id, clip_id, raw=False)
         except KeyError as exc:
             return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
         except (TypeError, ValueError) as exc:
             return web.json_response({"error": str(exc)}, status=400, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
-        return web.Response(
-            text=body,
-            content_type="application/x-ndjson",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-        )
+        return await stream_jsonl(request, lines, filename)
 
-    async def recording_clip_raw_export(request: web.Request) -> web.Response:
+    async def recording_clip_raw_export(request: web.Request) -> web.StreamResponse:
         round_id = request.match_info["round_id"]
         clip_id = request.match_info["clip_id"]
         try:
-            body, filename = service.export_recording_clip_danmaku(round_id, clip_id, raw=True)
+            lines, filename = service.iter_recording_clip_danmaku(round_id, clip_id, raw=True)
         except KeyError as exc:
             return web.json_response({"error": str(exc)}, status=404, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
         except (TypeError, ValueError) as exc:
             return web.json_response({"error": str(exc)}, status=400, dumps=lambda payload: json.dumps(payload, ensure_ascii=False))
-        return web.Response(
-            text=body,
-            content_type="application/x-ndjson",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-        )
+        return await stream_jsonl(request, lines, filename)
 
     async def create_clip_analysis_round(request: web.Request) -> web.Response:
         round_id = request.match_info["round_id"]
@@ -5141,13 +5428,23 @@ def create_app(service: VoteService) -> web.Application:
                 status=403,
                 dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
             )
-        supplied_token = body.get("token") or body.get("header", {}).get("token") or body.get("event", {}).get("token")
-        if supplied_token != token:
+        supplied_token = str(body.get("token") or body.get("header", {}).get("token") or body.get("event", {}).get("token") or "")
+        if not secrets.compare_digest(supplied_token, str(token)):
             return web.json_response({"error": "invalid token"}, status=403)
         if body.get("type") == "url_verification":
             return web.json_response({"challenge": body.get("challenge")})
         header = body.get("header", {})
         event = body.get("event", {})
+        event_id = str(header.get("event_id") or body.get("uuid") or "")
+        if event_id:
+            now = time.monotonic()
+            while feishu_event_ids and (now - next(iter(feishu_event_ids.values())) > 600 or len(feishu_event_ids) >= 2048):
+                feishu_event_ids.popitem(last=False)
+            if event_id in feishu_event_ids:
+                if header.get("event_type") == "card.action.trigger" or body.get("type") == "card.action.trigger":
+                    return web.json_response({"toast": {"type": "info", "content": "操作已处理"}})
+                return web.json_response({"ok": True})
+            feishu_event_ids[event_id] = now
         if header.get("event_type") == "card.action.trigger" or body.get("type") == "card.action.trigger":
             action = event.get("action", {})
             value = action.get("value") or {}
@@ -5296,7 +5593,7 @@ def record_startup_failure(config_path: Path, config: dict[str, Any], exc: BaseE
         "host": platform.node(),
     }
     event_payload = json.dumps({key: event.get(key) for key in ("time", "level", "source", "summary", "detail", "host")}, ensure_ascii=False, sort_keys=True)
-    event["id"] = f"log_{hashlib.sha1(event_payload.encode('utf-8')).hexdigest()[:12]}"
+    event["id"] = f"log_{hashlib.sha256(event_payload.encode('utf-8')).hexdigest()[:12]}"
     update_state = {
         "progress": {
             "status": "failed",
@@ -5328,8 +5625,7 @@ def record_startup_failure(config_path: Path, config: dict[str, Any], exc: BaseE
         temp_state = state_path.with_name(state_path.name + ".tmp")
         temp_state.write_text(json.dumps(update_state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         temp_state.replace(state_path)
-        with (data_dir / "system-events.jsonl").open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+        append_jsonl_rotating(data_dir / "system-events.jsonl", event)
     except OSError:
         pass
 
@@ -5347,12 +5643,14 @@ async def amain() -> None:
         app = create_app(service)
         runner = web.AppRunner(app)
         await runner.setup()
-        site = web.TCPSite(runner, config.get("listen", {}).get("host", "0.0.0.0"), int(config.get("listen", {}).get("port", 8080)))
+        listen_host = config.get("listen", {}).get("host", "127.0.0.1")
+        listen_port = int(config.get("listen", {}).get("port", 8080))
+        site = web.TCPSite(runner, listen_host, listen_port)
         await site.start()
     except Exception as exc:
         record_startup_failure(config_path, config, exc)
         raise
-    print(f"vote server listening on {config.get('listen', {}).get('host', '0.0.0.0')}:{config.get('listen', {}).get('port', 8080)}", flush=True)
+    print(f"vote server listening on {listen_host}:{listen_port}", flush=True)
     if feishu_ws_started:
         print("feishu bot connected with WebSocket long connection", flush=True)
     stop = asyncio.Event()
@@ -5360,13 +5658,6 @@ async def amain() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
     await stop.wait()
-    await service.stop_background_tasks()
-    await service.collector.stop()
-    await service.recording_collector.stop()
-    await service.recorder.stop_all()
-    if service.feishu_connection is not None:
-        await asyncio.to_thread(service.feishu_connection.stop)
-    service.collector.fingerprints.close()
     await runner.cleanup()
 
 

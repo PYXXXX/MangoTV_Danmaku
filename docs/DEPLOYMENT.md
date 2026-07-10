@@ -891,4 +891,4 @@ sudo systemctl restart mgtv-danmaku
 | GET | `/docs/precise-result-agent` | 否 | 清洗规范 |
 | POST | `/feishu/events` | 是 | 飞书 HTTP 回调兼容端点；必须启用飞书并配置 Verification Token |
 
-当 `operator_auth.enabled=false` 时，运营路径不会要求登录；这只适用于受控本地调试。
+当 `operator_auth.enabled=false` 时，只有纯本地部署中的回环地址和本机 Host 才会继续放行运营请求；局域网、公网域名、反向代理请求，以及配置了非本机 `listen.public_base_url` 的部署都会被拒绝。该模式只适用于受控本地调试，生产环境必须启用运营端登录保护。
