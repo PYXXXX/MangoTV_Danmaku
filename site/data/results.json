@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "publishedAt": "2026-07-10T14:34:39.082Z",
+  "publishedAt": "2026-07-10T14:40:53.433Z",
   "activeSessionId": "20260710-213820-775eea",
   "sessions": [
     {
@@ -16,7 +16,7 @@
       "compactTimeRange": "20260710 21:38:20-20260710 21:53:39",
       "status": "stopped",
       "startedAt": "2026-07-10T13:38:20.267Z",
-      "updatedAt": "2026-07-10T14:34:38.715Z",
+      "updatedAt": "2026-07-10T14:40:53.058Z",
       "stoppedAt": "2026-07-10T13:53:39.860Z",
       "pageTitle": "",
       "candidates": [
@@ -92,7 +92,7 @@
         "c6": 189,
         "c7": 66
       },
-      "defaultResultType": "rough",
+      "defaultResultType": "precise",
       "results": {
         "rough": {
           "resultType": "rough",
@@ -107,9 +107,38 @@
           },
           "messageCount": 1185,
           "reviewCount": 14,
-          "generatedAt": "2026-07-10T14:34:38.715Z"
+          "generatedAt": "2026-07-10T14:40:53.058Z"
         },
-        "precise": null
+        "precise": {
+          "schemaVersion": 1,
+          "resultType": "precise",
+          "sessionId": "20260710-213820-775eea",
+          "activity": "歌手 2026",
+          "sessionName": "安全区|艾略特 VS 胡彦斌 VS 尤长靖 VS 刘惜君 + 窦靖童 + 齐豫",
+          "generatedAt": "2026-07-10T14:39:42.354Z",
+          "voteCounts": {
+            "c3": 189,
+            "c6": 189,
+            "c1": 155,
+            "c2": 137,
+            "c7": 65,
+            "c4": 27,
+            "c5": 21
+          },
+          "audit": {
+            "inputMessages": 1185,
+            "cleanMessages": 1185,
+            "ruleAcceptedMessages": 747,
+            "semanticReviewedMessages": 16,
+            "unresolvedReviewMessages": 0,
+            "invalidDecisionLines": 0
+          },
+          "source": {
+            "format": "json",
+            "sha256": "fce989a55397eaebd300a7ec27a0c03289ac64d3aa0072cefa626fed9d436cfa"
+          },
+          "publishedAt": "2026-07-10T14:40:53.058Z"
+        }
       },
       "sliceStartSeq": 6426,
       "sliceEndSeq": 8817,
