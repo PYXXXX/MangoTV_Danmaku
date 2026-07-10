@@ -41,8 +41,10 @@ flowchart LR
 
 ~~~bash
 sudo apt update
-sudo apt install -y git python3 python3-venv python3-pip
+sudo apt install -y git python3 python3-venv python3-pip fonts-noto-cjk
 ~~~
+
+`fonts-noto-cjk` 用于服务端结果 PNG 的中文绘制。程序会验证字体确实包含中文字形；系统未安装中文字体时，会从固定版本的 Noto CJK 官方仓库获取 Noto Sans SC，完成 SHA-256 校验后缓存到 `storage.directory/fonts`。离线部署可通过 systemd 环境变量 `MGTV_RESULT_FONT_PATH=/path/to/chinese-font.ttf` 指定本地中文字体。
 
 如需 Nginx：
 

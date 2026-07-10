@@ -1,9 +1,18 @@
+import tempfile
 import unittest
+from pathlib import Path
 
-from server.result_image import DATA_SOURCE_URL, DISCLAIMER_TEXT, render_result_png
+from server.result_image import DATA_SOURCE_URL, DISCLAIMER_TEXT, _font_has_cjk, _fonts, render_result_png
 
 
 class ResultImageTest(unittest.TestCase):
+    def test_result_font_can_render_distinct_chinese_glyphs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fonts = _fonts(str(Path(temp) / "fonts"))
+            self.assertTrue(_font_has_cjk(fonts.title))
+            self.assertTrue(_font_has_cjk(fonts.body))
+            self.assertTrue(_font_has_cjk(fonts.small))
+
     def test_render_result_png_contains_png_signature(self):
         state = {
             "publishedAt": "2026-07-05T01:00:00Z",

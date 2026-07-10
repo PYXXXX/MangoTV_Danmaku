@@ -3596,7 +3596,12 @@ class VoteService:
         return url
 
     def export_round_result_png(self, round_id: str, result_type: str | None = None) -> tuple[bytes, str]:
-        return render_result_png(self.public_state(), round_id, result_type)
+        return render_result_png(
+            self.public_state(),
+            round_id,
+            result_type,
+            self.store.directory / "fonts",
+        )
 
     async def export_round_result_png_async(self, round_id: str, result_type: str | None = None) -> tuple[bytes, str, str]:
         meta = self.store.require_round(round_id)
@@ -3625,7 +3630,13 @@ class VoteService:
                 self.result_png_cache.move_to_end(cache_key)
                 return cached
             state = self.public_state()
-            body, filename = await asyncio.to_thread(render_result_png, state, round_id, selected_type)
+            body, filename = await asyncio.to_thread(
+                render_result_png,
+                state,
+                round_id,
+                selected_type,
+                self.store.directory / "fonts",
+            )
             etag = '"' + hashlib.sha256(body).hexdigest()[:24] + '"'
             cached = (body, filename, etag)
             self.result_png_cache[cache_key] = cached

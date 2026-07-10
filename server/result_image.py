@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageDraw, ImageFont
@@ -15,6 +21,15 @@ from PIL import Image, ImageDraw, ImageFont
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 DATA_SOURCE_URL = "https://pyxxxx.github.io/MangoTV_Danmaku/"
 DISCLAIMER_TEXT = "非官方正式统计，不代表湖南卫视 & 芒果 TV 立场，仅供娱乐参考。"
+NOTO_CJK_URL = (
+    "https://github.com/notofonts/noto-cjk/raw/"
+    "f8d157532fbfaeda587e826d4cd5b21a49186f7c/"
+    "Sans/SubsetOTF/SC/NotoSansSC-Regular.otf"
+)
+NOTO_CJK_SHA256 = "faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9"
+NOTO_CJK_FILENAME = "NotoSansSC-Regular.otf"
+MAX_FONT_DOWNLOAD_BYTES = 12 * 1024 * 1024
+_FONT_DOWNLOAD_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -27,8 +42,13 @@ class FontSet:
     small: ImageFont.FreeTypeFont | ImageFont.ImageFont
 
 
-def _font_candidates() -> list[str]:
-    return [
+def _system_font_candidates(bold: bool = False) -> list[str]:
+    bold_candidates = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    ] if bold else []
+    return bold_candidates + [
         "/System/Library/Fonts/PingFang.ttc",
         "/System/Library/Fonts/STHeiti Medium.ttc",
         "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
@@ -37,29 +57,99 @@ def _font_candidates() -> list[str]:
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
         "/usr/share/fonts/truetype/arphic/uming.ttc",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     ]
 
 
-def _load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    for path in _font_candidates():
+def _font_has_cjk(font: ImageFont.FreeTypeFont | ImageFont.ImageFont) -> bool:
+    """Reject fonts that render every Chinese character as the same tofu box."""
+    signatures: set[tuple[tuple[int, int], bytes]] = set()
+    for char in "汉字歌手":
+        mask = font.getmask(char)
+        signatures.add((mask.size, bytes(mask)))
+    return len(signatures) >= 3
+
+
+def _valid_cached_font(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return digest == NOTO_CJK_SHA256
+
+
+def _download_cjk_font(cache_dir: Path) -> Path:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    target = cache_dir / NOTO_CJK_FILENAME
+    if _valid_cached_font(target):
+        return target
+    target.unlink(missing_ok=True)
+    temp = target.with_suffix(".tmp")
+    temp.unlink(missing_ok=True)
+    request = Request(NOTO_CJK_URL, headers={"User-Agent": "MangoTV-Danmaku/1.0"})
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        with urlopen(request, timeout=45) as response, temp.open("wb") as output:  # nosec B310 -- pinned HTTPS + SHA-256
+            while chunk := response.read(256 * 1024):
+                total += len(chunk)
+                if total > MAX_FONT_DOWNLOAD_BYTES:
+                    raise RuntimeError("中文字体文件异常过大，已拒绝写入")
+                digest.update(chunk)
+                output.write(chunk)
+        if digest.hexdigest() != NOTO_CJK_SHA256:
+            raise RuntimeError("中文字体完整性校验失败")
+        temp.replace(target)
+        os.chmod(target, 0o644)
+        return target
+    except (OSError, URLError):
+        temp.unlink(missing_ok=True)
+        raise
+    except Exception:
+        temp.unlink(missing_ok=True)
+        raise
+
+
+def ensure_result_font(cache_dir: str | Path | None = None, *, bold: bool = False) -> Path:
+    configured = str(os.environ.get("MGTV_RESULT_FONT_PATH") or "").strip()
+    candidates = ([configured] if configured else []) + _system_font_candidates(bold)
+    for path in candidates:
         if not Path(path).exists():
             continue
         try:
-            return ImageFont.truetype(path, size=size, index=0)
+            font = ImageFont.truetype(path, size=24, index=0)
         except OSError:
             continue
-    return ImageFont.load_default()
+        if _font_has_cjk(font):
+            return Path(path)
+    base = Path(cache_dir) if cache_dir else Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "mgtv-danmaku" / "fonts"
+    try:
+        with _FONT_DOWNLOAD_LOCK:
+            downloaded = _download_cjk_font(base)
+        font = ImageFont.truetype(str(downloaded), size=24, index=0)
+        if not _font_has_cjk(font):
+            raise RuntimeError("下载的字体不包含可用中文字符")
+        return downloaded
+    except Exception as exc:
+        raise RuntimeError(
+            "未找到支持中文的结果图字体，且自动获取 Noto Sans SC 失败；"
+            "请安装 fonts-noto-cjk 或通过 MGTV_RESULT_FONT_PATH 指定中文字体"
+        ) from exc
 
 
-def _fonts() -> FontSet:
+def _load_font(path: Path, size: int) -> ImageFont.FreeTypeFont:
+    return ImageFont.truetype(str(path), size=size, index=0)
+
+
+@lru_cache(maxsize=8)
+def _fonts(font_cache_dir: str = "") -> FontSet:
+    regular_path = ensure_result_font(font_cache_dir or None)
+    bold_path = ensure_result_font(font_cache_dir or None, bold=True)
     return FontSet(
-        title=_load_font(58, bold=True),
-        subtitle=_load_font(22),
-        label=_load_font(20),
-        body=_load_font(30),
-        number=_load_font(38, bold=True),
-        small=_load_font(18),
+        title=_load_font(bold_path, 58),
+        subtitle=_load_font(regular_path, 22),
+        label=_load_font(regular_path, 20),
+        body=_load_font(regular_path, 30),
+        number=_load_font(bold_path, 38),
+        small=_load_font(regular_path, 18),
     )
 
 
@@ -120,7 +210,12 @@ def _metric_counts(session: dict[str, Any], result_type: str, result: dict[str, 
     return _format_count(messages), _format_count(total_votes), _format_count(reviews)
 
 
-def render_result_png(state: dict[str, Any], round_id: str, requested_result: str | None = None) -> tuple[bytes, str]:
+def render_result_png(
+    state: dict[str, Any],
+    round_id: str,
+    requested_result: str | None = None,
+    font_cache_dir: str | Path | None = None,
+) -> tuple[bytes, str]:
     sessions = state.get("sessions") or []
     session = next((item for item in sessions if item.get("id") == round_id), None)
     if not session:
@@ -147,7 +242,7 @@ def render_result_png(state: dict[str, Any], round_id: str, requested_result: st
     row_height = 82
     visible_rows = max(1, len(rows[:12]))
     height = max(900, 510 + visible_rows * row_height)
-    fonts = _fonts()
+    fonts = _fonts(str(font_cache_dir or ""))
     image = Image.new("RGB", (width, height), "#0d0e10")
     draw = ImageDraw.Draw(image)
 
