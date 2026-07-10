@@ -1,23 +1,23 @@
 {
   "schemaVersion": 1,
-  "publishedAt": "2026-07-10T11:27:18.674Z",
-  "activeSessionId": "20260710-192640-e7fae7",
+  "publishedAt": "2026-07-10T11:28:34.856Z",
+  "activeSessionId": "20260710-192719-0dcdfd",
   "sessions": [
     {
-      "id": "20260710-192640-e7fae7",
+      "id": "20260710-192719-0dcdfd",
       "activity": "歌手 2026",
-      "baseName": "第 1 轮",
-      "name": "第 1 轮",
-      "displayName": "第 1 轮",
+      "baseName": "第 2 轮",
+      "name": "第 2 轮",
+      "displayName": "第 2 轮",
       "kind": "realtime",
       "visibility": "public",
       "sourceRoundId": "",
-      "timeRange": "2026/07/10 19:26:40 - 19:27:18",
-      "compactTimeRange": "20260710 19:26:40-20260710 19:27:18",
-      "status": "stopped",
-      "startedAt": "2026-07-10T11:26:40.263Z",
-      "updatedAt": "2026-07-10T11:27:18.282Z",
-      "stoppedAt": "2026-07-10T11:27:18.282Z",
+      "timeRange": "2026/07/10 19:27:19 起",
+      "compactTimeRange": "",
+      "status": "running",
+      "startedAt": "2026-07-10T11:27:19.548Z",
+      "updatedAt": "2026-07-10T11:28:28.944Z",
+      "stoppedAt": null,
       "pageTitle": "",
       "candidates": [
         {
@@ -70,40 +70,40 @@
           ]
         }
       ],
-      "messageCount": 41,
+      "messageCount": 56,
       "reviewCount": 0,
       "voteCounts": {
-        "c1": 1,
-        "c2": 7,
-        "c3": 3,
-        "c4": 1,
-        "c5": 0,
-        "c6": 2,
-        "c7": 1
+        "c1": 4,
+        "c2": 4,
+        "c3": 5,
+        "c4": 3,
+        "c5": 1,
+        "c6": 1,
+        "c7": 0
       },
       "defaultResultType": "rough",
       "results": {
         "rough": {
           "resultType": "rough",
           "voteCounts": {
-            "c1": 1,
-            "c2": 7,
-            "c3": 3,
-            "c4": 1,
-            "c5": 0,
-            "c6": 2,
-            "c7": 1
+            "c1": 4,
+            "c2": 4,
+            "c3": 5,
+            "c4": 3,
+            "c5": 1,
+            "c6": 1,
+            "c7": 0
           },
-          "messageCount": 41,
+          "messageCount": 56,
           "reviewCount": 0,
-          "generatedAt": "2026-07-10T11:27:18.282Z"
+          "generatedAt": "2026-07-10T11:28:28.944Z"
         },
         "precise": null
       },
-      "sliceStartSeq": 1,
-      "sliceEndSeq": 41,
-      "sliceStartTime": "2026-07-10T11:26:40.263Z",
-      "sliceEndTime": "2026-07-10T11:27:18.282Z"
+      "sliceStartSeq": 42,
+      "sliceEndSeq": null,
+      "sliceStartTime": "2026-07-10T11:27:19.548Z",
+      "sliceEndTime": null
     }
   ]
 }
