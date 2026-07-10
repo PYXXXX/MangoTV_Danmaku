@@ -702,8 +702,8 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
       ]);
     }
   });
-  const publish = useMutation({
-    mutationFn: () => apiPost("/api/rounds/" + encodeURIComponent(activeRound?.id || "") + "/publish", { resultKind: result.type }),
+  const syncPublic = useMutation({
+    mutationFn: () => apiPost<{ ok: boolean; resultKind: "rough" | "precise"; publishUrl: string; syncedAt: string; sessionCount: number }>("/api/public/sync", { resultKind: result.type }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-bootstrap"] })
   });
   const pushFeishu = useMutation({
@@ -806,7 +806,7 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1400);
   };
-  const operationError = startRound.error || startFullRecording.error || endRound.error || stopFullRecording.error || publish.error || pushFeishu.error || detectSource.error || renameRound.error || deleteRound.error || deleteActivity.error || addMarker.error || createClip.error || createAnalysisRound.error || uploadPrecise.error || recordingTimeline.error;
+  const operationError = startRound.error || startFullRecording.error || endRound.error || stopFullRecording.error || pushFeishu.error || detectSource.error || renameRound.error || deleteRound.error || deleteActivity.error || addMarker.error || createClip.error || createAnalysisRound.error || uploadPrecise.error || recordingTimeline.error;
   const timeline = recordingTimeline.data;
   const density = timeline?.danmakuDensity || [];
   const maxDensity = Math.max(1, ...density.map((item) => item.count));
@@ -1082,20 +1082,30 @@ function OperationsPage({ rounds, activeRound, defaultActivity, publicResultsUrl
             ))}
           </div>
 
-          <div className="mt-4 grid grid-cols-3 gap-2">
+          <div className="mt-4 grid grid-cols-3 gap-2 max-sm:grid-cols-1">
             <button className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-2xl bg-blue-500 px-2 text-xs font-black text-white transition hover:brightness-110 disabled:opacity-60" type="button" disabled={pushFeishu.isPending} onClick={() => pushFeishu.mutate()}>
               <PaperPlaneTilt size={18} weight="fill" />
               同步到飞书
             </button>
-            <button className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-2xl bg-emerald-500 px-2 text-xs font-black text-white transition hover:brightness-110 disabled:opacity-60" type="button" disabled={!activeRound || publish.isPending} onClick={() => publish.mutate()}>
+            <button className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-2xl bg-emerald-500 px-2 text-xs font-black text-white transition hover:brightness-110 disabled:opacity-60" type="button" disabled={syncPublic.isPending} onClick={() => syncPublic.mutate()}>
               <GlobeHemisphereWest size={18} weight="fill" />
-              发布公开页
+              {syncPublic.isPending ? "正在同步…" : "立即同步公开页"}
             </button>
             <button className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-2xl border border-white/10 bg-white/[0.04] px-2 text-xs font-black text-slate-100 transition hover:bg-white/[0.07]" type="button" onClick={copyPublicLink}>
               <LinkSimple size={18} />
               {copied ? "已复制" : "复制公开链接"}
             </button>
           </div>
+          {syncPublic.isSuccess && (
+            <p className="mt-3 rounded-xl border border-emerald-400/20 bg-emerald-400/10 px-3 py-2 text-xs leading-5 text-emerald-100">
+              已于 {formatShortTime(syncPublic.data.syncedAt)} 手动同步 {syncPublic.data.sessionCount} 个公开场次；GitHub Pages 完成构建后即可看到更新。
+            </p>
+          )}
+          {syncPublic.isError && (
+            <p className="mt-3 rounded-xl border border-red-400/25 bg-red-400/10 px-3 py-2 text-xs leading-5 text-red-100 [overflow-wrap:anywhere]">
+              同步失败：{String((syncPublic.error as Error).message || syncPublic.error)}
+            </p>
+          )}
           <p className="mt-3 truncate text-xs text-ops-muted">公开链接：{publicResultsUrl || new URL("/studio/public", window.location.origin).toString()}</p>
         </OpsPanel>
       </div>

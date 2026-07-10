@@ -5479,6 +5479,47 @@ def create_app(service: VoteService) -> web.Application:
             headers={"Cache-Control": "no-store"},
         )
 
+    async def sync_public_state(request: web.Request) -> web.Response:
+        data = await request.json() if request.can_read_body else {}
+        result_kind = str(data.get("resultKind") or data.get("result") or "rough")
+        if result_kind not in {"rough", "precise"}:
+            return web.json_response(
+                {"error": "resultKind 只能是 rough 或 precise"},
+                status=400,
+                dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            )
+        if not bool((service.config.get("github") or {}).get("enabled")):
+            return web.json_response(
+                {"error": "GitHub 公开结果发布未启用，请先在系统配置中启用"},
+                status=409,
+                dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+                headers={"Cache-Control": "no-store"},
+            )
+        try:
+            url = await service.publisher.publish(force=True, result_kind=result_kind)
+        except RuntimeError as exc:
+            service.add_system_event("error", "publisher", "手动同步公开页失败", str(exc))
+            return web.json_response(
+                {"error": str(exc)},
+                status=502,
+                dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+                headers={"Cache-Control": "no-store"},
+            )
+        synced_at = now_iso()
+        session_count = len(service.store.public_state(include_private=False).get("sessions") or [])
+        service.add_system_event("info", "publisher", "公开页已手动同步", f"{result_kind}: {url}", sessionCount=session_count)
+        return web.json_response(
+            {
+                "ok": True,
+                "resultKind": result_kind,
+                "publishUrl": url,
+                "syncedAt": synced_at,
+                "sessionCount": session_count,
+            },
+            dumps=lambda payload: json.dumps(payload, ensure_ascii=False),
+            headers={"Cache-Control": "no-store"},
+        )
+
     async def round_results_api(request: web.Request) -> web.Response:
         round_id = request.match_info["round_id"]
         try:
@@ -5913,6 +5954,7 @@ def create_app(service: VoteService) -> web.Application:
     app.router.add_patch("/api/rounds/{round_id}", patch_round)
     app.router.add_post("/api/rounds/{round_id}/end", end_round_api)
     app.router.add_post("/api/rounds/{round_id}/publish", publish_round)
+    app.router.add_post("/api/public/sync", sync_public_state)
     app.router.add_get("/api/rounds/{round_id}/results", round_results_api)
     app.router.add_get("/api/rounds/{round_id}.jsonl", round_export)
     app.router.add_get("/api/rounds/{round_id}/raw.jsonl", round_raw_export)

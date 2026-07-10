@@ -660,6 +660,29 @@ class SettingsApiHttpTest(SettingsHttpBase):
         publish = await response.json()
         self.assertTrue(publish["ok"])
 
+    async def test_manual_public_sync_does_not_require_selected_round(self):
+        response = await self.client.post("/api/public/sync", json={"resultKind": "rough"})
+        self.assertEqual(response.status, 409)
+
+        calls = []
+
+        async def fake_publish(force=False, result_kind="rough"):
+            calls.append((force, result_kind))
+            return "https://github.com/owner/repo/commit/manual-sync"
+
+        self.service.config["github"]["enabled"] = True
+        self.service.publisher.publish = fake_publish
+        response = await self.client.post("/api/public/sync", json={"resultKind": "precise"})
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["resultKind"], "precise")
+        self.assertEqual(payload["sessionCount"], 0)
+        self.assertEqual(calls, [(True, "precise")])
+
+        response = await self.client.post("/api/public/sync", json={"resultKind": "invalid"})
+        self.assertEqual(response.status, 400)
+
     async def test_recording_timeline_contract(self):
         meta = await self.service.store.create_round(
             "旧活动",

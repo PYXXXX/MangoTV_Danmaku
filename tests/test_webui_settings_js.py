@@ -122,6 +122,12 @@ class WebuiSettingsJsTest(unittest.TestCase):
         self.assertIn("保存新名称", source)
         self.assertIn("maxLength={100}", source)
 
+    def test_operations_workspace_exposes_manual_public_sync(self):
+        source = (ROOT / "frontend" / "src" / "apps" / "admin" / "AdminApp.tsx").read_text(encoding="utf-8")
+        self.assertIn('apiPost<{ ok: boolean; resultKind: "rough" | "precise"; publishUrl: string; syncedAt: string; sessionCount: number }>("/api/public/sync"', source)
+        self.assertIn("立即同步公开页", source)
+        self.assertIn("GitHub Pages 完成构建后即可看到更新", source)
+
     def test_settings_js_keeps_recording_config_fields(self):
         html = (ROOT / "server" / "webui" / "index.html").read_text(encoding="utf-8")
         source = (ROOT / "server" / "webui" / "settings.js").read_text(encoding="utf-8")
