@@ -913,6 +913,43 @@ class ServerPreciseResultTest(unittest.IsolatedAsyncioTestCase):
                 service.collector.fingerprints.close()
                 service.recording_collector.fingerprints.close()
 
+    async def test_independent_recording_blocks_online_update_and_safe_restart(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {
+                "storage": {"directory": str(Path(temp) / "data")},
+                "recording": {"enabled": True, "directory": str(Path(temp) / "recordings")},
+                "mgtv": {"dedup_db_path": str(Path(temp) / "fingerprints.sqlite3")},
+                "vote": {
+                    "activity": "歌手 2026",
+                    "multi_candidate_policy": "all",
+                    "candidates": [{"id": "c1", "name": "甲", "aliases": ["甲"]}],
+                },
+                "github": {"enabled": False},
+                "feishu": {"enabled": False},
+            }
+            service = VoteService(config)
+            try:
+                meta = await service.store.create_round(
+                    "歌手 2026",
+                    "全程录制",
+                    "https://www.mgtv.com/z/1001668/5366.html",
+                    service.default_candidates,
+                    "all",
+                    activate=False,
+                    kind="recording",
+                    visibility="private",
+                )
+                self.assertTrue(service.independent_recording_active())
+                self.assertIn("独立录制或弹幕采集正在运行，需先结束录制", service.update_blockers())
+                with self.assertRaisesRegex(Exception, "独立录制"):
+                    service.request_safe_restart(asyncio.get_running_loop())
+
+                await service.store.stop_round(meta.id)
+                self.assertFalse(service.independent_recording_active())
+            finally:
+                service.collector.fingerprints.close()
+                service.recording_collector.fingerprints.close()
+
     async def test_recording_clip_exports_danmaku_and_creates_analysis_round(self):
         with tempfile.TemporaryDirectory() as temp:
             config = {

@@ -4066,9 +4066,19 @@ class VoteService:
             "reauthRequired": update.reauth_required,
         }
 
+    def independent_recording_active(self) -> bool:
+        if self.recording_collector.running():
+            return True
+        if any(getattr(process, "returncode", None) is None for process in self.recorder.processes.values()):
+            return True
+        return any(
+            meta.kind == "recording" and meta.status == "running"
+            for meta in self.store.rounds.values()
+        )
+
     def request_safe_restart(self, loop: asyncio.AbstractEventLoop) -> list[str]:
-        if self.store.active_round_id or self.collector.running():
-            raise SettingsValidationError("场次正在采集，必须先结束本轮才能重启服务")
+        if self.store.active_round_id or self.collector.running() or self.independent_recording_active():
+            raise SettingsValidationError("仍有实时场次或独立录制正在运行，必须先结束采集才能重启服务")
         if not self.pending_restart_fields:
             raise SettingsValidationError("当前没有需要重启生效的配置")
         fields = list(self.pending_restart_fields)
@@ -4079,6 +4089,8 @@ class VoteService:
         blockers: list[str] = []
         if self.store.active_round_id or self.collector.running():
             blockers.append("场次正在采集，需先结束本轮")
+        if self.independent_recording_active():
+            blockers.append("独立录制或弹幕采集正在运行，需先结束录制")
         if self.update_lock.locked() or (self.update_task is not None and not self.update_task.done()):
             blockers.append("已有升级任务正在执行")
         return blockers
