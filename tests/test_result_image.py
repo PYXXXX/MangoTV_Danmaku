@@ -2,10 +2,20 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from server.result_image import DATA_SOURCE_URL, DISCLAIMER_TEXT, _font_has_cjk, _fonts, render_result_png
+from server.result_image import DATA_SOURCE_URL, DISCLAIMER_TEXT, _font_has_cjk, _fonts, _poster_headings, render_result_png
 
 
 class ResultImageTest(unittest.TestCase):
+    def test_poster_uses_activity_as_title_and_round_as_subtitle(self):
+        title, round_line, time_line = _poster_headings({
+            "activity": "歌手 2026",
+            "displayName": "危险区 万妮达 VS 窦靖童 VS 齐豫",
+            "timeRange": "2026/07/10 20:29:35 - 20:41:11",
+        })
+        self.assertEqual(title, "歌手 2026")
+        self.assertEqual(round_line, "场次：危险区 万妮达 VS 窦靖童 VS 齐豫")
+        self.assertEqual(time_line, "采集时间：2026/07/10 20:29:35 - 20:41:11")
+
     def test_result_font_can_render_distinct_chinese_glyphs(self):
         with tempfile.TemporaryDirectory() as temp:
             fonts = _fonts(str(Path(temp) / "fonts"))

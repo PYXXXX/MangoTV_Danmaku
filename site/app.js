@@ -216,14 +216,13 @@ function renderCurrentPng() {
   ctx.fillText("LIVE OPS DATA", left, 76);
   ctx.fillStyle = text;
   ctx.font = `700 58px ${fontStack}`;
-  ctx.fillText("直播运营数据看板", left, 138);
+  ctx.fillText(fitText(ctx, session.activity || "未分类活动", right - left - 210), left, 138);
 
   const status = resultType === "precise" ? "精确结果 · 已清洗" : (session.status === "running" ? "LIVE · 粗略统计中" : "粗略结果 · 本轮已结束");
   const displayName = sessionDisplayName(session);
-  const program = `${session.activity || "未分类活动"} / ${displayName}${session.pageTitle ? ` · ${session.pageTitle}` : ""}`;
   ctx.fillStyle = muted;
   ctx.font = `22px ${fontStack}`;
-  ctx.fillText(fitText(ctx, program, right - left - 190), left, 184);
+  ctx.fillText(fitText(ctx, `场次：${displayName}`, right - left - 190), left, 184);
   if (sessionTimeRange(session)) {
     ctx.font = `18px ${fontStack}`;
     ctx.fillText(fitText(ctx, `采集时间：${sessionTimeRange(session)}`, right - left - 190), left, 214);

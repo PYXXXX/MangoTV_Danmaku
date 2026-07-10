@@ -70,6 +70,8 @@ class WebuiSettingsJsTest(unittest.TestCase):
         self.assertIn("https://pyxxxx.github.io/MangoTV_Danmaku/", source)
         self.assertIn("直播弹幕人气统计", source)
         self.assertIn("非官方正式统计，不代表湖南卫视 & 芒果 TV 立场", source)
+        self.assertNotIn('fillText("直播运营数据看板"', source)
+        self.assertIn('`场次：${displayName}`', source)
 
     def test_activity_feishu_preview_config_button_navigates_to_settings(self):
         source = (ROOT / "frontend" / "src" / "apps" / "admin" / "AdminApp.tsx").read_text(encoding="utf-8")

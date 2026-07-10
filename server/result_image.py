@@ -210,6 +210,13 @@ def _metric_counts(session: dict[str, Any], result_type: str, result: dict[str, 
     return _format_count(messages), _format_count(total_votes), _format_count(reviews)
 
 
+def _poster_headings(session: dict[str, Any]) -> tuple[str, str, str]:
+    activity = str(session.get("activity") or "未分类活动")
+    display_name = str(session.get("displayName") or session.get("baseName") or session.get("name") or "未命名场次")
+    time_range = str(session.get("timeRange") or "")
+    return activity, f"场次：{display_name}", f"采集时间：{time_range}" if time_range else ""
+
+
 def render_result_png(
     state: dict[str, Any],
     round_id: str,
@@ -261,15 +268,12 @@ def render_result_png(
     text = "#f5f5f3"
 
     draw.text((left, 58), "LIVE OPS DATA", fill=orange, font=fonts.small)
-    draw.text((left, 88), "直播运营数据看板", fill=text, font=fonts.title)
+    activity_title, round_line, time_line = _poster_headings(session)
+    draw.text((left, 88), _fit_text(draw, activity_title, fonts.title, right - left - 210), fill=text, font=fonts.title)
     status = "精确结果 · 已清洗" if result_type == "precise" else ("LIVE · 粗略统计中" if session.get("status") == "running" else "粗略结果 · 本轮已结束")
-    display_name = session.get("displayName") or session.get("baseName") or session.get("name") or "未命名场次"
-    program = f"{session.get('activity') or '未分类活动'} / {display_name}"
-    if session.get("pageTitle"):
-        program += f" · {session.get('pageTitle')}"
-    draw.text((left, 166), _fit_text(draw, program, fonts.subtitle, right - left - 190), fill=muted, font=fonts.subtitle)
-    if session.get("timeRange"):
-        draw.text((left, 196), _fit_text(draw, f"采集时间：{session.get('timeRange')}", fonts.small, right - left - 190), fill=muted, font=fonts.small)
+    draw.text((left, 166), _fit_text(draw, round_line, fonts.subtitle, right - left - 190), fill=muted, font=fonts.subtitle)
+    if time_line:
+        draw.text((left, 196), _fit_text(draw, time_line, fonts.small, right - left - 190), fill=muted, font=fonts.small)
     badge_w = _text_width(draw, status, fonts.small) + 34
     draw.rounded_rectangle((right - badge_w, 70, right, 112), radius=21, fill="#2a211b", outline="#5d3c24")
     draw.text((right - badge_w + 17, 82), status, fill="#ff9a50", font=fonts.small)
